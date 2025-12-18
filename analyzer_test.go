@@ -3,8 +3,9 @@ package analyzer_test
 import (
 	"testing"
 
-	"github.com/mpyw/zerologlintctx"
 	"golang.org/x/tools/go/analysis/analysistest"
+
+	"github.com/mpyw/zerologlintctx"
 )
 
 func TestZerolog(t *testing.T) {

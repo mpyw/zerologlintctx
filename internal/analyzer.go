@@ -220,4 +220,3 @@ func (c *checker) eventChainHasCtx(v ssa.Value) bool {
 	tracer := newTracers()
 	return c.traceValue(v, tracer, make(map[ssa.Value]bool))
 }
-

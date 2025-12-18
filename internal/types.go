@@ -211,4 +211,3 @@ func HasContextOrCarrierParam(pass *analysis.Pass, fnType *ast.FuncType, carrier
 	}
 	return false
 }
-

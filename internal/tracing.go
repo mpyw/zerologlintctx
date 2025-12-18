@@ -3,9 +3,9 @@ package internal
 import (
 	"go/token"
 	"go/types"
+	"maps"
 
 	"golang.org/x/tools/go/ssa"
-	"maps"
 )
 
 // =============================================================================
@@ -503,4 +503,3 @@ func newTracers() *eventTracer {
 	event := &eventTracer{logger: logger, context: context}
 	return event
 }
-
