@@ -3,6 +3,8 @@
 package analyzer
 
 import (
+	"errors"
+
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 
@@ -17,8 +19,13 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
+var ErrNoInspector = errors.New("inspector analyzer result not found")
+
 func run(pass *analysis.Pass) (any, error) {
-	ssaInfo, _ := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	ssaInfo, err := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	if !err {
+		return nil, ErrNoInspector
+	}
 
 	// Build ignore maps for each file
 	ignoreMaps := buildIgnoreMaps(pass)
