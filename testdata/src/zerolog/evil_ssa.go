@@ -600,7 +600,7 @@ func goodMultiEventStructWithCtx(ctx context.Context, logger zerolog.Logger) {
 		info:  logger.Info().Ctx(ctx),
 		error: logger.Error().Ctx(ctx),
 	}
-	h.info.Msg("info with ctx")  // OK
+	h.info.Msg("info with ctx") // OK
 	h.error.Msg("err with ctx") // OK
 }
 
@@ -1002,6 +1002,6 @@ func goodLoggerFromContext(ctx context.Context) {
 }
 
 func badLoggerFromContextThenNew(ctx context.Context, logger zerolog.Logger) {
-	_ = zerolog.Ctx(ctx) // Get but don't use
+	_ = zerolog.Ctx(ctx)                    // Get but don't use
 	logger.Info().Msg("ignored ctx logger") // want `zerolog call chain missing .Ctx\(ctx\)`
 }

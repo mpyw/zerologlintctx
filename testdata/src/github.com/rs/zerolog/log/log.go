@@ -15,11 +15,11 @@ func Ctx(ctx context.Context) *zerolog.Logger {
 	return zerolog.Ctx(ctx)
 }
 
-func Info() *zerolog.Event     { return Logger.Info() }
-func Debug() *zerolog.Event    { return Logger.Debug() }
-func Warn() *zerolog.Event     { return Logger.Warn() }
-func Error() *zerolog.Event    { return Logger.Error() }
-func Fatal() *zerolog.Event    { return Logger.Fatal() }
-func Panic() *zerolog.Event    { return Logger.Panic() }
-func Trace() *zerolog.Event    { return Logger.Trace() }
-func With() zerolog.Context    { return Logger.With() }
+func Info() *zerolog.Event  { return Logger.Info() }
+func Debug() *zerolog.Event { return Logger.Debug() }
+func Warn() *zerolog.Event  { return Logger.Warn() }
+func Error() *zerolog.Event { return Logger.Error() }
+func Fatal() *zerolog.Event { return Logger.Fatal() }
+func Panic() *zerolog.Event { return Logger.Panic() }
+func Trace() *zerolog.Event { return Logger.Trace() }
+func With() zerolog.Context { return Logger.With() }

@@ -346,8 +346,8 @@ func evilLoopBuildingContextWithCtx(ctx context.Context, logger zerolog.Logger, 
 func evilEventDict(ctx context.Context, logger zerolog.Logger) {
 	logger.Info().
 		Dict("user", zerolog.Dict().
-			Str("name", "alice").
-			Int("age", 30)).
+					Str("name", "alice").
+					Int("age", 30)).
 		Msg("with dict") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
@@ -355,8 +355,8 @@ func evilEventDictWithCtx(ctx context.Context, logger zerolog.Logger) {
 	logger.Info().
 		Ctx(ctx).
 		Dict("user", zerolog.Dict().
-			Str("name", "alice").
-			Int("age", 30)).
+						Str("name", "alice").
+						Int("age", 30)).
 		Msg("with dict and ctx") // OK
 }
 
@@ -661,10 +661,10 @@ func evilMultipleLogStatements(ctx context.Context, logger zerolog.Logger) {
 }
 
 func evilMultipleLogStatementsPartialCtx(ctx context.Context, logger zerolog.Logger) {
-	logger.Info().Ctx(ctx).Msg("first")                      // OK
-	logger.Debug().Str("key", "val").Msg("second")           // want `zerolog call chain missing .Ctx\(ctx\)`
-	logger.Warn().Ctx(ctx).Int("count", 42).Send()           // OK
-	logger.Error().Err(errors.New("oops")).Msg("third")      // want `zerolog call chain missing .Ctx\(ctx\)`
+	logger.Info().Ctx(ctx).Msg("first")                 // OK
+	logger.Debug().Str("key", "val").Msg("second")      // want `zerolog call chain missing .Ctx\(ctx\)`
+	logger.Warn().Ctx(ctx).Int("count", 42).Send()      // OK
+	logger.Error().Err(errors.New("oops")).Msg("third") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // =============================================================================

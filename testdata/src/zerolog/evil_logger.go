@@ -274,9 +274,9 @@ func badMixedLoggers(ctx context.Context, logger zerolog.Logger) {
 }
 
 func goodMixedLoggersWithCtx(ctx context.Context, logger zerolog.Logger) {
-	logger.Info().Ctx(ctx).Msg("param logger with ctx")   // OK
-	log.Ctx(ctx).Info().Msg("global ctx logger")          // OK
-	zerolog.Ctx(ctx).Info().Msg("zerolog ctx")            // OK
+	logger.Info().Ctx(ctx).Msg("param logger with ctx") // OK
+	log.Ctx(ctx).Info().Msg("global ctx logger")        // OK
+	zerolog.Ctx(ctx).Info().Msg("zerolog ctx")          // OK
 }
 
 // =============================================================================
