@@ -1,0 +1,44 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: all
+  disable:
+    # Disable depguard since this is a simple package
+    - depguard
+    # Allow if err := ...; err != nil {} blocks
+    - noinlineerr
+    # Struct exhaustiveness is too strict for external types like analysis.Analyzer
+    - exhaustruct
+    # Global variables are acceptable for package-level configuration
+    - gochecknoglobals
+    # Short variable names like 'ok', 'n' are idiomatic in Go
+    - varnamelen
+    # Whitespace style preferences - too opinionated
+    - wsl
+    - wsl_v5
+    - nlreturn
+    # analysistest doesn't support t.Parallel()
+    - paralleltest
+    # go/analysis Run functions return (nil, nil) by convention
+    - nilnil
+    # Method order: constructor helper methods follow constructors, not exported methods
+    - funcorder
+    # init is conventional for go/analysis flag registration
+    - gochecknoinits
+    # SSA analysis uses interfaces extensively for Strategy Pattern
+    - ireturn
+  settings:
+    cyclop:
+      max-complexity: 30
+    funlen:
+      lines: 200
+      statements: 100
+    gocognit:
+      min-complexity: 60
+    exhaustive:
+      default-signifies-exhaustive: true
