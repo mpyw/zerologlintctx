@@ -19,12 +19,12 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-var ErrNoInspector = errors.New("inspector analyzer result not found")
+var ErrNoSSA = errors.New("SSA analyzer result not found")
 
 func run(pass *analysis.Pass) (any, error) {
-	ssaInfo, err := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
-	if !err {
-		return nil, ErrNoInspector
+	ssaInfo, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
+	if !ok {
+		return nil, ErrNoSSA
 	}
 
 	// Build ignore maps for each file
