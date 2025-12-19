@@ -14,16 +14,23 @@ A Go linter that checks zerolog logging chains for missing context propagation.
 
 `zerologlintctx` detects cases where a `context.Context` is available in function parameters but not properly passed to zerolog logging chains via `.Ctx(ctx)`.
 
-## Installation
+## Installation & Usage
+
+### Using [`go install`](https://pkg.go.dev/cmd/go#hdr-Compile_and_install_packages_and_dependencies)
 
 ```bash
 go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
+zerologlintctx ./...
 ```
 
-## Usage
+### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool) (Go 1.24+)
 
 ```bash
-zerologlintctx ./...
+# Add to go.mod as a tool dependency
+go get -tool github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
+
+# Run via go tool
+go tool zerologlintctx ./...
 ```
 
 ## Flags
