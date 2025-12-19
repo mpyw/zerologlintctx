@@ -62,10 +62,3 @@ func (m IgnoreMap) GetUnusedIgnores() []token.Pos {
 	}
 	return unused
 }
-
-// MarkUsed marks the ignore directive at the given line as used.
-func (m IgnoreMap) MarkUsed(line int) {
-	if entry, ok := m[line]; ok {
-		entry.used = true
-	}
-}
