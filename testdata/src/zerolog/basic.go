@@ -194,3 +194,19 @@ func goodIgnoredPreviousLine(ctx context.Context, log zerolog.Logger) {
 func goodIgnoredWithSpace(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored") // zerologlintctx:ignore
 }
+
+// ===== UNUSED IGNORE DIRECTIVES =====
+
+func badUnusedIgnore(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore  // want `unused zerologlintctx:ignore directive`
+	log.Info().Ctx(ctx).Msg("already has ctx, ignore not needed")
+}
+
+func badUnusedIgnoreSameLine(ctx context.Context, log zerolog.Logger) {
+	log.Info().Ctx(ctx).Msg("already has ctx") //zerologlintctx:ignore  // want `unused zerologlintctx:ignore directive`
+}
+
+func badUnusedIgnoreNoLog(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore  // want `unused zerologlintctx:ignore directive`
+	_ = ctx
+}

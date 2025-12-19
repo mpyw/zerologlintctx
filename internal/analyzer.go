@@ -49,6 +49,16 @@ func RunSSA(
 		chk := newChecker(pass, info.name, ignoreMap)
 		chk.checkFunction(fn)
 	}
+
+	// Report unused ignore directives
+	for _, ignoreMap := range ignoreMaps {
+		if ignoreMap == nil {
+			continue
+		}
+		for _, pos := range ignoreMap.GetUnusedIgnores() {
+			pass.Reportf(pos, "unused zerologlintctx:ignore directive")
+		}
+	}
 }
 
 // =============================================================================
