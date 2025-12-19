@@ -34,6 +34,24 @@ zerologlintctx ./...
 go vet -vettool=$(which zerologlintctx) ./...
 ```
 
+## Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-test` | `true` | Analyze test files (`*_test.go`) |
+
+Generated files (containing `// Code generated ... DO NOT EDIT.`) are always excluded and cannot be opted in.
+
+### Examples
+
+```bash
+# Exclude test files from analysis
+zerologlintctx -test=false ./...
+
+# With go vet
+go vet -vettool=$(which zerologlintctx) -zerologlintctx.test=false ./...
+```
+
 ## What It Checks
 
 ### zerolog

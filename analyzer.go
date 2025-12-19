@@ -4,12 +4,21 @@ package analyzer
 
 import (
 	"errors"
+	"go/ast"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 
 	"github.com/mpyw/zerologlintctx/internal"
 )
+
+// File filtering flags.
+var analyzeTests bool
+
+func init() {
+	Analyzer.Flags.BoolVar(&analyzeTests, "test", true, "analyze test files (*_test.go)")
+}
 
 // Analyzer is the main analyzer for zerologlintctx.
 var Analyzer = &analysis.Analyzer{
@@ -27,20 +36,50 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, ErrNoSSA
 	}
 
-	// Build ignore maps for each file
-	ignoreMaps := buildIgnoreMaps(pass)
+	// Build set of files to skip
+	skipFiles := buildSkipFiles(pass)
+
+	// Build ignore maps for each file (excluding skipped files)
+	ignoreMaps := buildIgnoreMaps(pass, skipFiles)
 
 	// Run SSA-based zerolog analysis
-	internal.RunSSA(pass, ssaInfo, ignoreMaps, internal.IsContextType)
+	internal.RunSSA(pass, ssaInfo, ignoreMaps, skipFiles, internal.IsContextType)
 
 	return nil, nil
 }
 
+// buildSkipFiles creates a set of filenames to skip based on flags.
+// Generated files are always skipped.
+// Test files are skipped when analyzeTests is false.
+func buildSkipFiles(pass *analysis.Pass) map[string]bool {
+	skipFiles := make(map[string]bool)
+
+	for _, file := range pass.Files {
+		filename := pass.Fset.Position(file.Pos()).Filename
+
+		// Always skip generated files
+		if ast.IsGenerated(file) {
+			skipFiles[filename] = true
+			continue
+		}
+
+		// Skip test files if -test=false
+		if !analyzeTests && strings.HasSuffix(filename, "_test.go") {
+			skipFiles[filename] = true
+		}
+	}
+
+	return skipFiles
+}
+
 // buildIgnoreMaps creates ignore maps for each file in the pass.
-func buildIgnoreMaps(pass *analysis.Pass) map[string]internal.IgnoreMap {
+func buildIgnoreMaps(pass *analysis.Pass, skipFiles map[string]bool) map[string]internal.IgnoreMap {
 	ignoreMaps := make(map[string]internal.IgnoreMap)
 	for _, file := range pass.Files {
 		filename := pass.Fset.Position(file.Pos()).Filename
+		if skipFiles[filename] {
+			continue
+		}
 		ignoreMaps[filename] = internal.BuildIgnoreMap(pass.Fset, file)
 	}
 	return ignoreMaps
