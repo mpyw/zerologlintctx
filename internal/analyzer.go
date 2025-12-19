@@ -34,6 +34,7 @@ func RunSSA(
 	pass *analysis.Pass,
 	ssaInfo *buildssa.SSA,
 	ignoreMaps map[string]IgnoreMap,
+	skipFiles map[string]bool,
 	isContextType func(types.Type) bool,
 ) {
 	funcCtx := buildFunctionContextMap(ssaInfo, isContextType)
@@ -44,6 +45,9 @@ func RunSSA(
 			continue
 		}
 		filename := pass.Fset.Position(pos).Filename
+		if skipFiles[filename] {
+			continue
+		}
 		ignoreMap := ignoreMaps[filename]
 
 		chk := newChecker(pass, info.name, ignoreMap)
