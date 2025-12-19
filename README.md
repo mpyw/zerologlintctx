@@ -33,6 +33,15 @@ go get -tool github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
 go tool zerologlintctx ./...
 ```
 
+### Using [`go run`](https://pkg.go.dev/cmd/go#hdr-Compile_and_run_Go_program)
+
+```bash
+go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...
+```
+
+> [!CAUTION]
+> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.4.0`).
+
 ## Flags
 
 | Flag | Default | Description |
