@@ -22,23 +22,15 @@ go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
 
 ## Usage
 
-### Standalone
-
 ```bash
 zerologlintctx ./...
-```
-
-### With go vet
-
-```bash
-go vet -vettool=$(which zerologlintctx) ./...
 ```
 
 ## Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-test` | `true` | Analyze test files (`*_test.go`) |
+| `-test` | `true` | Analyze test files (`*_test.go`) — built-in driver flag |
 
 Generated files (containing `// Code generated ... DO NOT EDIT.`) are always excluded and cannot be opted in.
 
@@ -47,9 +39,6 @@ Generated files (containing `// Code generated ... DO NOT EDIT.`) are always exc
 ```bash
 # Exclude test files from analysis
 zerologlintctx -test=false ./...
-
-# With go vet
-go vet -vettool=$(which zerologlintctx) -zerologlintctx.test=false ./...
 ```
 
 ## What It Checks
