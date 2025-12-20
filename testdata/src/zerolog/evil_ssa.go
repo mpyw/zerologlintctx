@@ -8,7 +8,6 @@
 //
 // False Negatives (should report but doesn't):
 //   - IIFE/Helper returns: Cross-function tracking not supported
-//   - Method values: `msg := e.Msg; msg("test")`
 //   - Deep FreeVar: Triple-nested closures
 //
 // False Positives (reports when shouldn't):
@@ -16,7 +15,6 @@
 //   - sync.Pool: Can't trace through Get/Put
 //   - Embedded struct: `h.Msg()` where h embeds *Event
 //   - Closure-modified capture: Closure writes to outer var
-//   - Phi node with nil: `var e; if cond { e = ... }; e.Msg()`
 package zerolog
 
 import (
