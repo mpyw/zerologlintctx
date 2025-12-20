@@ -400,15 +400,15 @@ func (t *eventTracer) hasContext(
 		return true, nil, nil
 	}
 
-	// Logger.Info/Debug/etc() - delegate to logger tracer
-	if isLogLevelMethod(callee.Name()) && recv != nil && isLogger(recv.Type()) {
+	// Logger methods that return Event (Info, Debug, Err, WithLevel, etc.) - delegate to logger tracer
+	if recv != nil && isLogger(recv.Type()) && returnsEvent(callee) {
 		if len(call.Call.Args) > 0 {
 			return false, t.logger, call.Call.Args[0]
 		}
 	}
 
-	// Context.Logger() - delegate to context tracer
-	if callee.Name() == loggerMethod && recv != nil && isContext(recv.Type()) {
+	// Context methods that return Logger - delegate to context tracer
+	if recv != nil && isContext(recv.Type()) && returnsLogger(callee) {
 		if len(call.Call.Args) > 0 {
 			return false, t.context, call.Call.Args[0]
 		}
@@ -441,15 +441,15 @@ func (t *loggerTracer) hasContext(
 		return true, nil, nil
 	}
 
-	// Context.Logger() - delegate to context tracer
-	if callee.Name() == loggerMethod && recv != nil && isContext(recv.Type()) {
+	// Context methods that return Logger - delegate to context tracer
+	if recv != nil && isContext(recv.Type()) && returnsLogger(callee) {
 		if len(call.Call.Args) > 0 {
 			return false, t.context, call.Call.Args[0]
 		}
 	}
 
-	// Logger.With() - trace parent Logger (self-delegation)
-	if callee.Name() == withMethod && recv != nil && isLogger(recv.Type()) {
+	// Logger methods that return Context (With) - trace parent Logger (self-delegation via context)
+	if recv != nil && isLogger(recv.Type()) && returnsContext(callee) {
 		if len(call.Call.Args) > 0 {
 			return false, t, call.Call.Args[0]
 		}
@@ -481,8 +481,8 @@ func (t *contextTracer) hasContext(
 		return true, nil, nil
 	}
 
-	// Logger.With() - delegate to logger tracer
-	if callee.Name() == withMethod && recv != nil && isLogger(recv.Type()) {
+	// Logger methods that return Context (With) - delegate to logger tracer
+	if recv != nil && isLogger(recv.Type()) && returnsContext(callee) {
 		if len(call.Call.Args) > 0 {
 			return false, t.logger, call.Call.Args[0]
 		}

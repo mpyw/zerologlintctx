@@ -4,65 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**zerologlintctx** is a Go linter that enforces context propagation in [zerolog](https://pkg.go.dev/github.com/rs/zerolog) logging chains. It detects cases where a [`context.Context`](https://pkg.go.dev/context#Context) is available in function parameters but not properly passed to zerolog chains via [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx).
+**zerologlintctx** is a Go linter that enforces context propagation in [zerolog](https://pkg.go.dev/github.com/rs/zerolog) logging chains. It detects:
 
-### Supported Checker
+1. Event chains missing `.Ctx(ctx)` when context is available
+2. Direct logging calls (`Print`, `Printf`, `Println`) that bypass the Event chain
 
-- **zerolog**: Detect missing `.Ctx(ctx)` in zerolog chains using SSA-based analysis
-
-### Directives
-
-- `//zerologlintctx:ignore` - Suppress warnings for the next line or same line
-
-## Architecture
-
-```
-zerologlintctx/
-├── cmd/
-│   └── zerologlintctx/         # CLI entry point (singlechecker)
-│       └── main.go
-├── internal/                    # SSA-based analysis (flat structure)
-│   ├── analyzer.go              # Entry point, function context discovery
-│   ├── tracing.go               # SSA value tracing logic
-│   ├── types.go                 # Type utilities, tracer implementations
-│   └── ignore.go                # Ignore directive handling
-├── testdata/
-│   └── src/
-│       ├── zerolog/             # Test fixtures
-│       └── github.com/rs/zerolog/  # Library stubs
-├── analyzer.go                  # Public analyzer definition
-├── analyzer_test.go             # Integration tests
-└── README.md
-```
-
-### Key Design Decisions
-
-1. **Type-safe analysis**: Uses [`go/types`](https://pkg.go.dev/go/types) for accurate detection (not just name-based)
-2. **SSA for zerolog**: Uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) form to track Event values through assignments
-3. **Zero false positives**: Prefer missing issues over false alarms
-4. **Strategy Pattern**: Uses Strategy Pattern for tracing Event/Logger/Context types
-5. **Flat internal structure**: Single `internal/` package for simplicity (single checker)
-
-### Zerolog SSA Strategy Pattern
-
-The zerolog checker uses SSA analysis with Strategy Pattern for tracing:
-
-```
-┌─────────────┐     ┌─────────────┐     ┌───────────────┐
-│ eventTracer │────▶│loggerTracer │────▶│ contextTracer │
-│  (Event)    │◀────│  (Logger)   │◀────│   (Context)   │
-└─────────────┘     └─────────────┘     └───────────────┘
-        │                   │                    │
-        └───────────────────┴────────────────────┘
-                            │
-                     ┌──────▼──────┐
-                     │ traceCommon │  (Phi, UnOp, FreeVar, etc.)
-                     └─────────────┘
-```
-
-- `ssaTracer` interface: `hasContext()`, `continueOnReceiverType()`
-- Each tracer knows its context sources and delegates across type boundaries
-- Handles: variable assignments, conditionals (Phi), closures, struct fields, defer
+See [Architecture](./docs/ARCHITECTURE.md) for internal design details.
 
 ## Development Commands
 
@@ -105,7 +52,7 @@ testdata/src/zerolog/
 ├── basic.go           # Simple good/bad cases, ignore directives
 ├── evil.go            # General edge cases (nesting, closures, conditionals)
 ├── evil_ssa.go        # SSA-specific patterns (IIFE, Phi, channels)
-├── evil_logger.go     # Logger transformation patterns
+├── evil_logger.go     # Logger transformation patterns, direct logging
 └── with_logger.go     # WithLogger-specific tests
 ```
 
@@ -113,30 +60,32 @@ testdata/src/zerolog/
 
 - Follow standard Go conventions
 - Use `go/analysis` framework
-- Prefix file-specific variables with meaningful names
+- Prefer type-based checks over name-based (see Architecture)
 - Unexported types by default; only export what's needed
 
 ### Comment Guidelines
 
 **Comments should inform newcomers, not document history.**
 
-- ❌ Bad: `// moved from evil.go`
-- ❌ Bad: `// refactored in session 5`
-- ✓ Good: `// LIMITATION: cross-function tracking not supported`
+- Bad: `// moved from evil.go`
+- Bad: `// refactored in session 5`
+- Good: `// LIMITATION: cross-function tracking not supported`
 
-## Known SSA Limitations
+## Key Design Decisions
 
-The zerolog checker has some known limitations due to SSA analysis constraints:
+1. **Type-safe analysis**: Uses return types (`returnsEvent`, `returnsLogger`, etc.) instead of method name hardcoding
+2. **SSA tracing**: Strategy Pattern with three tracers (Event, Logger, Context)
+3. **Zero false positives**: Prefer missing issues over false alarms
+
+## Known Limitations
 
 - **IIFE/Helper returns**: Can't track through interprocedural analysis
 - **Channel send/receive**: Can't trace through channels
 - **Method values**: `msg := e.Msg; msg("test")` - can't track method values
 
-These are documented in test cases with `LIMITATION` comments.
+These are documented in test cases with `// LIMITATION` comments.
 
-## Related Projects
+## Related Documentation
 
-- [goroutinectx](https://github.com/mpyw/goroutinectx) - Goroutine context propagation linter
-- [ctxweaver](https://github.com/mpyw/ctxweaver) - Code generator for context-aware instrumentation
-- [gormreuse](https://github.com/mpyw/gormreuse) - GORM instance reuse linter
-- [contextcheck](https://github.com/kkHAIKE/contextcheck) - Detects [`context.Background()`](https://pkg.go.dev/context#Background)/[`context.TODO()`](https://pkg.go.dev/context#TODO) misuse
+- [README.md](./README.md) - User documentation
+- [Architecture](./docs/ARCHITECTURE.md) - Internal design and detection logic

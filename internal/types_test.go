@@ -5,57 +5,6 @@ import (
 	"testing"
 )
 
-func TestIsTerminatorMethod(t *testing.T) {
-	tests := []struct {
-		name     string
-		expected bool
-	}{
-		{"Msg", true},
-		{"Msgf", true},
-		{"MsgFunc", true},
-		{"Send", true},
-		{"Info", false},
-		{"Debug", false},
-		{"Str", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isTerminatorMethod(tt.name); got != tt.expected {
-				t.Errorf("isTerminatorMethod(%q) = %v, expected %v", tt.name, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestIsLogLevelMethod(t *testing.T) {
-	tests := []struct {
-		name     string
-		expected bool
-	}{
-		{"Info", true},
-		{"Debug", true},
-		{"Warn", true},
-		{"Error", true},
-		{"Fatal", true},
-		{"Panic", true},
-		{"Trace", true},
-		{"Log", true},
-		{"Msg", false},
-		{"Str", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLogLevelMethod(tt.name); got != tt.expected {
-				t.Errorf("isLogLevelMethod(%q) = %v, expected %v", tt.name, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestUnwrapPointer(t *testing.T) {
 	// Create a basic type
 	basicType := types.Typ[types.Int]

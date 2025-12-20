@@ -155,6 +155,7 @@ func (c *checker) checkFunction(fn *ssa.Function) {
 			switch v := instr.(type) {
 			case *ssa.Call:
 				c.checkTerminatorCall(v)
+				c.checkDirectLoggingCall(v)
 			case *ssa.Defer:
 				c.checkDeferredCall(v)
 			}
@@ -169,14 +170,9 @@ func (c *checker) checkDeferredCall(d *ssa.Defer) {
 		return
 	}
 
-	// Only check terminators
-	if !isTerminatorMethod(callee.Name()) {
-		return
-	}
-
-	// Must be on zerolog.Event
+	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
 	recv := d.Call.Signature().Recv()
-	if recv == nil || !isEvent(recv.Type()) {
+	if recv == nil || !isEvent(recv.Type()) || !returnsVoid(callee) {
 		return
 	}
 
@@ -196,14 +192,9 @@ func (c *checker) checkTerminatorCall(call *ssa.Call) {
 		return
 	}
 
-	// Only check terminators
-	if !isTerminatorMethod(callee.Name()) {
-		return
-	}
-
-	// Must be on zerolog.Event
+	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
 	recv := call.Call.Signature().Recv()
-	if recv == nil || !isEvent(recv.Type()) {
+	if recv == nil || !isEvent(recv.Type()) || !returnsVoid(callee) {
 		return
 	}
 
@@ -213,6 +204,44 @@ func (c *checker) checkTerminatorCall(call *ssa.Call) {
 	}
 
 	c.report(call.Pos())
+}
+
+// checkDirectLoggingCall checks for direct logging calls that bypass the Event chain
+// (Logger.Print, Logger.Printf, log.Print, log.Printf).
+// These calls cannot propagate context and should be reported.
+func (c *checker) checkDirectLoggingCall(call *ssa.Call) {
+	callee := call.Call.StaticCallee()
+	if callee == nil {
+		return
+	}
+
+	recv := call.Call.Signature().Recv()
+
+	// Check for Logger.Print/Printf (method on Logger that returns void)
+	if isDirectLoggingMethod(callee, recv) {
+		c.reportDirectLogging(call.Pos())
+		return
+	}
+
+	// Check for log.Print/log.Printf (package-level function that returns void)
+	if isDirectLoggingFunc(callee) {
+		c.reportDirectLogging(call.Pos())
+		return
+	}
+}
+
+func (c *checker) reportDirectLogging(pos token.Pos) {
+	if c.reported[pos] {
+		return
+	}
+	c.reported[pos] = true
+
+	line := c.pass.Fset.Position(pos).Line
+	if c.ignoreMap != nil && c.ignoreMap.ShouldIgnore(line) {
+		return
+	}
+
+	c.pass.Reportf(pos, "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)", c.ctxName)
 }
 
 func (c *checker) report(pos token.Pos) {

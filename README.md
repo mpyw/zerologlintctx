@@ -59,7 +59,7 @@ zerologlintctx -test=false ./...
 
 ## What It Checks
 
-### [zerolog](https://pkg.go.dev/github.com/rs/zerolog)
+### Missing `.Ctx(ctx)` in Event Chains
 
 Detects zerolog logging chains missing [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx):
 
@@ -70,6 +70,21 @@ func handler(ctx context.Context, log zerolog.Logger) {
 
     // Good: includes .Ctx(ctx)
     log.Info().Ctx(ctx).Str("key", "value").Msg("hello")
+
+    // Also good: context from log.Ctx() or zerolog.Ctx()
+    log.Ctx(ctx).Info().Str("key", "value").Msg("hello")
+}
+```
+
+### Direct Logging Methods
+
+Detects direct logging calls that bypass the Event chain and cannot propagate context:
+
+```go
+func handler(ctx context.Context, log zerolog.Logger) {
+    // Bad: bypasses Event chain, context cannot be set
+    log.Print("hello")
+    log.Printf("hello %s", name)
 }
 ```
 
@@ -99,6 +114,7 @@ The comment can be on the same line or the line above.
 
 ## Documentation
 
+- [Architecture](./docs/ARCHITECTURE.md) - Internal design and detection logic
 - [CLAUDE.md](./CLAUDE.md) - AI assistant guidance for development
 
 ## Related Tools

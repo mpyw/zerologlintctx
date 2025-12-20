@@ -89,6 +89,46 @@ func goodLogCtxWithWith(ctx context.Context) {
 }
 
 // =============================================================================
+// log.Ctx(ctx).Err() PATTERNS (issue #8)
+// =============================================================================
+
+func goodLogCtxErr(ctx context.Context, err error) {
+	log.Ctx(ctx).Err(err).Msg("log.Ctx with Err") // OK - ctx from log.Ctx
+}
+
+func goodLogCtxErrMsgf(ctx context.Context, err error) {
+	log.Ctx(ctx).Err(err).Msgf("failed: %v", err) // OK - ctx from log.Ctx
+}
+
+func goodZerologCtxErr(ctx context.Context, err error) {
+	zerolog.Ctx(ctx).Err(err).Msg("zerolog.Ctx with Err") // OK - ctx from zerolog.Ctx
+}
+
+func goodLogCtxErrStoredEvent(ctx context.Context, err error) {
+	zl := log.Ctx(ctx)
+	var event *zerolog.Event
+	if err != nil {
+		event = zl.Err(err)
+	} else {
+		event = zl.Debug()
+	}
+	event.Msg("conditional event from log.Ctx") // OK - ctx from log.Ctx
+}
+
+func goodLogCtxDerivedLoggerThenErr(ctx context.Context, err error) {
+	zl := log.Ctx(ctx).With().Str("key", "val").Logger()
+	zl.Err(err).Msg("derived logger Err") // OK - ctx inherited through With()
+}
+
+func goodZerologCtxWithLevelMethod(ctx context.Context) {
+	zerolog.Ctx(ctx).WithLevel(zerolog.DebugLevel).Msg("WithLevel from Ctx") // OK - ctx from zerolog.Ctx
+}
+
+func goodLogCtxWithLevelMethod(ctx context.Context) {
+	log.Ctx(ctx).WithLevel(zerolog.InfoLevel).Str("key", "val").Msg("WithLevel from log.Ctx") // OK
+}
+
+// =============================================================================
 // COMPLEX With().Logger() CHAINS
 // =============================================================================
 
@@ -353,4 +393,53 @@ func goodNilLoggerCheckWithCtx(ctx context.Context, logger *zerolog.Logger) {
 	if logger != nil {
 		logger.Info().Ctx(ctx).Msg("not nil with ctx") // OK
 	}
+}
+
+// =============================================================================
+// DIRECT LOGGING (bypasses Event chain)
+// =============================================================================
+
+func badLoggerPrint(ctx context.Context, logger *zerolog.Logger) {
+	logger.Print("direct print") // want `zerolog direct logging bypasses context`
+}
+
+func badLoggerPrintf(ctx context.Context, logger *zerolog.Logger) {
+	logger.Printf("direct %s", "printf") // want `zerolog direct logging bypasses context`
+}
+
+func badLoggerPrintln(ctx context.Context, logger *zerolog.Logger) {
+	logger.Println("direct println") // want `zerolog direct logging bypasses context`
+}
+
+func badNewLoggerPrint(ctx context.Context) {
+	l := zerolog.New(nil)
+	l.Print("zerolog.New print") // want `zerolog direct logging bypasses context`
+}
+
+func badNopLoggerPrint(ctx context.Context) {
+	l := zerolog.Nop()
+	l.Print("zerolog.Nop print") // want `zerolog direct logging bypasses context`
+}
+
+func badGlobalPrint(ctx context.Context) {
+	log.Print("global print") // want `zerolog direct logging bypasses context`
+}
+
+func badGlobalPrintf(ctx context.Context) {
+	log.Printf("global %s", "printf") // want `zerolog direct logging bypasses context`
+}
+
+// These should NOT be reported (void but not logging)
+func goodSetGlobalLevel(ctx context.Context) {
+	zerolog.SetGlobalLevel(zerolog.DebugLevel) // OK - not a logging call
+}
+
+func goodDisableSampling(ctx context.Context) {
+	zerolog.DisableSampling(true) // OK - not a logging call
+}
+
+func goodUpdateContext(ctx context.Context, logger *zerolog.Logger) {
+	logger.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Str("key", "value")
+	}) // OK - configuration, not logging
 }

@@ -2,6 +2,7 @@ package internal
 
 import (
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -26,9 +27,7 @@ const (
 
 // Method names.
 const (
-	ctxMethod    = "Ctx"
-	loggerMethod = "Logger"
-	withMethod   = "With"
+	ctxMethod = "Ctx"
 )
 
 // =============================================================================
@@ -81,22 +80,68 @@ func isCtxFunc(fn *ssa.Function) bool {
 // Method Classification
 // =============================================================================
 
-// isTerminatorMethod returns true for methods that terminate an Event chain.
-func isTerminatorMethod(name string) bool {
-	switch name {
-	case "Msg", "Msgf", "MsgFunc", "Send":
-		return true
-	}
-	return false
+// returnsEvent checks if a function returns *zerolog.Event.
+// This is used to identify Logger methods that create Events (Info, Debug, Err, etc.)
+// without hardcoding method names.
+func returnsEvent(fn *ssa.Function) bool {
+	return returnsSingleType(fn, isEvent)
 }
 
-// isLogLevelMethod returns true for methods that create an Event from a Logger.
-func isLogLevelMethod(name string) bool {
-	switch name {
-	case "Info", "Debug", "Warn", "Error", "Fatal", "Panic", "Trace", "Log":
-		return true
+// returnsLogger checks if a function returns zerolog.Logger.
+// This is used to identify Context.Logger() without hardcoding method names.
+func returnsLogger(fn *ssa.Function) bool {
+	return returnsSingleType(fn, isLogger)
+}
+
+// returnsContext checks if a function returns zerolog.Context.
+// This is used to identify Logger.With() without hardcoding method names.
+func returnsContext(fn *ssa.Function) bool {
+	return returnsSingleType(fn, isContext)
+}
+
+// returnsSingleType checks if a function returns exactly one value matching the predicate.
+func returnsSingleType(fn *ssa.Function, predicate func(types.Type) bool) bool {
+	results := fn.Signature.Results()
+	if results.Len() != 1 {
+		return false
 	}
-	return false
+	return predicate(results.At(0).Type())
+}
+
+// returnsVoid checks if a function has no return values.
+// This is used to identify Event terminator methods (Msg, Send, etc.)
+func returnsVoid(fn *ssa.Function) bool {
+	return fn.Signature.Results().Len() == 0
+}
+
+// isDirectLoggingMethod checks if a function is a direct logging method on Logger
+// that bypasses the Event chain (Print, Printf, Println).
+// Note: Logger.UpdateContext also returns void but is a configuration method, not logging.
+// We use the "Print" prefix to distinguish logging methods.
+func isDirectLoggingMethod(fn *ssa.Function, recv *types.Var) bool {
+	if recv == nil || !isLogger(recv.Type()) {
+		return false
+	}
+	if !returnsVoid(fn) {
+		return false
+	}
+	return strings.HasPrefix(fn.Name(), "Print")
+}
+
+// isDirectLoggingFunc checks if a function is a direct logging function from
+// zerolog/log package that bypasses the Event chain (log.Print, log.Printf).
+func isDirectLoggingFunc(fn *ssa.Function) bool {
+	pkg := fn.Package()
+	if pkg == nil || pkg.Pkg == nil {
+		return false
+	}
+	if pkg.Pkg.Path() != zerologLogPath {
+		return false
+	}
+	if !returnsVoid(fn) {
+		return false
+	}
+	return strings.HasPrefix(fn.Name(), "Print")
 }
 
 // =============================================================================

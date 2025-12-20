@@ -59,12 +59,25 @@ func (l Logger) Fatal() *Event                { return &Event{} }
 func (l Logger) Panic() *Event                { return &Event{} }
 func (l Logger) Trace() *Event                { return &Event{} }
 func (l Logger) Log() *Event                  { return &Event{} }
+func (l Logger) Err(err error) *Event         { return &Event{} }
 func (l Logger) WithLevel(level Level) *Event { return &Event{} }
 func (l Logger) With() Context                { return Context{} }
 func (l Logger) Level(lvl Level) Logger       { return l }
 func (l Logger) Sample(s Sampler) Logger      { return l }
 func (l Logger) Hook(h Hook) Logger           { return l }
 func (l Logger) Output(w io.Writer) Logger    { return l }
+
+// Direct logging methods (bypass Event chain)
+func (l *Logger) Print(v ...any)                 {}
+func (l *Logger) Printf(format string, v ...any) {}
+func (l *Logger) Println(v ...any)               {}
+
+// Package-level functions that return void (NOT direct logging)
+func SetGlobalLevel(l Level)   {}
+func DisableSampling(v bool)   {}
+
+// Logger configuration methods that return void (NOT direct logging)
+func (l *Logger) UpdateContext(update func(c Context) Context) {}
 
 // Sampler interface for sampling.
 type Sampler interface {
