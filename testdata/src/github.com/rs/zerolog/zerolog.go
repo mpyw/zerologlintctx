@@ -73,8 +73,8 @@ func (l *Logger) Printf(format string, v ...any) {}
 func (l *Logger) Println(v ...any)               {}
 
 // Package-level functions that return void (NOT direct logging)
-func SetGlobalLevel(l Level)   {}
-func DisableSampling(v bool)   {}
+func SetGlobalLevel(l Level) {}
+func DisableSampling(v bool) {}
 
 // Logger configuration methods that return void (NOT direct logging)
 func (l *Logger) UpdateContext(update func(c Context) Context) {}
