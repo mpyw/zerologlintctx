@@ -9,6 +9,7 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 )
 
-// Retract all previous versions due to -test flag not working
-// (conflicted with singlechecker's built-in flag)
-retract [v0.0.1, v0.3.0]
+// Retract all previous versions due to critical bugs:
+// - v0.0.1 to v0.3.0: -test flag conflicted with singlechecker's built-in flag
+// - v0.4.0: False positives for log.Ctx(ctx) patterns, missing direct logging detection
+retract [v0.0.1, v0.4.0]
