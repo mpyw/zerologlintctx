@@ -76,12 +76,15 @@ func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]b
 
 	callee := call.Call.StaticCallee()
 	if callee == nil {
-		// Check if this is a call to a bound method (method value)
-		// e.g., msg := e.Msg; msg("text") - the receiver is in MakeClosure.Bindings
-		if mc, ok := call.Call.Value.(*ssa.MakeClosure); ok {
-			return c.traceBoundMethod(mc, visited, tracer)
-		}
 		return c.traceReceiver(call, visited, tracer)
+	}
+
+	// Check if this is an IIFE (Immediately Invoked Function Expression)
+	// e.g., func() *zerolog.Event { return logger.Info().Ctx(ctx) }().Msg("...")
+	if _, ok := call.Call.Value.(*ssa.MakeClosure); ok {
+		if c.traceIIFEReturns(callee, visited, tracer) {
+			return true
+		}
 	}
 
 	recv := call.Call.Signature().Recv()
@@ -121,8 +124,6 @@ func (c *checker) traceCommon(v ssa.Value, visited map[ssa.Value]bool, tracer tr
 		return c.traceUnOp(val, visited, tracer)
 	case *ssa.Alloc:
 		return c.traceAlloc(val, visited, tracer)
-	case *ssa.ChangeType:
-		return c.traceValue(val.X, tracer, visited)
 	case *ssa.MakeInterface:
 		return c.traceValue(val.X, tracer, visited)
 	case *ssa.TypeAssert:
@@ -236,8 +237,6 @@ func edgeLeadsToImpl(v ssa.Value, target *ssa.Phi, seen map[ssa.Value]bool) bool
 		}
 	case *ssa.UnOp:
 		return edgeLeadsToImpl(val.X, target, seen)
-	case *ssa.ChangeType:
-		return edgeLeadsToImpl(val.X, target, seen)
 	}
 	return false
 }
@@ -328,20 +327,55 @@ func (c *checker) traceReceiver(call *ssa.Call, visited map[ssa.Value]bool, trac
 	return false
 }
 
-// traceBoundMethod traces a bound method (method value) call.
-// When a method is extracted as a value (e.g., msg := e.Msg), SSA creates
-// a MakeClosure with the receiver in Bindings[0].
+// traceIIFEReturns traces through an IIFE (Immediately Invoked Function Expression).
+// It finds all return statements in the function and traces the returned values.
 //
 // Example:
 //
-//	e := logger.Info().Ctx(ctx)
-//	msg := e.Msg          // MakeClosure with Bindings[0] = e
-//	msg("text")           // Call to the closure
-func (c *checker) traceBoundMethod(mc *ssa.MakeClosure, visited map[ssa.Value]bool, tracer tracer) bool {
-	if len(mc.Bindings) > 0 {
-		return c.traceValue(mc.Bindings[0], tracer, visited)
+//	func() *zerolog.Event {
+//	    return logger.Info().Ctx(ctx)
+//	}().Msg("iife with ctx")
+//
+// The analyzer traces through the IIFE's return value to find .Ctx(ctx).
+func (c *checker) traceIIFEReturns(fn *ssa.Function, visited map[ssa.Value]bool, tracer tracer) bool {
+	// Check if the function returns a relevant type
+	results := fn.Signature.Results()
+	if results == nil || results.Len() == 0 {
+		return false
 	}
-	return false
+
+	// Only trace if return type is Event, Logger, or Context
+	retType := results.At(0).Type()
+	if !isEvent(retType) && !isLogger(retType) && !isContext(retType) {
+		return false
+	}
+
+	// Find all return statements and trace their values
+	// All return paths must have context for this to return true
+	hasReturn := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			ret, ok := instr.(*ssa.Return)
+			if !ok {
+				continue
+			}
+			if len(ret.Results) == 0 {
+				continue
+			}
+
+			hasReturn = true
+
+			// Clone visited to trace each return path independently
+			retVisited := make(map[ssa.Value]bool)
+			maps.Copy(retVisited, visited)
+
+			if !c.traceValue(ret.Results[0], tracer, retVisited) {
+				return false
+			}
+		}
+	}
+
+	return hasReturn
 }
 
 // =============================================================================
