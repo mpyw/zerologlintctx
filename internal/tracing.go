@@ -76,11 +76,6 @@ func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]b
 
 	callee := call.Call.StaticCallee()
 	if callee == nil {
-		// Check if this is a call to a bound method (method value)
-		// e.g., msg := e.Msg; msg("text") - the receiver is in MakeClosure.Bindings
-		if mc, ok := call.Call.Value.(*ssa.MakeClosure); ok {
-			return c.traceBoundMethod(mc, visited, tracer)
-		}
 		return c.traceReceiver(call, visited, tracer)
 	}
 
@@ -129,8 +124,6 @@ func (c *checker) traceCommon(v ssa.Value, visited map[ssa.Value]bool, tracer tr
 		return c.traceUnOp(val, visited, tracer)
 	case *ssa.Alloc:
 		return c.traceAlloc(val, visited, tracer)
-	case *ssa.ChangeType:
-		return c.traceValue(val.X, tracer, visited)
 	case *ssa.MakeInterface:
 		return c.traceValue(val.X, tracer, visited)
 	case *ssa.TypeAssert:
@@ -244,8 +237,6 @@ func edgeLeadsToImpl(v ssa.Value, target *ssa.Phi, seen map[ssa.Value]bool) bool
 		}
 	case *ssa.UnOp:
 		return edgeLeadsToImpl(val.X, target, seen)
-	case *ssa.ChangeType:
-		return edgeLeadsToImpl(val.X, target, seen)
 	}
 	return false
 }
@@ -332,22 +323,6 @@ func (c *checker) traceFreeVar(fv *ssa.FreeVar, visited map[ssa.Value]bool, trac
 func (c *checker) traceReceiver(call *ssa.Call, visited map[ssa.Value]bool, tracer tracer) bool {
 	if len(call.Call.Args) > 0 {
 		return c.traceValue(call.Call.Args[0], tracer, visited)
-	}
-	return false
-}
-
-// traceBoundMethod traces a bound method (method value) call.
-// When a method is extracted as a value (e.g., msg := e.Msg), SSA creates
-// a MakeClosure with the receiver in Bindings[0].
-//
-// Example:
-//
-//	e := logger.Info().Ctx(ctx)
-//	msg := e.Msg          // MakeClosure with Bindings[0] = e
-//	msg("text")           // Call to the closure
-func (c *checker) traceBoundMethod(mc *ssa.MakeClosure, visited map[ssa.Value]bool, tracer tracer) bool {
-	if len(mc.Bindings) > 0 {
-		return c.traceValue(mc.Bindings[0], tracer, visited)
 	}
 	return false
 }
