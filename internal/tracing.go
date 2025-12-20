@@ -76,6 +76,11 @@ func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]b
 
 	callee := call.Call.StaticCallee()
 	if callee == nil {
+		// Check if this is a call to a bound method (method value)
+		// e.g., msg := e.Msg; msg("text") - the receiver is in MakeClosure.Bindings
+		if mc, ok := call.Call.Value.(*ssa.MakeClosure); ok {
+			return c.traceBoundMethod(mc, visited, tracer)
+		}
 		return c.traceReceiver(call, visited, tracer)
 	}
 
@@ -114,6 +119,8 @@ func (c *checker) traceCommon(v ssa.Value, visited map[ssa.Value]bool, tracer tr
 		return c.traceValue(val.Tuple, tracer, visited)
 	case *ssa.UnOp:
 		return c.traceUnOp(val, visited, tracer)
+	case *ssa.Alloc:
+		return c.traceAlloc(val, visited, tracer)
 	case *ssa.ChangeType:
 		return c.traceValue(val.X, tracer, visited)
 	case *ssa.MakeInterface:
@@ -141,21 +148,35 @@ func (c *checker) traceCommon(v ssa.Value, visited map[ssa.Value]bool, tracer tr
 // =============================================================================
 
 // tracePhi handles SSA Phi nodes where multiple control flow paths merge.
-// For context tracking, ALL non-cyclic edges must have context set.
-// Cyclic edges (loop back-edges) are skipped as they depend on the
-// initial value (e.g., loops like: x := init; for { x = f(x) }).
+// For context tracking, ALL non-cyclic, non-nil edges must have context set.
+//
+// Skipped edges:
+//   - Cyclic edges (loop back-edges) depend on the initial value
+//   - Nil constant edges can never reach method calls (would panic)
+//
+// Example:
+//
+//	var e *zerolog.Event
+//	if cond { e = logger.Info().Ctx(ctx) }
+//	if e != nil { e.Msg("...") }  // Only non-nil edge matters
 func (c *checker) tracePhi(phi *ssa.Phi, visited map[ssa.Value]bool, tracer tracer) bool {
 	if len(phi.Edges) == 0 {
 		return false
 	}
 
-	hasNonCyclicEdge := false
+	hasValidEdge := false
 	for _, edge := range phi.Edges {
 		// Skip edges that would cycle back to this Phi
 		if edgeLeadsTo(edge, phi, visited) {
 			continue
 		}
-		hasNonCyclicEdge = true
+
+		// Skip nil constant edges - nil pointers can't have methods called on them
+		if isNilConst(edge) {
+			continue
+		}
+
+		hasValidEdge = true
 
 		// Clone visited for independent tracing of each branch
 		edgeVisited := make(map[ssa.Value]bool)
@@ -166,8 +187,20 @@ func (c *checker) tracePhi(phi *ssa.Phi, visited map[ssa.Value]bool, tracer trac
 		}
 	}
 
-	// If all edges are cyclic, we need at least one valid edge to check
-	return hasNonCyclicEdge
+	// Need at least one valid (non-cyclic, non-nil) edge to check
+	return hasValidEdge
+}
+
+// isNilConst checks if a value is a nil constant.
+// Nil pointers cannot have methods called on them, so they are safe to skip
+// when tracing Phi nodes (the nil path would panic before reaching the call).
+func isNilConst(v ssa.Value) bool {
+	c, ok := v.(*ssa.Const)
+	if !ok {
+		return false
+	}
+	// For nil pointer constants, Value is nil
+	return c.Value == nil
 }
 
 // edgeLeadsTo checks if tracing this edge would eventually lead back to target.
@@ -224,6 +257,21 @@ func (c *checker) traceUnOp(unop *ssa.UnOp, visited map[ssa.Value]bool, tracer t
 	return c.traceValue(unop.X, tracer, visited)
 }
 
+// traceAlloc handles SSA Alloc nodes (local variable allocation).
+// When a variable is used as a receiver (e.g., logger.Info()), we need to
+// find what value was stored into that variable.
+//
+// Example:
+//
+//	logger := log.Ctx(ctx).With().Logger()  // t0 = new Logger; *t0 = result
+//	logger.Info().Msg("test")               // uses t0 (address of logger)
+func (c *checker) traceAlloc(alloc *ssa.Alloc, visited map[ssa.Value]bool, tracer tracer) bool {
+	if stored := findStoredValue(alloc); stored != nil {
+		return c.traceValue(stored, tracer, visited)
+	}
+	return false
+}
+
 // traceFreeVar traces a FreeVar back to the value bound in MakeClosure.
 // FreeVars are variables captured from an enclosing function scope.
 func (c *checker) traceFreeVar(fv *ssa.FreeVar, visited map[ssa.Value]bool, tracer tracer) bool {
@@ -276,6 +324,22 @@ func (c *checker) traceFreeVar(fv *ssa.FreeVar, visited map[ssa.Value]bool, trac
 func (c *checker) traceReceiver(call *ssa.Call, visited map[ssa.Value]bool, tracer tracer) bool {
 	if len(call.Call.Args) > 0 {
 		return c.traceValue(call.Call.Args[0], tracer, visited)
+	}
+	return false
+}
+
+// traceBoundMethod traces a bound method (method value) call.
+// When a method is extracted as a value (e.g., msg := e.Msg), SSA creates
+// a MakeClosure with the receiver in Bindings[0].
+//
+// Example:
+//
+//	e := logger.Info().Ctx(ctx)
+//	msg := e.Msg          // MakeClosure with Bindings[0] = e
+//	msg("text")           // Call to the closure
+func (c *checker) traceBoundMethod(mc *ssa.MakeClosure, visited map[ssa.Value]bool, tracer tracer) bool {
+	if len(mc.Bindings) > 0 {
+		return c.traceValue(mc.Bindings[0], tracer, visited)
 	}
 	return false
 }

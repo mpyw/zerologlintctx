@@ -185,9 +185,7 @@ func badGoroutineWithDerivedLogger(ctx context.Context, logger zerolog.Logger) {
 func goodGoroutineWithDerivedLoggerCtx(ctx context.Context, logger zerolog.Logger) {
 	derived := logger.With().Ctx(ctx).Logger()
 	go func() {
-		// LIMITATION: FreeVar tracking through MakeClosure not working in test stubs
-		// In production, this would be OK since derived has ctx
-		derived.Info().Msg("goroutine derived with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		derived.Info().Msg("goroutine derived with ctx") // OK - ctx set via With().Ctx(ctx)
 	}()
 }
 

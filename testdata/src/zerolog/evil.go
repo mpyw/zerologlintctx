@@ -58,10 +58,7 @@ func evilClosureCapturingDerivedLogger(ctx context.Context, logger zerolog.Logge
 func evilClosureCapturingDerivedLoggerWithCtx(ctx context.Context, logger zerolog.Logger) {
 	derived := logger.With().Ctx(ctx).Logger()
 	doSomething := func() {
-		// NOTE: In test stubs, SSA optimizes away the receiver for method calls
-		// on zero-value structs with empty implementations. In production code
-		// with real zerolog, FreeVar tracing through MakeClosure bindings works.
-		derived.Info().Msg("captured derived with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		derived.Info().Msg("captured derived with ctx") // OK - ctx set via With().Ctx(ctx)
 	}
 	doSomething()
 }
