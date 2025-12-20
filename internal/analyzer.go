@@ -192,6 +192,14 @@ func (c *checker) checkTerminatorCall(call *ssa.Call) {
 		return
 	}
 
+	// Check if this is a bound method call (method value)
+	// e.g., msg := e.Msg; msg("text")
+	// In this case, callee is the wrapper (*Event).Msg$bound and recv is nil
+	if mc, ok := call.Call.Value.(*ssa.MakeClosure); ok {
+		c.checkBoundMethodTerminator(call, mc, callee)
+		return
+	}
+
 	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
 	recv := call.Call.Signature().Recv()
 	if recv == nil || !isEvent(recv.Type()) || !returnsVoid(callee) {
@@ -200,6 +208,34 @@ func (c *checker) checkTerminatorCall(call *ssa.Call) {
 
 	// Trace back to find if context was set
 	if len(call.Call.Args) > 0 && c.eventChainHasCtx(call.Call.Args[0]) {
+		return
+	}
+
+	c.report(call.Pos())
+}
+
+// checkBoundMethodTerminator checks if a bound method call (method value) is a terminator
+// without context. Bound methods are created when a method is extracted as a value:
+//
+//	msg := e.Msg    // Creates MakeClosure with receiver in Bindings[0]
+//	msg("text")     // Calls the bound method wrapper (*Event).Msg$bound
+func (c *checker) checkBoundMethodTerminator(call *ssa.Call, mc *ssa.MakeClosure, callee *ssa.Function) {
+	// Check if it returns void (terminators return void)
+	if !returnsVoid(callee) {
+		return
+	}
+
+	// Check if receiver (in Bindings[0]) is *zerolog.Event
+	if len(mc.Bindings) == 0 {
+		return
+	}
+	recvType := mc.Bindings[0].Type()
+	if !isEvent(recvType) {
+		return
+	}
+
+	// Trace the receiver to find if context was set
+	if c.eventChainHasCtx(mc.Bindings[0]) {
 		return
 	}
 

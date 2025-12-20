@@ -569,12 +569,18 @@ func goodTripleNestedClosureWithCtx(ctx context.Context, logger zerolog.Logger) 
 
 // ===== METHOD VALUE =====
 
-// LIMITATION: Method values extract the function from the receiver, creating a different
-// SSA pattern. The analyzer cannot trace through method value extraction.
-func limitationMethodValue(ctx context.Context, logger zerolog.Logger) {
+// Method values extract the method from the receiver, creating a MakeClosure.
+// The analyzer traces through the closure bindings to find the receiver.
+func badMethodValue(ctx context.Context, logger zerolog.Logger) {
 	e := logger.Info()
 	msg := e.Msg
-	msg("method value") // LIMITATION: should report but doesn't due to method value extraction
+	msg("method value") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodMethodValueWithCtx(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info().Ctx(ctx)
+	msg := e.Msg
+	msg("method value with ctx") // OK - ctx set via .Ctx(ctx)
 }
 
 // ===== STRUCT WITH MULTIPLE EVENT FIELDS =====
