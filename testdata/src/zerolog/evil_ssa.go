@@ -7,7 +7,7 @@
 // KNOWN LIMITATIONS (search for "LIMITATION" or "limitation" to find test cases):
 //
 // False Negatives (should report but doesn't):
-//   - IIFE/Helper returns: Cross-function tracking not supported
+//   - Helper returns: Cross-function tracking not supported (except IIFE)
 //   - Deep FreeVar: Triple-nested closures
 //
 // False Positives (reports when shouldn't):
@@ -41,21 +41,49 @@ func badIIFEReturnsEventChained(ctx context.Context, logger zerolog.Logger) {
 	}().Str("key", "value").Msg("chained iife") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-func limitationIIFEReturnsEventWithCtx(ctx context.Context, logger zerolog.Logger) {
-	// LIMITATION: SSA doesn't track .Ctx() through IIFE returns
-	// This is a known limitation - cross-function tracking is not supported
+func goodIIFEReturnsEventWithCtx(ctx context.Context, logger zerolog.Logger) {
+	// IIFE with ctx is now properly traced
 	func() *zerolog.Event {
 		return logger.Info().Ctx(ctx)
-	}().Msg("iife with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}().Msg("iife with ctx") // OK - traced through IIFE return
 }
 
 func badIIFENestedReturnsEvent(ctx context.Context, logger zerolog.Logger) {
-	// Nested IIFE
+	// Nested IIFE without ctx
 	func() *zerolog.Event {
 		return func() *zerolog.Event {
 			return logger.Info()
 		}()
 	}().Msg("nested iife") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodIIFENestedReturnsEventWithCtx(ctx context.Context, logger zerolog.Logger) {
+	// Nested IIFE with ctx - traced recursively through both IIFEs
+	func() *zerolog.Event {
+		return func() *zerolog.Event {
+			return logger.Info().Ctx(ctx)
+		}()
+	}().Msg("nested iife with ctx") // OK - traced through nested IIFE returns
+}
+
+func badIIFEMultipleReturnsPartialCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	// IIFE with multiple return paths - one without ctx
+	func() *zerolog.Event {
+		if cond {
+			return logger.Info().Ctx(ctx)
+		}
+		return logger.Info() // no ctx in this branch
+	}().Msg("multiple returns") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodIIFEMultipleReturnsAllCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	// IIFE with multiple return paths - all with ctx
+	func() *zerolog.Event {
+		if cond {
+			return logger.Info().Ctx(ctx)
+		}
+		return logger.Debug().Ctx(ctx)
+	}().Msg("multiple returns all ctx") // OK - all return paths have ctx
 }
 
 // ===== HELPER FUNCTIONS RETURNING EVENT =====

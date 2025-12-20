@@ -84,6 +84,14 @@ func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]b
 		return c.traceReceiver(call, visited, tracer)
 	}
 
+	// Check if this is an IIFE (Immediately Invoked Function Expression)
+	// e.g., func() *zerolog.Event { return logger.Info().Ctx(ctx) }().Msg("...")
+	if _, ok := call.Call.Value.(*ssa.MakeClosure); ok {
+		if c.traceIIFEReturns(callee, visited, tracer) {
+			return true
+		}
+	}
+
 	recv := call.Call.Signature().Recv()
 
 	// Ask the tracer to check for context
@@ -342,6 +350,57 @@ func (c *checker) traceBoundMethod(mc *ssa.MakeClosure, visited map[ssa.Value]bo
 		return c.traceValue(mc.Bindings[0], tracer, visited)
 	}
 	return false
+}
+
+// traceIIFEReturns traces through an IIFE (Immediately Invoked Function Expression).
+// It finds all return statements in the function and traces the returned values.
+//
+// Example:
+//
+//	func() *zerolog.Event {
+//	    return logger.Info().Ctx(ctx)
+//	}().Msg("iife with ctx")
+//
+// The analyzer traces through the IIFE's return value to find .Ctx(ctx).
+func (c *checker) traceIIFEReturns(fn *ssa.Function, visited map[ssa.Value]bool, tracer tracer) bool {
+	// Check if the function returns a relevant type
+	results := fn.Signature.Results()
+	if results == nil || results.Len() == 0 {
+		return false
+	}
+
+	// Only trace if return type is Event, Logger, or Context
+	retType := results.At(0).Type()
+	if !isEvent(retType) && !isLogger(retType) && !isContext(retType) {
+		return false
+	}
+
+	// Find all return statements and trace their values
+	// All return paths must have context for this to return true
+	hasReturn := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			ret, ok := instr.(*ssa.Return)
+			if !ok {
+				continue
+			}
+			if len(ret.Results) == 0 {
+				continue
+			}
+
+			hasReturn = true
+
+			// Clone visited to trace each return path independently
+			retVisited := make(map[ssa.Value]bool)
+			maps.Copy(retVisited, visited)
+
+			if !c.traceValue(ret.Results[0], tracer, retVisited) {
+				return false
+			}
+		}
+	}
+
+	return hasReturn
 }
 
 // =============================================================================
