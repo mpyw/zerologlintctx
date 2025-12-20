@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**zerologlintctx** is a Go linter that enforces context propagation in zerolog logging chains. It detects cases where a `context.Context` is available in function parameters but not properly passed to zerolog chains via `.Ctx(ctx)`.
+**zerologlintctx** is a Go linter that enforces context propagation in [zerolog](https://pkg.go.dev/github.com/rs/zerolog) logging chains. It detects cases where a [`context.Context`](https://pkg.go.dev/context#Context) is available in function parameters but not properly passed to zerolog chains via [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx).
 
 ### Supported Checker
 
@@ -37,8 +37,8 @@ zerologlintctx/
 
 ### Key Design Decisions
 
-1. **Type-safe analysis**: Uses `go/types` for accurate detection (not just name-based)
-2. **SSA for zerolog**: Uses SSA form to track Event values through assignments
+1. **Type-safe analysis**: Uses [`go/types`](https://pkg.go.dev/go/types) for accurate detection (not just name-based)
+2. **SSA for zerolog**: Uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) form to track Event values through assignments
 3. **Zero false positives**: Prefer missing issues over false alarms
 4. **Strategy Pattern**: Uses Strategy Pattern for tracing Event/Logger/Context types
 5. **Flat internal structure**: Single `internal/` package for simplicity (single checker)
@@ -136,5 +136,7 @@ These are documented in test cases with `LIMITATION` comments.
 
 ## Related Projects
 
-- [goroutinectx](https://github.com/mpyw/goroutinectx) - Goroutine context propagation linter (sibling project)
-- [contextcheck](https://github.com/kkHAIKE/contextcheck) - Detects `context.Background()`/`context.TODO()` misuse
+- [goroutinectx](https://github.com/mpyw/goroutinectx) - Goroutine context propagation linter
+- [ctxweaver](https://github.com/mpyw/ctxweaver) - Code generator for context-aware instrumentation
+- [gormreuse](https://github.com/mpyw/gormreuse) - GORM instance reuse linter
+- [contextcheck](https://github.com/kkHAIKE/contextcheck) - Detects [`context.Background()`](https://pkg.go.dev/context#Background)/[`context.TODO()`](https://pkg.go.dev/context#TODO) misuse

@@ -12,7 +12,7 @@ A Go linter that checks zerolog logging chains for missing context propagation.
 
 ## Overview
 
-`zerologlintctx` detects cases where a `context.Context` is available in function parameters but not properly passed to zerolog logging chains via `.Ctx(ctx)`.
+`zerologlintctx` detects cases where a [`context.Context`](https://pkg.go.dev/context#Context) is available in function parameters but not properly passed to [zerolog](https://pkg.go.dev/github.com/rs/zerolog) logging chains via [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx).
 
 ## Installation & Usage
 
@@ -59,9 +59,9 @@ zerologlintctx -test=false ./...
 
 ## What It Checks
 
-### zerolog
+### [zerolog](https://pkg.go.dev/github.com/rs/zerolog)
 
-Detects zerolog logging chains missing `.Ctx(ctx)`:
+Detects zerolog logging chains missing [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx):
 
 ```go
 func handler(ctx context.Context, log zerolog.Logger) {
@@ -93,14 +93,21 @@ The comment can be on the same line or the line above.
 ## Design Principles
 
 1. **Zero false positives** - Prefer missing issues over false alarms
-2. **Type-safe analysis** - Uses `go/types` for accurate detection
-3. **SSA-based tracking** - Uses SSA form to track Event values through assignments and closures
+2. **Type-safe analysis** - Uses [`go/types`](https://pkg.go.dev/go/types) for accurate detection
+3. **SSA-based tracking** - Uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) form to track Event values through assignments and closures
 4. **Nested function support** - Correctly tracks context through closures
+
+## Documentation
+
+- [CLAUDE.md](./CLAUDE.md) - AI assistant guidance for development
 
 ## Related Tools
 
+- [goroutinectx](https://github.com/mpyw/goroutinectx) - Goroutine context propagation linter
+- [ctxweaver](https://github.com/mpyw/ctxweaver) - Code generator for context-aware instrumentation
+- [gormreuse](https://github.com/mpyw/gormreuse) - GORM instance reuse linter
 - [zerologlint](https://github.com/ykadowak/zerologlint) - General zerolog linting rules
-- [contextcheck](https://github.com/kkHAIKE/contextcheck) - Detects `context.Background()`/`context.TODO()` usage and missing context parameters
+- [contextcheck](https://github.com/kkHAIKE/contextcheck) - Detects [`context.Background()`](https://pkg.go.dev/context#Background)/[`context.TODO()`](https://pkg.go.dev/context#TODO) usage and missing context parameters
 
 `zerologlintctx` is complementary to these tools:
 - `zerologlint` provides general zerolog best practices
