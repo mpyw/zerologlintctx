@@ -168,11 +168,10 @@ func badClosureCaptureDeep(ctx context.Context, logger zerolog.Logger) {
 	fn()
 }
 
-func limitationClosureCaptureWithCtx(ctx context.Context, logger zerolog.Logger) {
-	// LIMITATION: SSA doesn't track .Ctx() on captured variables used in closures
+func goodClosureCaptureWithCtx(ctx context.Context, logger zerolog.Logger) {
 	e := logger.Info().Ctx(ctx)
 	fn := func() {
-		e.Msg("captured with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		e.Msg("captured with ctx") // OK - ctx set via .Ctx(ctx)
 	}
 	fn()
 }
@@ -557,13 +556,12 @@ func badTripleNestedClosure(ctx context.Context, logger zerolog.Logger) {
 	}()
 }
 
-func limitationTripleNestedClosureWithCtx(ctx context.Context, logger zerolog.Logger) {
-	// LIMITATION: Deep FreeVar tracking through multiple closure levels
+func goodTripleNestedClosureWithCtx(ctx context.Context, logger zerolog.Logger) {
 	e := logger.Info().Ctx(ctx)
 	func() {
 		func() {
 			func() {
-				e.Msg("triple nested with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+				e.Msg("triple nested with ctx") // OK - ctx set via .Ctx(ctx)
 			}()
 		}()
 	}()
@@ -941,15 +939,42 @@ func badNilCheckBeforeUse(ctx context.Context, logger zerolog.Logger) {
 	}
 }
 
-// LIMITATION (false positive): Phi node sees potential nil from else branch.
-// Even with `if true`, SSA still models an else path where e is nil (zero value).
-func limitationNilCheckWithCtx(ctx context.Context, logger zerolog.Logger) {
+// Phi node with nil edge from uninitialized variable.
+// The nil edge is skipped because nil pointers can't have methods called on them.
+func goodNilCheckWithCtx(ctx context.Context, logger zerolog.Logger) {
 	var e *zerolog.Event
 	if true {
 		e = logger.Info().Ctx(ctx)
 	}
 	if e != nil {
-		e.Msg("nil checked with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		e.Msg("nil checked with ctx") // OK - nil edge skipped, ctx edge has context
+	}
+}
+
+// Phi node with nil + multiple non-nil edges.
+// All non-nil edges must have context.
+func badNilCheckMixedEdges(ctx context.Context, logger zerolog.Logger, cond1, cond2 bool) {
+	var e *zerolog.Event
+	if cond1 {
+		e = logger.Info().Ctx(ctx) // has ctx
+	} else if cond2 {
+		e = logger.Info() // no ctx
+	}
+	if e != nil {
+		e.Msg("mixed edges") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+// Phi node where all non-nil edges have context.
+func goodNilCheckAllEdgesWithCtx(ctx context.Context, logger zerolog.Logger, cond1, cond2 bool) {
+	var e *zerolog.Event
+	if cond1 {
+		e = logger.Info().Ctx(ctx)
+	} else if cond2 {
+		e = logger.Debug().Ctx(ctx)
+	}
+	if e != nil {
+		e.Msg("all edges with ctx") // OK - nil skipped, all non-nil have ctx
 	}
 }
 
