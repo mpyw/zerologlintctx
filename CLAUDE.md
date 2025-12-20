@@ -79,9 +79,9 @@ testdata/src/zerolog/
 
 ## Known Limitations
 
-- **IIFE/Helper returns**: Can't track through interprocedural analysis
+- **Helper function returns**: Can't track through interprocedural analysis (IIFE is supported)
 - **Channel send/receive**: Can't trace through channels
-- **Method values**: `msg := e.Msg; msg("test")` - can't track method values
+- **Closure-modified capture**: Closure writes to outer variable
 
 These are documented in test cases with `// LIMITATION` comments.
 
