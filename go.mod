@@ -12,4 +12,5 @@ require (
 // Retract all previous versions due to critical bugs:
 // - v0.0.1 to v0.3.0: -test flag conflicted with singlechecker's built-in flag
 // - v0.4.0: False positives for log.Ctx(ctx) patterns, missing direct logging detection
-retract [v0.0.1, v0.4.0]
+// - v0.5.0 to v0.6.1: Package name was `analyzer` instead of `zerologlintctx`
+retract [v0.0.1, v0.6.1]
