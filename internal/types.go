@@ -35,28 +35,15 @@ const (
 // =============================================================================
 
 func isEvent(t types.Type) bool {
-	return isZerologType(t, eventType)
+	return isNamedType(t, zerologPkgPath, eventType)
 }
 
 func isContext(t types.Type) bool {
-	return isZerologType(t, contextType)
+	return isNamedType(t, zerologPkgPath, contextType)
 }
 
 func isLogger(t types.Type) bool {
-	return isZerologType(t, loggerType)
-}
-
-func isZerologType(t types.Type, typeName string) bool {
-	t = unwrapPointer(t)
-	named, ok := t.(*types.Named)
-	if !ok {
-		return false
-	}
-	obj := named.Obj()
-	if obj == nil || obj.Pkg() == nil {
-		return false
-	}
-	return obj.Pkg().Path() == zerologPkgPath && obj.Name() == typeName
+	return isNamedType(t, zerologPkgPath, loggerType)
 }
 
 // =============================================================================
@@ -150,8 +137,12 @@ func isDirectLoggingFunc(fn *ssa.Function) bool {
 
 // IsContextType checks if the type is context.Context.
 func IsContextType(t types.Type) bool {
-	return isNamedTypeFromType(t, contextPkgPath, "Context")
+	return isNamedType(t, contextPkgPath, "Context")
 }
+
+// =============================================================================
+// Type Utilities
+// =============================================================================
 
 // unwrapPointer returns the element type if t is a pointer, otherwise returns t.
 func unwrapPointer(t types.Type) types.Type {
@@ -161,8 +152,9 @@ func unwrapPointer(t types.Type) types.Type {
 	return t
 }
 
-// isNamedTypeFromType checks if the type matches the given package path and type name.
-func isNamedTypeFromType(t types.Type, pkgPath, typeName string) bool {
+// isNamedType checks if the type matches the given package path and type name.
+// Handles pointer types transparently.
+func isNamedType(t types.Type, pkgPath, typeName string) bool {
 	t = unwrapPointer(t)
 
 	named, ok := t.(*types.Named)

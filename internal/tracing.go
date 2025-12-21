@@ -36,20 +36,59 @@ import (
 //                      │ traceCommon │  (handles Phi, UnOp, etc.)
 //                      └─────────────┘
 
+// =============================================================================
+// TraceResult - Validated State Pattern
+// =============================================================================
+
+// traceResult represents the outcome of checking a call for context.
+// Using a struct instead of multiple return values makes the API clearer
+// and prevents invalid state combinations.
+type traceResult struct {
+	kind        traceResultKind
+	delegate    tracer
+	delegateVal ssa.Value
+}
+
+type traceResultKind int
+
+const (
+	// traceResultFound indicates context was definitely found.
+	traceResultFound traceResultKind = iota
+	// traceResultDelegate indicates tracing should continue with another tracer.
+	traceResultDelegate
+	// traceResultContinue indicates tracing should continue with the current tracer.
+	traceResultContinue
+)
+
+// found creates a result indicating context was found.
+func found() traceResult {
+	return traceResult{kind: traceResultFound}
+}
+
+// delegateTo creates a result indicating delegation to another tracer.
+func delegateTo(t tracer, v ssa.Value) traceResult {
+	return traceResult{kind: traceResultDelegate, delegate: t, delegateVal: v}
+}
+
+// continueTracing creates a result indicating tracing should continue.
+func continueTracing() traceResult {
+	return traceResult{kind: traceResultContinue}
+}
+
+// =============================================================================
+// Tracer Interface
+// =============================================================================
+
 // tracer defines the strategy for tracing a specific zerolog type.
 // Each implementation knows how to check for context on its type and
 // when to delegate to other tracers.
 type tracer interface {
-	// hasContext checks if this call sets or inherits context.
-	// Returns:
-	//   - found=true if context is definitely set
-	//   - delegate=non-nil to continue tracing with another tracer
-	//   - found=false, delegate=nil to continue with current tracer
-	hasContext(
-		call *ssa.Call,
-		callee *ssa.Function,
-		recv *types.Var,
-	) (found bool, delegate tracer, delegateVal ssa.Value)
+	// checkContext examines a call and returns the tracing result.
+	// Possible outcomes:
+	//   - found(): context is definitely set
+	//   - delegateTo(t, v): continue tracing value v with tracer t
+	//   - continueTracing(): continue with current tracer on receiver
+	checkContext(call *ssa.Call, callee *ssa.Function, recv *types.Var) traceResult
 
 	// continueOnReceiverType returns true if this tracer should continue
 	// tracing when the receiver matches its type (for chained method calls).
@@ -63,7 +102,7 @@ type tracer interface {
 // traceValue is the unified tracing function that works with any tracer.
 // It handles the common tracing logic and delegates type-specific checks
 // to the provided tracer strategy.
-func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]bool) bool {
+func (c *checker) traceValue(v ssa.Value, t tracer, visited map[ssa.Value]bool) bool {
 	if visited[v] {
 		return false
 	}
@@ -71,18 +110,18 @@ func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]b
 
 	call, ok := v.(*ssa.Call)
 	if !ok {
-		return c.traceCommon(v, visited, tracer)
+		return c.traceCommon(v, visited, t)
 	}
 
 	callee := call.Call.StaticCallee()
 	if callee == nil {
-		return c.traceReceiver(call, visited, tracer)
+		return c.traceReceiver(call, visited, t)
 	}
 
 	// Check if this is an IIFE (Immediately Invoked Function Expression)
 	// e.g., func() *zerolog.Event { return logger.Info().Ctx(ctx) }().Msg("...")
 	if _, ok := call.Call.Value.(*ssa.MakeClosure); ok {
-		if c.traceIIFEReturns(callee, visited, tracer) {
+		if c.traceIIFEReturns(callee, visited, t) {
 			return true
 		}
 	}
@@ -90,19 +129,19 @@ func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]b
 	recv := call.Call.Signature().Recv()
 
 	// Ask the tracer to check for context
-	found, delegateTracer, delegateVal := tracer.hasContext(call, callee, recv)
-	if found {
+	result := t.checkContext(call, callee, recv)
+	switch result.kind {
+	case traceResultFound:
 		return true
-	}
-
-	// If tracer wants to delegate, switch to the new tracer
-	if delegateTracer != nil && delegateVal != nil {
-		return c.traceValue(delegateVal, delegateTracer, visited)
+	case traceResultDelegate:
+		return c.traceValue(result.delegateVal, result.delegate, visited)
+	case traceResultContinue:
+		// Continue with current tracer
 	}
 
 	// Continue tracing through receiver if type matches
-	if tracer.continueOnReceiverType(recv) {
-		return c.traceReceiver(call, visited, tracer)
+	if t.continueOnReceiverType(recv) {
+		return c.traceReceiver(call, visited, t)
 	}
 
 	return false
@@ -114,34 +153,55 @@ func (c *checker) traceValue(v ssa.Value, tracer tracer, visited map[ssa.Value]b
 
 // traceCommon handles common SSA value types (Phi, UnOp, FreeVar, etc.).
 // It provides shared tracing logic that works with any tracer strategy.
+//
+// Most SSA value types simply wrap an inner value that needs tracing.
+// Special cases (Phi, UnOp, Alloc, FreeVar) require custom handling.
 func (c *checker) traceCommon(v ssa.Value, visited map[ssa.Value]bool, tracer tracer) bool {
+	// Handle special cases that require custom logic
 	switch val := v.(type) {
 	case *ssa.Phi:
 		return c.tracePhi(val, visited, tracer)
-	case *ssa.Extract:
-		return c.traceValue(val.Tuple, tracer, visited)
 	case *ssa.UnOp:
 		return c.traceUnOp(val, visited, tracer)
 	case *ssa.Alloc:
 		return c.traceAlloc(val, visited, tracer)
-	case *ssa.MakeInterface:
-		return c.traceValue(val.X, tracer, visited)
-	case *ssa.TypeAssert:
-		return c.traceValue(val.X, tracer, visited)
-	case *ssa.FieldAddr:
-		return c.traceValue(val.X, tracer, visited)
-	case *ssa.Field:
-		return c.traceValue(val.X, tracer, visited)
-	case *ssa.IndexAddr:
-		return c.traceValue(val.X, tracer, visited)
-	case *ssa.Index:
-		return c.traceValue(val.X, tracer, visited)
-	case *ssa.Lookup:
-		return c.traceValue(val.X, tracer, visited)
 	case *ssa.FreeVar:
 		return c.traceFreeVar(val, visited, tracer)
 	}
+
+	// Handle simple wrapper types that just need inner value tracing
+	if inner := unwrapInner(v); inner != nil {
+		return c.traceValue(inner, tracer, visited)
+	}
+
 	return false
+}
+
+// unwrapInner extracts the inner value from SSA wrapper types.
+// These types simply wrap another value without adding semantic meaning
+// for context tracing purposes.
+//
+// Returns nil if the value type doesn't have a simple inner value.
+func unwrapInner(v ssa.Value) ssa.Value {
+	switch val := v.(type) {
+	case *ssa.Extract:
+		return val.Tuple
+	case *ssa.MakeInterface:
+		return val.X
+	case *ssa.TypeAssert:
+		return val.X
+	case *ssa.FieldAddr:
+		return val.X
+	case *ssa.Field:
+		return val.X
+	case *ssa.IndexAddr:
+		return val.X
+	case *ssa.Index:
+		return val.X
+	case *ssa.Lookup:
+		return val.X
+	}
+	return nil
 }
 
 // =============================================================================
@@ -223,21 +283,28 @@ func edgeLeadsToImpl(v ssa.Value, target *ssa.Phi, seen map[ssa.Value]bool) bool
 	}
 	seen[v] = true
 
+	// Handle special cases first
 	switch val := v.(type) {
 	case *ssa.Call:
 		// Check receiver (first arg for method calls)
 		if len(val.Call.Args) > 0 {
 			return edgeLeadsToImpl(val.Call.Args[0], target, seen)
 		}
+		return false
 	case *ssa.Phi:
 		for _, edge := range val.Edges {
 			if edgeLeadsToImpl(edge, target, seen) {
 				return true
 			}
 		}
-	case *ssa.UnOp:
-		return edgeLeadsToImpl(val.X, target, seen)
+		return false
 	}
+
+	// Handle simple wrapper types using the same unwrapper as traceCommon
+	if inner := unwrapInner(v); inner != nil {
+		return edgeLeadsToImpl(inner, target, seen)
+	}
+
 	return false
 }
 
@@ -481,38 +548,38 @@ type eventTracer struct {
 	context *contextTracer
 }
 
-func (t *eventTracer) hasContext(
+func (t *eventTracer) checkContext(
 	call *ssa.Call,
 	callee *ssa.Function,
 	recv *types.Var,
-) (bool, tracer, ssa.Value) {
+) traceResult {
 	// Event.Ctx(ctx) or Context.Ctx(ctx) - direct context setting
 	if callee.Name() == ctxMethod && recv != nil {
 		if isEvent(recv.Type()) || isContext(recv.Type()) {
-			return true, nil, nil
+			return found()
 		}
 	}
 
 	// zerolog.Ctx(ctx) - returns Logger with context
 	if isCtxFunc(callee) {
-		return true, nil, nil
+		return found()
 	}
 
 	// Logger methods that return Event (Info, Debug, Err, WithLevel, etc.) - delegate to logger tracer
 	if recv != nil && isLogger(recv.Type()) && returnsEvent(callee) {
 		if len(call.Call.Args) > 0 {
-			return false, t.logger, call.Call.Args[0]
+			return delegateTo(t.logger, call.Call.Args[0])
 		}
 	}
 
 	// Context methods that return Logger - delegate to context tracer
 	if recv != nil && isContext(recv.Type()) && returnsLogger(callee) {
 		if len(call.Call.Args) > 0 {
-			return false, t.context, call.Call.Args[0]
+			return delegateTo(t.context, call.Call.Args[0])
 		}
 	}
 
-	return false, nil, nil
+	return continueTracing()
 }
 
 func (t *eventTracer) continueOnReceiverType(recv *types.Var) bool {
@@ -529,31 +596,31 @@ type loggerTracer struct {
 	context *contextTracer
 }
 
-func (t *loggerTracer) hasContext(
+func (t *loggerTracer) checkContext(
 	call *ssa.Call,
 	callee *ssa.Function,
 	recv *types.Var,
-) (bool, tracer, ssa.Value) {
+) traceResult {
 	// zerolog.Ctx(ctx) - returns Logger with context
 	if isCtxFunc(callee) {
-		return true, nil, nil
+		return found()
 	}
 
 	// Context methods that return Logger - delegate to context tracer
 	if recv != nil && isContext(recv.Type()) && returnsLogger(callee) {
 		if len(call.Call.Args) > 0 {
-			return false, t.context, call.Call.Args[0]
+			return delegateTo(t.context, call.Call.Args[0])
 		}
 	}
 
 	// Logger methods that return Context (With) - trace parent Logger (self-delegation via context)
 	if recv != nil && isLogger(recv.Type()) && returnsContext(callee) {
 		if len(call.Call.Args) > 0 {
-			return false, t, call.Call.Args[0]
+			return delegateTo(t, call.Call.Args[0])
 		}
 	}
 
-	return false, nil, nil
+	return continueTracing()
 }
 
 func (t *loggerTracer) continueOnReceiverType(recv *types.Var) bool {
@@ -569,35 +636,60 @@ type contextTracer struct {
 	logger *loggerTracer
 }
 
-func (t *contextTracer) hasContext(
+func (t *contextTracer) checkContext(
 	call *ssa.Call,
 	callee *ssa.Function,
 	recv *types.Var,
-) (bool, tracer, ssa.Value) {
+) traceResult {
 	// Context.Ctx(ctx) - direct context setting
 	if callee.Name() == ctxMethod && recv != nil && isContext(recv.Type()) {
-		return true, nil, nil
+		return found()
 	}
 
 	// Logger methods that return Context (With) - delegate to logger tracer
 	if recv != nil && isLogger(recv.Type()) && returnsContext(callee) {
 		if len(call.Call.Args) > 0 {
-			return false, t.logger, call.Call.Args[0]
+			return delegateTo(t.logger, call.Call.Args[0])
 		}
 	}
 
-	return false, nil, nil
+	return continueTracing()
 }
 
 func (t *contextTracer) continueOnReceiverType(recv *types.Var) bool {
 	return recv != nil && isContext(recv.Type())
 }
 
-// newTracers creates the interconnected tracer instances.
-func newTracers() *eventTracer {
-	context := &contextTracer{}
-	logger := &loggerTracer{context: context}
-	context.logger = logger
-	event := &eventTracer{logger: logger, context: context}
-	return event
+// =============================================================================
+// Tracer Registry
+// =============================================================================
+
+// tracerRegistry manages the interconnected tracer instances.
+// This encapsulates the circular references between tracers.
+type tracerRegistry struct {
+	event   *eventTracer
+	logger  *loggerTracer
+	context *contextTracer
+}
+
+// newTracerRegistry creates and wires up all tracer instances.
+func newTracerRegistry() *tracerRegistry {
+	r := &tracerRegistry{
+		context: &contextTracer{},
+		logger:  &loggerTracer{},
+		event:   &eventTracer{},
+	}
+
+	// Wire up the circular references
+	r.context.logger = r.logger
+	r.logger.context = r.context
+	r.event.logger = r.logger
+	r.event.context = r.context
+
+	return r
+}
+
+// EventTracer returns the tracer for zerolog.Event values.
+func (r *tracerRegistry) EventTracer() tracer {
+	return r.event
 }

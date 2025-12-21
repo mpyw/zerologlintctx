@@ -296,6 +296,6 @@ func (c *checker) report(pos token.Pos) {
 
 // eventChainHasCtx traces an Event value to check if .Ctx() was called.
 func (c *checker) eventChainHasCtx(v ssa.Value) bool {
-	tracer := newTracers()
-	return c.traceValue(v, tracer, make(map[ssa.Value]bool))
+	registry := newTracerRegistry()
+	return c.traceValue(v, registry.EventTracer(), make(map[ssa.Value]bool))
 }
