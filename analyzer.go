@@ -1,6 +1,6 @@
-// Package analyzer provides a go/analysis based analyzer for detecting
+// Package zerologlintctx provides a go/analysis based analyzer for detecting
 // missing context propagation in zerolog logging chains.
-package analyzer
+package zerologlintctx
 
 import (
 	"errors"

@@ -8,5 +8,5 @@ import (
 )
 
 func main() {
-	singlechecker.Main(analyzer.Analyzer)
+	singlechecker.Main(zerologlintctx.Analyzer)
 }
