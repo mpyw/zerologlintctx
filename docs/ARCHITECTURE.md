@@ -26,8 +26,8 @@ zerologlintctx/
 | Pattern | Condition | Message |
 |---------|-----------|---------|
 | Event chain missing `.Ctx()` | `isEvent(recv) && returnsVoid(fn)` | `zerolog call chain missing .Ctx(ctx)` |
-| Direct logging on Logger | `isLogger(recv) && returnsVoid(fn) && hasPrefix("Print")` | `zerolog direct logging bypasses context` |
-| Direct logging via log package | `zerologLogPath && returnsVoid(fn) && hasPrefix("Print")` | `zerolog direct logging bypasses context` |
+| Direct logging on Logger | `isLogger(recv) && returnsVoid(fn) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+| Direct logging via log package | `zerologLogPath && returnsVoid(fn) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
 
 ### Type-Based Analysis
 
@@ -80,11 +80,15 @@ The tracer system follows SSA values backwards to find if context was set.
 
 ```go
 type tracer interface {
-    // Check if this call sets or inherits context
-    hasContext(call, callee, recv) (found bool, delegate tracer, delegateVal ssa.Value)
+    // checkContext examines a call and returns the tracing result.
+    // Possible outcomes:
+    //   - found(): context is definitely set
+    //   - delegateTo(t, v): continue tracing value v with tracer t
+    //   - continueTracing(): continue with current tracer on receiver
+    checkContext(call *ssa.Call, callee *ssa.Function, recv *types.Var) traceResult
 
     // Should continue tracing when receiver matches type?
-    continueOnReceiverType(recv) bool
+    continueOnReceiverType(recv *types.Var) bool
 }
 ```
 
@@ -114,6 +118,7 @@ Each tracer knows its context sources:
 
 - **Phi nodes** - Conditional assignments (all branches must have context)
 - **UnOp** - Pointer dereferences
+- **Alloc** - Local variable allocation (traces stored values)
 - **FreeVar** - Closure captured variables
 - **FieldAddr/Field** - Struct field access
 - **Store tracking** - Values stored at addresses
