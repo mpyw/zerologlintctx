@@ -1,4 +1,27 @@
 // Package ssa provides SSA-based analysis for zerolog context propagation.
+//
+// # Architecture
+//
+// The package uses SSA (Static Single Assignment) form for precise dataflow analysis:
+//
+//	┌─────────────────────────────────────────────────────────────────────┐
+//	│                      SSA Analysis Flow                               │
+//	│                                                                      │
+//	│  Source Code                SSA Form                  Analysis       │
+//	│  ───────────                ────────                  ────────       │
+//	│                                                                      │
+//	│  e := log.Info()    →    t0 = (*Logger).Info(log)                   │
+//	│  e.Str("k", "v")    →    t1 = (*Event).Str(t0, "k", "v")            │
+//	│  e.Msg("hello")     →    (*Event).Msg(t1, "hello")   ← terminator   │
+//	│                                                            │        │
+//	│                                                      trace back     │
+//	│                                                      to find .Ctx() │
+//	└─────────────────────────────────────────────────────────────────────┘
+//
+// # Detection Strategy
+//
+// The checker identifies terminator calls (Msg, Send, etc.) and traces
+// backwards through the SSA value chain to verify .Ctx(ctx) was called.
 package ssa
 
 import (
@@ -13,11 +36,17 @@ import (
 )
 
 // Checker performs SSA-based analysis of zerolog chains.
+//
+// It scans SSA instructions for:
+//   - Terminator calls: Event.Msg(), Event.Send(), etc.
+//   - Direct logging: Logger.Print(), log.Print(), etc.
+//
+// For each terminator, it traces backwards to verify .Ctx(ctx) was called.
 type Checker struct {
-	pass      *analysis.Pass
-	ctxName   string
-	ignoreMap directive.IgnoreMap
-	reported  map[token.Pos]bool
+	pass      *analysis.Pass      // For reporting diagnostics
+	ctxName   string              // Context variable name (for error messages)
+	ignoreMap directive.IgnoreMap // Line-level ignore directives
+	reported  map[token.Pos]bool  // Deduplication: same position reported once
 }
 
 // NewChecker creates a new checker for analyzing a function.
@@ -97,6 +126,18 @@ func (c *Checker) checkTerminatorCall(call *ssa.Call) {
 
 // checkBoundMethodTerminator checks if a bound method call (method value) is a terminator
 // without context.
+//
+// Bound methods are created when a method is extracted as a value:
+//
+//	msg := e.Msg    // Creates MakeClosure with receiver in Bindings[0]
+//	msg("text")     // Calls the bound method wrapper (*Event).Msg$bound
+//
+// SSA representation:
+//
+//	t0 = (*Event).Msg$bound(e)   ← MakeClosure with e in Bindings[0]
+//	t0("text")                   ← Call to the closure
+//
+// We need to trace Bindings[0] (the receiver) to find if .Ctx() was called.
 func (c *Checker) checkBoundMethodTerminator(call *ssa.Call, mc *ssa.MakeClosure, callee *ssa.Function) {
 	// Check if it returns void (terminators return void)
 	if !typeutil.ReturnsVoid(callee) {

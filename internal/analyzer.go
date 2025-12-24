@@ -97,6 +97,27 @@ type contextInfo struct {
 
 // buildFunctionContextMap builds a map of functions to their context info.
 // It handles both direct context parameters and closures that inherit context.
+//
+// The algorithm works in two passes:
+//
+//	Pass 1: Find functions with direct context.Context parameters
+//	Pass 2: Propagate context to nested closures (iterate until stable)
+//
+// Example: Context propagation to closures
+//
+//	func handler(ctx context.Context) {        // Pass 1: ctx found
+//	    go func() {                            // Pass 2: inherits ctx
+//	        log.Info().Msg("async")            // Should use .Ctx(ctx)
+//	    }()
+//	}
+//
+// Closure hierarchy:
+//
+//	handler(ctx)          ← Has context.Context param
+//	    │
+//	    └── anonymous     ← Inherits context from parent
+//	            │
+//	            └── nested ← Also inherits (multi-level)
 func buildFunctionContextMap(
 	ssaInfo *buildssa.SSA,
 	isContextType func(types.Type) bool,

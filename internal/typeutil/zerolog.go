@@ -1,4 +1,27 @@
 // Package typeutil provides type checking utilities for zerolog and context types.
+//
+// # Type Hierarchy
+//
+// The package handles three main zerolog types and their relationships:
+//
+//	zerolog.Logger
+//	    │
+//	    ├── .Info(), .Debug(), .Error(), ...  → *zerolog.Event
+//	    │
+//	    └── .With()                           → zerolog.Context
+//	                                                │
+//	                                                └── .Logger() → zerolog.Logger
+//
+// # Method Classification Strategy
+//
+// Instead of hardcoding method names, we use return type analysis:
+//
+//	ReturnsEvent(fn)   → identifies Logger.Info, Logger.Debug, etc.
+//	ReturnsLogger(fn)  → identifies Context.Logger, zerolog.Ctx
+//	ReturnsContext(fn) → identifies Logger.With
+//	ReturnsVoid(fn)    → identifies Event terminators (Msg, Send, etc.)
+//
+// This approach is more robust against API changes and works with custom wrappers.
 package typeutil
 
 import (
@@ -144,6 +167,14 @@ func unwrapPointer(t types.Type) types.Type {
 }
 
 // isNamedType checks if the type matches the given package path and type name.
+// Handles pointer types transparently.
+//
+// Example type resolution:
+//
+//	*zerolog.Event  →  unwrap pointer  →  zerolog.Event
+//	                                           │
+//	                   check pkg path: "github.com/rs/zerolog"
+//	                   check type name: "Event"
 func isNamedType(t types.Type, pkgPath, typeName string) bool {
 	t = unwrapPointer(t)
 

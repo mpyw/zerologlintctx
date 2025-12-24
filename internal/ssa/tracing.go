@@ -17,6 +17,30 @@ import (
 // traceValue is the unified tracing function that works with any tracer.
 // It handles the common tracing logic and delegates type-specific checks
 // to the provided tracer strategy.
+//
+// Tracing flow:
+//
+//	┌─────────────────────────────────────────────────────────────────┐
+//	│                    traceValue Decision Tree                      │
+//	│                                                                  │
+//	│  Input: ssa.Value                                                │
+//	│     │                                                            │
+//	│     ├─ Already visited? → return false (cycle detection)        │
+//	│     │                                                            │
+//	│     ├─ Is *ssa.Call?                                             │
+//	│     │     │                                                      │
+//	│     │     ├─ No static callee? → trace receiver                 │
+//	│     │     │                                                      │
+//	│     │     ├─ Is IIFE? → trace return values                     │
+//	│     │     │                                                      │
+//	│     │     └─ Ask tracer.CheckContext()                          │
+//	│     │           │                                                │
+//	│     │           ├─ Found → return true                          │
+//	│     │           ├─ Delegate → traceValue(delegateVal, delegate) │
+//	│     │           └─ Continue → trace receiver if type matches    │
+//	│     │                                                            │
+//	│     └─ Not a Call → traceCommon (Phi, UnOp, Alloc, etc.)        │
+//	└─────────────────────────────────────────────────────────────────┘
 func (c *Checker) traceValue(v ssa.Value, t tracer.Tracer, visited map[ssa.Value]bool) bool {
 	if visited[v] {
 		return false
@@ -114,6 +138,42 @@ func unwrapInner(v ssa.Value) ssa.Value {
 // =============================================================================
 
 // tracePhi handles SSA Phi nodes where multiple control flow paths merge.
+//
+// Phi nodes appear when a variable can have different values depending on
+// which control flow path was taken:
+//
+//	var e *zerolog.Event
+//	if cond {
+//	    e = log.Info().Ctx(ctx)  // Edge 1: has context
+//	} else {
+//	    e = log.Warn().Ctx(ctx)  // Edge 2: has context
+//	}
+//	e.Msg("test")  // Phi node merges both edges
+//
+// SSA representation:
+//
+//	       ┌─────────────────┐
+//	       │  if cond goto   │
+//	       │    then, else   │
+//	       └────────┬────────┘
+//	                │
+//	     ┌──────────┴──────────┐
+//	     ▼                     ▼
+//	┌─────────┐          ┌─────────┐
+//	│ t0=Info │          │ t1=Warn │
+//	│ t2=Ctx  │          │ t3=Ctx  │
+//	└────┬────┘          └────┬────┘
+//	     │                    │
+//	     └────────┬───────────┘
+//	              ▼
+//	      ┌──────────────┐
+//	      │ t4 = Phi(t2, │  ← ALL edges must have context
+//	      │          t3) │
+//	      └──────────────┘
+//
+// Skipped edges:
+//   - Cyclic (loop back-edges): depend on initial value
+//   - Nil constants: would panic before method call
 func (c *Checker) tracePhi(phi *ssa.Phi, visited map[ssa.Value]bool, t tracer.Tracer) bool {
 	if len(phi.Edges) == 0 {
 		return false
@@ -217,6 +277,29 @@ func (c *Checker) traceAlloc(alloc *ssa.Alloc, visited map[ssa.Value]bool, t tra
 }
 
 // traceFreeVar traces a FreeVar back to the value bound in MakeClosure.
+//
+// FreeVars are variables captured from an enclosing function scope:
+//
+//	func outer(ctx context.Context) {
+//	    e := log.Info().Ctx(ctx)      // e is captured
+//	    go func() {
+//	        e.Msg("from closure")     // e is a FreeVar here
+//	    }()
+//	}
+//
+// SSA representation:
+//
+//	outer:
+//	    t0 = (*Logger).Info(log)
+//	    t1 = (*Event).Ctx(t0, ctx)
+//	    t2 = make closure outer$1 [t1]  ← t1 bound to FreeVar
+//	    go t2()
+//
+//	outer$1:
+//	    t0 = FreeVar <*Event>           ← refers to t1 from outer
+//	    (*Event).Msg(t0, "from closure")
+//
+// We find the MakeClosure in the parent and trace the bound value.
 func (c *Checker) traceFreeVar(fv *ssa.FreeVar, visited map[ssa.Value]bool, t tracer.Tracer) bool {
 	fn := fv.Parent()
 	if fn == nil {
@@ -311,6 +394,28 @@ func (c *Checker) traceIIFEReturns(fn *ssa.Function, visited map[ssa.Value]bool,
 // =============================================================================
 
 // findStoredValue finds the value that was stored at the given address.
+//
+// This handles cases where values are accessed through struct fields or
+// local variables:
+//
+//	type holder struct{ event *zerolog.Event }
+//
+//	h := holder{event: log.Info().Ctx(ctx)}
+//	h.event.Msg("test")
+//
+// SSA representation:
+//
+//	t0 = local holder (h)
+//	t1 = &t0.event              ← FieldAddr
+//	t2 = (*Logger).Info(log)
+//	t3 = (*Event).Ctx(t2, ctx)
+//	*t1 = t3                    ← Store: t3 stored at t1
+//	t4 = &t0.event              ← FieldAddr (same field)
+//	t5 = *t4                    ← UnOp: load from t4
+//	(*Event).Msg(t5, "test")
+//
+// When we trace t5 (UnOp), we find the Store to a matching address (t1)
+// and trace the stored value (t3).
 func findStoredValue(addr ssa.Value) ssa.Value {
 	var fn *ssa.Function
 	switch v := addr.(type) {

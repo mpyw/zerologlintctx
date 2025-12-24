@@ -1,15 +1,44 @@
 // Package tracer provides the Strategy Pattern implementation for tracing
 // zerolog values through SSA form.
 //
+// # Architecture
+//
 // The tracing system follows SSA values backwards to find if context was set.
 // It uses three tracers for zerolog types:
 //
-//   - EventTracer   - traces *zerolog.Event values
-//   - LoggerTracer  - traces zerolog.Logger values
-//   - ContextTracer - traces zerolog.Context values (from With())
+//	┌─────────────────────────────────────────────────────────────────────┐
+//	│                    Tracer Delegation Graph                          │
+//	│                                                                     │
+//	│  ┌─────────────┐     ┌─────────────┐     ┌───────────────┐         │
+//	│  │ EventTracer │────▶│LoggerTracer │────▶│ ContextTracer │         │
+//	│  │  (Event)    │◀────│  (Logger)   │◀────│   (Context)   │         │
+//	│  └─────────────┘     └─────────────┘     └───────────────┘         │
+//	│                                                                     │
+//	│  Delegation examples:                                               │
+//	│    Event ← Logger.Info()    : EventTracer delegates to LoggerTracer│
+//	│    Logger ← Context.Logger(): LoggerTracer delegates to ContextTracer│
+//	│    Context ← Logger.With()  : ContextTracer delegates to LoggerTracer│
+//	└─────────────────────────────────────────────────────────────────────┘
 //
-// Each tracer implements the Tracer interface with type-specific context checks.
-// Cross-type delegation happens when values flow between types.
+// # Result State Machine
+//
+// Each tracer returns a Result indicating the next action:
+//
+//	┌───────────┐
+//	│  Found    │  Context was set (.Ctx() called)
+//	└───────────┘
+//	     ▲
+//	     │ or
+//	     ▼
+//	┌───────────┐
+//	│ Delegate  │  Continue with different tracer (type changed)
+//	└───────────┘
+//	     ▲
+//	     │ or
+//	     ▼
+//	┌───────────┐
+//	│ Continue  │  Continue with same tracer (method chain)
+//	└───────────┘
 package tracer
 
 import "golang.org/x/tools/go/ssa"

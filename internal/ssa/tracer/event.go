@@ -11,11 +11,15 @@ import (
 // EventTracer traces *zerolog.Event values for context.
 //
 // Context sources:
-//   - Event.Ctx(ctx): direct context setting
-//   - Context.Ctx(ctx): inherited from Context builder
-//   - zerolog.Ctx(ctx): Logger returned already has context
-//   - Logger.Info/Debug/etc.: inherits from parent Logger
-//   - Context.Logger(): inherits from Context builder
+//
+//	log.Info().Ctx(ctx).Msg("direct")          ← Event.Ctx()
+//	log.With().Ctx(ctx).Logger().Info().Msg()  ← inherited from Context
+//	zerolog.Ctx(ctx).Info().Msg("from ctx")   ← Logger from context
+//
+// Delegation flow:
+//
+//	Event ← Logger.Info()     → delegate to LoggerTracer
+//	Event ← Context.Logger()  → delegate to ContextTracer
 type EventTracer struct {
 	logger  *LoggerTracer
 	context *ContextTracer
