@@ -8,15 +8,26 @@ zerologlintctx uses SSA (Static Single Assignment) form analysis to track zerolo
 
 ```
 zerologlintctx/
-├── cmd/zerologlintctx/     # CLI entry point (singlechecker)
-├── internal/               # Core analysis logic
-│   ├── analyzer.go         # Entry point, function context discovery
-│   ├── tracing.go          # SSA value tracing with Strategy Pattern
-│   ├── types.go            # Type utilities, return type checks
-│   └── ignore.go           # Ignore directive handling
-├── testdata/src/           # Test fixtures and library stubs
-├── analyzer.go             # Public analyzer definition
-└── analyzer_test.go        # Integration tests
+├── cmd/zerologlintctx/        # CLI entry point (singlechecker)
+├── internal/                  # Core analysis logic
+│   ├── analyzer.go            # Entry point, function context discovery
+│   ├── directive/             # Comment directive handling
+│   │   └── ignore.go          # //zerologlintctx:ignore parsing
+│   ├── ssa/                   # SSA-based analysis
+│   │   ├── checker.go         # Checker struct, SSA inspection
+│   │   ├── tracing.go         # Value tracing logic
+│   │   └── tracer/            # Strategy Pattern tracers
+│   │       ├── interface.go   # Tracer interface definition
+│   │       ├── result.go      # CheckContext result types
+│   │       ├── event.go       # EventTracer implementation
+│   │       ├── logger.go      # LoggerTracer implementation
+│   │       ├── context.go     # ContextTracer implementation
+│   │       └── registry.go    # Tracer wiring and lifecycle
+│   └── typeutil/              # Type checking utilities
+│       └── zerolog.go         # Zerolog type predicates
+├── testdata/src/              # Test fixtures and library stubs
+├── analyzer.go                # Public analyzer definition
+└── analyzer_test.go           # Integration tests
 ```
 
 ## Detection Logic
@@ -62,59 +73,63 @@ This is necessary because `UpdateContext` also returns void but is not a logging
 ## SSA Tracing Strategy Pattern
 
 The tracer system follows SSA values backwards to find if context was set.
+Tracers are implemented in `internal/ssa/tracer/` and wired together by `Registry`.
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌───────────────┐
-│ eventTracer │────▶│loggerTracer │────▶│ contextTracer │
-│  (Event)    │◀────│  (Logger)   │◀────│   (Context)   │
-└─────────────┘     └─────────────┘     └───────────────┘
-        │                   │                    │
-        └───────────────────┴────────────────────┘
-                            │
-                     ┌──────▼──────┐
-                     │ traceCommon │
-                     └─────────────┘
+┌──────────────┐     ┌──────────────┐     ┌────────────────┐
+│ EventTracer  │────▶│ LoggerTracer │────▶│ ContextTracer  │
+│   (Event)    │◀────│   (Logger)   │◀────│   (Context)    │
+└──────────────┘     └──────────────┘     └────────────────┘
+        │                    │                     │
+        └────────────────────┴─────────────────────┘
+                             │
+                      ┌──────▼──────┐
+                      │ traceCommon │  (in ssa/tracing.go)
+                      └─────────────┘
 ```
 
 ### Tracer Interface
 
-```go
-type tracer interface {
-    // checkContext examines a call and returns the tracing result.
-    // Possible outcomes:
-    //   - found(): context is definitely set
-    //   - delegateTo(t, v): continue tracing value v with tracer t
-    //   - continueTracing(): continue with current tracer on receiver
-    checkContext(call *ssa.Call, callee *ssa.Function, recv *types.Var) traceResult
+Defined in `internal/ssa/tracer/interface.go`:
 
-    // Should continue tracing when receiver matches type?
-    continueOnReceiverType(recv *types.Var) bool
+```go
+type Tracer interface {
+    // CheckContext examines a call and returns the tracing result.
+    // Possible outcomes:
+    //   - Found(): context is definitely set
+    //   - DelegateTo(t, v): continue tracing value v with tracer t
+    //   - Continue(): continue with current tracer on receiver
+    CheckContext(call *ssa.Call, callee *ssa.Function, recv *types.Var) Result
+
+    // ContinueOnReceiverType returns true if this tracer should continue
+    // tracing when the receiver matches its type.
+    ContinueOnReceiverType(recv *types.Var) bool
 }
 ```
 
 ### Context Sources
 
-Each tracer knows its context sources:
+Each tracer knows its context sources (see `internal/ssa/tracer/*.go`):
 
-**eventTracer:**
-- `Event.Ctx(ctx)` → found
-- `Context.Ctx(ctx)` → found
-- `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` → found
-- `Logger.Info()` etc. → delegate to loggerTracer
-- `Context.Logger()` → delegate to contextTracer
+**EventTracer:**
+- `Event.Ctx(ctx)` → Found
+- `Context.Ctx(ctx)` → Found
+- `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` → Found
+- `Logger.Info()` etc. → DelegateTo LoggerTracer
+- `Context.Logger()` → DelegateTo ContextTracer
 
-**loggerTracer:**
-- `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` → found
-- `Context.Logger()` → delegate to contextTracer
+**LoggerTracer:**
+- `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` → Found
+- `Context.Logger()` → DelegateTo ContextTracer
 - `Logger.With()` → self-delegate (traces parent Logger)
 
-**contextTracer:**
-- `Context.Ctx(ctx)` → found
-- `Logger.With()` → delegate to loggerTracer
+**ContextTracer:**
+- `Context.Ctx(ctx)` → Found
+- `Logger.With()` → DelegateTo LoggerTracer
 
 ### Common SSA Patterns
 
-`traceCommon` handles shared patterns:
+`traceCommon` in `internal/ssa/tracing.go` handles shared patterns:
 
 - **Phi nodes** - Conditional assignments (all branches must have context)
 - **UnOp** - Pointer dereferences

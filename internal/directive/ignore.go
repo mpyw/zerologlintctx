@@ -1,4 +1,27 @@
-package internal
+// Package directive provides handling of zerologlintctx directive comments.
+//
+// # Supported Directives
+//
+// The package recognizes the following comment directive:
+//
+//	//zerologlintctx:ignore
+//
+// This directive can be placed on the same line or the line before the code
+// to suppress warnings.
+//
+// # Usage Examples
+//
+// Same-line ignore:
+//
+//	log.Info().Msg("no ctx needed") //zerologlintctx:ignore
+//
+// Previous-line ignore:
+//
+//	//zerologlintctx:ignore
+//	log.Info().Msg("no ctx needed")
+//
+// Unused ignore directives are reported as errors to keep the codebase clean.
+package directive
 
 import (
 	"go/ast"
@@ -40,6 +63,13 @@ func isIgnoreComment(text string) bool {
 // ShouldIgnore returns true if the given line should be ignored.
 // It checks if the same line or the previous line has an ignore comment.
 // When an ignore is used, it marks the entry as used.
+//
+// Line matching logic:
+//
+//	Line N-1:  //zerologlintctx:ignore   ← matches line N
+//	Line N:    log.Info().Msg("test")    ← target line
+//
+//	Line N:    log.Info().Msg("test") //zerologlintctx:ignore  ← also matches
 func (m IgnoreMap) ShouldIgnore(line int) bool {
 	if entry, onSameLine := m[line]; onSameLine {
 		entry.used = true

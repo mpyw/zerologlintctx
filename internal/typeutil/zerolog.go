@@ -1,4 +1,28 @@
-package internal
+// Package typeutil provides type checking utilities for zerolog and context types.
+//
+// # Type Hierarchy
+//
+// The package handles three main zerolog types and their relationships:
+//
+//	zerolog.Logger
+//	    │
+//	    ├── .Info(), .Debug(), .Error(), ...  → *zerolog.Event
+//	    │
+//	    └── .With()                           → zerolog.Context
+//	                                                │
+//	                                                └── .Logger() → zerolog.Logger
+//
+// # Method Classification Strategy
+//
+// Instead of hardcoding method names, we use return type analysis:
+//
+//	ReturnsEvent(fn)   → identifies Logger.Info, Logger.Debug, etc.
+//	ReturnsLogger(fn)  → identifies Context.Logger, zerolog.Ctx
+//	ReturnsContext(fn) → identifies Logger.With
+//	ReturnsVoid(fn)    → identifies Event terminators (Msg, Send, etc.)
+//
+// This approach is more robust against API changes and works with custom wrappers.
+package typeutil
 
 import (
 	"go/types"
@@ -6,10 +30,6 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 )
-
-// =============================================================================
-// Package Constants
-// =============================================================================
 
 // Package paths.
 const (
@@ -25,24 +45,25 @@ const (
 	loggerType  = "Logger"
 )
 
-// Method names.
-const (
-	ctxMethod = "Ctx"
-)
+// CtxMethod is the method name for setting context.
+const CtxMethod = "Ctx"
 
 // =============================================================================
 // Zerolog Type Checking
 // =============================================================================
 
-func isEvent(t types.Type) bool {
+// IsEvent checks if the type is *zerolog.Event.
+func IsEvent(t types.Type) bool {
 	return isNamedType(t, zerologPkgPath, eventType)
 }
 
-func isContext(t types.Type) bool {
+// IsContext checks if the type is zerolog.Context.
+func IsContext(t types.Type) bool {
 	return isNamedType(t, zerologPkgPath, contextType)
 }
 
-func isLogger(t types.Type) bool {
+// IsLogger checks if the type is zerolog.Logger.
+func IsLogger(t types.Type) bool {
 	return isNamedType(t, zerologPkgPath, loggerType)
 }
 
@@ -50,9 +71,9 @@ func isLogger(t types.Type) bool {
 // Function Checking
 // =============================================================================
 
-// isCtxFunc returns true for zerolog.Ctx() or log.Ctx() functions.
-func isCtxFunc(fn *ssa.Function) bool {
-	if fn.Name() != ctxMethod {
+// IsCtxFunc returns true for zerolog.Ctx() or log.Ctx() functions.
+func IsCtxFunc(fn *ssa.Function) bool {
+	if fn.Name() != CtxMethod {
 		return false
 	}
 	pkg := fn.Package()
@@ -67,23 +88,19 @@ func isCtxFunc(fn *ssa.Function) bool {
 // Method Classification
 // =============================================================================
 
-// returnsEvent checks if a function returns *zerolog.Event.
-// This is used to identify Logger methods that create Events (Info, Debug, Err, etc.)
-// without hardcoding method names.
-func returnsEvent(fn *ssa.Function) bool {
-	return returnsSingleType(fn, isEvent)
+// ReturnsEvent checks if a function returns *zerolog.Event.
+func ReturnsEvent(fn *ssa.Function) bool {
+	return returnsSingleType(fn, IsEvent)
 }
 
-// returnsLogger checks if a function returns zerolog.Logger.
-// This is used to identify Context.Logger() without hardcoding method names.
-func returnsLogger(fn *ssa.Function) bool {
-	return returnsSingleType(fn, isLogger)
+// ReturnsLogger checks if a function returns zerolog.Logger.
+func ReturnsLogger(fn *ssa.Function) bool {
+	return returnsSingleType(fn, IsLogger)
 }
 
-// returnsContext checks if a function returns zerolog.Context.
-// This is used to identify Logger.With() without hardcoding method names.
-func returnsContext(fn *ssa.Function) bool {
-	return returnsSingleType(fn, isContext)
+// ReturnsContext checks if a function returns zerolog.Context.
+func ReturnsContext(fn *ssa.Function) bool {
+	return returnsSingleType(fn, IsContext)
 }
 
 // returnsSingleType checks if a function returns exactly one value matching the predicate.
@@ -95,29 +112,26 @@ func returnsSingleType(fn *ssa.Function, predicate func(types.Type) bool) bool {
 	return predicate(results.At(0).Type())
 }
 
-// returnsVoid checks if a function has no return values.
-// This is used to identify Event terminator methods (Msg, Send, etc.)
-func returnsVoid(fn *ssa.Function) bool {
+// ReturnsVoid checks if a function has no return values.
+func ReturnsVoid(fn *ssa.Function) bool {
 	return fn.Signature.Results().Len() == 0
 }
 
-// isDirectLoggingMethod checks if a function is a direct logging method on Logger
+// IsDirectLoggingMethod checks if a function is a direct logging method on Logger
 // that bypasses the Event chain (Print, Printf, Println).
-// Note: Logger.UpdateContext also returns void but is a configuration method, not logging.
-// We use the "Print" prefix to distinguish logging methods.
-func isDirectLoggingMethod(fn *ssa.Function, recv *types.Var) bool {
-	if recv == nil || !isLogger(recv.Type()) {
+func IsDirectLoggingMethod(fn *ssa.Function, recv *types.Var) bool {
+	if recv == nil || !IsLogger(recv.Type()) {
 		return false
 	}
-	if !returnsVoid(fn) {
+	if !ReturnsVoid(fn) {
 		return false
 	}
 	return strings.HasPrefix(fn.Name(), "Print")
 }
 
-// isDirectLoggingFunc checks if a function is a direct logging function from
+// IsDirectLoggingFunc checks if a function is a direct logging function from
 // zerolog/log package that bypasses the Event chain (log.Print, log.Printf).
-func isDirectLoggingFunc(fn *ssa.Function) bool {
+func IsDirectLoggingFunc(fn *ssa.Function) bool {
 	pkg := fn.Package()
 	if pkg == nil || pkg.Pkg == nil {
 		return false
@@ -125,7 +139,7 @@ func isDirectLoggingFunc(fn *ssa.Function) bool {
 	if pkg.Pkg.Path() != zerologLogPath {
 		return false
 	}
-	if !returnsVoid(fn) {
+	if !ReturnsVoid(fn) {
 		return false
 	}
 	return strings.HasPrefix(fn.Name(), "Print")
@@ -154,6 +168,13 @@ func unwrapPointer(t types.Type) types.Type {
 
 // isNamedType checks if the type matches the given package path and type name.
 // Handles pointer types transparently.
+//
+// Example type resolution:
+//
+//	*zerolog.Event  →  unwrap pointer  →  zerolog.Event
+//	                                           │
+//	                   check pkg path: "github.com/rs/zerolog"
+//	                   check type name: "Event"
 func isNamedType(t types.Type, pkgPath, typeName string) bool {
 	t = unwrapPointer(t)
 

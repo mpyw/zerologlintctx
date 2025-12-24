@@ -23,6 +23,15 @@ go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
 zerologlintctx ./...
 ```
 
+### Using [`go vet`](https://pkg.go.dev/cmd/go#hdr-Report_likely_mistakes_in_packages)
+
+Since zerologlintctx has no custom flags, it can be run via `go vet`:
+
+```bash
+go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
+go vet -vettool=$(which zerologlintctx) ./...
+```
+
 ### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool) (Go 1.24+)
 
 ```bash
@@ -40,7 +49,7 @@ go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...
 ```
 
 > [!CAUTION]
-> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.7.0`).
+> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.7.1`).
 
 ## Flags
 

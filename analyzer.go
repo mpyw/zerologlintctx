@@ -10,6 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 
 	"github.com/mpyw/zerologlintctx/internal"
+	"github.com/mpyw/zerologlintctx/internal/directive"
+	"github.com/mpyw/zerologlintctx/internal/typeutil"
 )
 
 // Analyzer is the main analyzer for zerologlintctx.
@@ -35,7 +37,7 @@ func run(pass *analysis.Pass) (any, error) {
 	ignoreMaps := buildIgnoreMaps(pass, skipFiles)
 
 	// Run SSA-based zerolog analysis
-	internal.RunSSA(pass, ssaInfo, ignoreMaps, skipFiles, internal.IsContextType)
+	internal.RunSSA(pass, ssaInfo, ignoreMaps, skipFiles, typeutil.IsContextType)
 
 	return nil, nil
 }
@@ -59,14 +61,14 @@ func buildSkipFiles(pass *analysis.Pass) map[string]bool {
 }
 
 // buildIgnoreMaps creates ignore maps for each file in the pass.
-func buildIgnoreMaps(pass *analysis.Pass, skipFiles map[string]bool) map[string]internal.IgnoreMap {
-	ignoreMaps := make(map[string]internal.IgnoreMap)
+func buildIgnoreMaps(pass *analysis.Pass, skipFiles map[string]bool) map[string]directive.IgnoreMap {
+	ignoreMaps := make(map[string]directive.IgnoreMap)
 	for _, file := range pass.Files {
 		filename := pass.Fset.Position(file.Pos()).Filename
 		if skipFiles[filename] {
 			continue
 		}
-		ignoreMaps[filename] = internal.BuildIgnoreMap(pass.Fset, file)
+		ignoreMaps[filename] = directive.BuildIgnoreMap(pass.Fset, file)
 	}
 	return ignoreMaps
 }
