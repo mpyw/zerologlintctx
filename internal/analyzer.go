@@ -4,20 +4,41 @@
 // values through variable assignments, conditionals, and closures. It detects
 // cases where a context.Context is available but not passed to the log chain
 // via .Ctx(ctx).
+//
+// # Architecture
+//
+//	┌─────────────────────────────────────────────────────────────────────────┐
+//	│                         Analysis Flow                                    │
+//	│                                                                          │
+//	│   analyzer.go (public)                                                   │
+//	│        │                                                                 │
+//	│        ▼                                                                 │
+//	│   internal/analyzer.go   ◀── You are here                                │
+//	│   ┌─────────────────────────────────────────────────────────────────┐   │
+//	│   │  RunSSA()                                                       │   │
+//	│   │    │                                                            │   │
+//	│   │    ├── Build function context map                               │   │
+//	│   │    ├── Skip excluded files                                      │   │
+//	│   │    ├── Run SSA analysis via ssa.Checker                         │   │
+//	│   │    └── Report unused ignore directives                          │   │
+//	│   └─────────────────────────────────────────────────────────────────┘   │
+//	│        │                                                                 │
+//	│        ▼                                                                 │
+//	│   internal/ssa/                                                          │
+//	│   (Core SSA analysis)                                                    │
+//	└─────────────────────────────────────────────────────────────────────────┘
 package internal
 
 import (
-	"go/token"
 	"go/types"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
-)
 
-// =============================================================================
-// Entry Point
-// =============================================================================
+	"github.com/mpyw/zerologlintctx/internal/directive"
+	ssautil "github.com/mpyw/zerologlintctx/internal/ssa"
+)
 
 // RunSSA performs SSA-based analysis for zerolog context propagation.
 //
@@ -33,7 +54,7 @@ import (
 func RunSSA(
 	pass *analysis.Pass,
 	ssaInfo *buildssa.SSA,
-	ignoreMaps map[string]IgnoreMap,
+	ignoreMaps map[string]directive.IgnoreMap,
 	skipFiles map[string]bool,
 	isContextType func(types.Type) bool,
 ) {
@@ -50,8 +71,8 @@ func RunSSA(
 		}
 		ignoreMap := ignoreMaps[filename]
 
-		chk := newChecker(pass, info.name, ignoreMap)
-		chk.checkFunction(fn)
+		chk := ssautil.NewChecker(pass, info.name, ignoreMap)
+		chk.CheckFunction(fn)
 	}
 
 	// Report unused ignore directives
@@ -126,176 +147,4 @@ func findContextInParams(fn *ssa.Function, isContextType func(types.Type) bool) 
 		}
 	}
 	return nil
-}
-
-// =============================================================================
-// SSA Checker
-// =============================================================================
-
-// checker performs SSA-based analysis of zerolog chains.
-type checker struct {
-	pass      *analysis.Pass
-	ctxName   string
-	ignoreMap IgnoreMap
-	reported  map[token.Pos]bool
-}
-
-func newChecker(pass *analysis.Pass, ctxName string, ignoreMap IgnoreMap) *checker {
-	return &checker{
-		pass:      pass,
-		ctxName:   ctxName,
-		ignoreMap: ignoreMap,
-		reported:  make(map[token.Pos]bool),
-	}
-}
-
-func (c *checker) checkFunction(fn *ssa.Function) {
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			switch v := instr.(type) {
-			case *ssa.Call:
-				c.checkTerminatorCall(v)
-				c.checkDirectLoggingCall(v)
-			case *ssa.Defer:
-				c.checkDeferredCall(v)
-			}
-		}
-	}
-}
-
-// checkDeferredCall checks if a deferred terminator call has context properly set.
-func (c *checker) checkDeferredCall(d *ssa.Defer) {
-	callee := d.Call.StaticCallee()
-	if callee == nil {
-		return
-	}
-
-	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
-	recv := d.Call.Signature().Recv()
-	if recv == nil || !isEvent(recv.Type()) || !returnsVoid(callee) {
-		return
-	}
-
-	// Trace back to find if context was set
-	if len(d.Call.Args) > 0 && c.eventChainHasCtx(d.Call.Args[0]) {
-		return
-	}
-
-	c.report(d.Pos())
-}
-
-// checkTerminatorCall checks if a terminator call (Msg, Msgf, MsgFunc, Send)
-// has context properly set in the chain.
-func (c *checker) checkTerminatorCall(call *ssa.Call) {
-	callee := call.Call.StaticCallee()
-	if callee == nil {
-		return
-	}
-
-	// Check if this is a bound method call (method value)
-	// e.g., msg := e.Msg; msg("text")
-	// In this case, callee is the wrapper (*Event).Msg$bound and recv is nil
-	if mc, ok := call.Call.Value.(*ssa.MakeClosure); ok {
-		c.checkBoundMethodTerminator(call, mc, callee)
-		return
-	}
-
-	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
-	recv := call.Call.Signature().Recv()
-	if recv == nil || !isEvent(recv.Type()) || !returnsVoid(callee) {
-		return
-	}
-
-	// Trace back to find if context was set
-	if len(call.Call.Args) > 0 && c.eventChainHasCtx(call.Call.Args[0]) {
-		return
-	}
-
-	c.report(call.Pos())
-}
-
-// checkBoundMethodTerminator checks if a bound method call (method value) is a terminator
-// without context. Bound methods are created when a method is extracted as a value:
-//
-//	msg := e.Msg    // Creates MakeClosure with receiver in Bindings[0]
-//	msg("text")     // Calls the bound method wrapper (*Event).Msg$bound
-func (c *checker) checkBoundMethodTerminator(call *ssa.Call, mc *ssa.MakeClosure, callee *ssa.Function) {
-	// Check if it returns void (terminators return void)
-	if !returnsVoid(callee) {
-		return
-	}
-
-	// Check if receiver (in Bindings[0]) is *zerolog.Event
-	if len(mc.Bindings) == 0 {
-		return
-	}
-	recvType := mc.Bindings[0].Type()
-	if !isEvent(recvType) {
-		return
-	}
-
-	// Trace the receiver to find if context was set
-	if c.eventChainHasCtx(mc.Bindings[0]) {
-		return
-	}
-
-	c.report(call.Pos())
-}
-
-// checkDirectLoggingCall checks for direct logging calls that bypass the Event chain
-// (Logger.Print, Logger.Printf, log.Print, log.Printf).
-// These calls cannot propagate context and should be reported.
-func (c *checker) checkDirectLoggingCall(call *ssa.Call) {
-	callee := call.Call.StaticCallee()
-	if callee == nil {
-		return
-	}
-
-	recv := call.Call.Signature().Recv()
-
-	// Check for Logger.Print/Printf (method on Logger that returns void)
-	if isDirectLoggingMethod(callee, recv) {
-		c.reportDirectLogging(call.Pos())
-		return
-	}
-
-	// Check for log.Print/log.Printf (package-level function that returns void)
-	if isDirectLoggingFunc(callee) {
-		c.reportDirectLogging(call.Pos())
-		return
-	}
-}
-
-func (c *checker) reportDirectLogging(pos token.Pos) {
-	if c.reported[pos] {
-		return
-	}
-	c.reported[pos] = true
-
-	line := c.pass.Fset.Position(pos).Line
-	if c.ignoreMap != nil && c.ignoreMap.ShouldIgnore(line) {
-		return
-	}
-
-	c.pass.Reportf(pos, "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)", c.ctxName)
-}
-
-func (c *checker) report(pos token.Pos) {
-	if c.reported[pos] {
-		return
-	}
-	c.reported[pos] = true
-
-	line := c.pass.Fset.Position(pos).Line
-	if c.ignoreMap != nil && c.ignoreMap.ShouldIgnore(line) {
-		return
-	}
-
-	c.pass.Reportf(pos, "zerolog call chain missing .Ctx(%s)", c.ctxName)
-}
-
-// eventChainHasCtx traces an Event value to check if .Ctx() was called.
-func (c *checker) eventChainHasCtx(v ssa.Value) bool {
-	registry := newTracerRegistry()
-	return c.traceValue(v, registry.EventTracer(), make(map[ssa.Value]bool))
 }
