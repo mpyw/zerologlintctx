@@ -58,9 +58,9 @@ func RunSSA(
 	skipFiles map[string]bool,
 	isContextType func(types.Type) bool,
 ) {
-	funcCtx := buildFunctionContextMap(ssaInfo, isContextType)
+	funcCtxNames := buildFunctionContextMap(ssaInfo, isContextType)
 
-	for fn, info := range funcCtx {
+	for fn, ctxName := range funcCtxNames {
 		pos := fn.Pos()
 		if !pos.IsValid() {
 			continue
@@ -71,7 +71,7 @@ func RunSSA(
 		}
 		ignoreMap := ignoreMaps[filename]
 
-		chk := ssautil.NewChecker(pass, info.name, ignoreMap)
+		chk := ssautil.NewChecker(pass, ctxName, ignoreMap)
 		chk.CheckFunction(fn)
 	}
 
@@ -90,12 +90,7 @@ func RunSSA(
 // Function Context Discovery
 // =============================================================================
 
-// contextInfo holds context variable information for a function.
-type contextInfo struct {
-	name string // The context variable name (for error messages)
-}
-
-// buildFunctionContextMap builds a map of functions to their context info.
+// buildFunctionContextMap builds a map of functions to their context variable names.
 // It handles both direct context parameters and closures that inherit context.
 //
 // The algorithm works in two passes:
@@ -110,24 +105,16 @@ type contextInfo struct {
 //	        log.Info().Msg("async")            // Should use .Ctx(ctx)
 //	    }()
 //	}
-//
-// Closure hierarchy:
-//
-//	handler(ctx)          ← Has context.Context param
-//	    │
-//	    └── anonymous     ← Inherits context from parent
-//	            │
-//	            └── nested ← Also inherits (multi-level)
 func buildFunctionContextMap(
 	ssaInfo *buildssa.SSA,
 	isContextType func(types.Type) bool,
-) map[*ssa.Function]contextInfo {
-	funcCtx := make(map[*ssa.Function]contextInfo)
+) map[*ssa.Function]string {
+	funcCtx := make(map[*ssa.Function]string)
 
 	// First pass: find direct context parameters
 	for _, fn := range ssaInfo.SrcFuncs {
-		if info := findContextInParams(fn, isContextType); info != nil {
-			funcCtx[fn] = *info
+		if name := findContextParamName(fn, isContextType); name != "" {
+			funcCtx[fn] = name
 		}
 	}
 
@@ -139,8 +126,8 @@ func buildFunctionContextMap(
 				continue
 			}
 			if fn.Parent() != nil {
-				if parentCtx, ok := funcCtx[fn.Parent()]; ok {
-					funcCtx[fn] = parentCtx
+				if parentCtxName, ok := funcCtx[fn.Parent()]; ok {
+					funcCtx[fn] = parentCtxName
 					changed = true
 				}
 			}
@@ -153,19 +140,19 @@ func buildFunctionContextMap(
 	return funcCtx
 }
 
-// findContextInParams finds the context.Context parameter in function signature.
-func findContextInParams(fn *ssa.Function, isContextType func(types.Type) bool) *contextInfo {
+// findContextParamName finds the name of the context.Context parameter in function signature.
+func findContextParamName(fn *ssa.Function, isContextType func(types.Type) bool) string {
 	if fn.Signature == nil {
-		return nil
+		return ""
 	}
 	params := fn.Signature.Params()
 	if params == nil {
-		return nil
+		return ""
 	}
 	for param := range params.Variables() {
 		if isContextType(param.Type()) {
-			return &contextInfo{name: param.Name()}
+			return param.Name()
 		}
 	}
-	return nil
+	return ""
 }
