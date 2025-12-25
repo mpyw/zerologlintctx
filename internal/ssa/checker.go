@@ -31,7 +31,6 @@ import (
 	"golang.org/x/tools/go/ssa"
 
 	"github.com/mpyw/zerologlintctx/internal/directive"
-	"github.com/mpyw/zerologlintctx/internal/ssa/tracer"
 	"github.com/mpyw/zerologlintctx/internal/typeutil"
 )
 
@@ -92,7 +91,7 @@ func (c *Checker) checkDeferredCall(d *ssa.Defer) {
 		return
 	}
 
-	c.report(d.Pos())
+	c.report(d.Pos(), "zerolog call chain missing .Ctx(%s)")
 }
 
 // checkTerminatorCall checks if a terminator call (Msg, Msgf, MsgFunc, Send)
@@ -121,7 +120,7 @@ func (c *Checker) checkTerminatorCall(call *ssa.Call) {
 		return
 	}
 
-	c.report(call.Pos())
+	c.report(call.Pos(), "zerolog call chain missing .Ctx(%s)")
 }
 
 // checkBoundMethodTerminator checks if a bound method call (method value) is a terminator
@@ -158,7 +157,7 @@ func (c *Checker) checkBoundMethodTerminator(call *ssa.Call, mc *ssa.MakeClosure
 		return
 	}
 
-	c.report(call.Pos())
+	c.report(call.Pos(), "zerolog call chain missing .Ctx(%s)")
 }
 
 // checkDirectLoggingCall checks for direct logging calls that bypass the Event chain.
@@ -172,18 +171,18 @@ func (c *Checker) checkDirectLoggingCall(call *ssa.Call) {
 
 	// Check for Logger.Print/Printf (method on Logger that returns void)
 	if typeutil.IsDirectLoggingMethod(callee, recv) {
-		c.reportDirectLogging(call.Pos())
+		c.report(call.Pos(), "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)")
 		return
 	}
 
 	// Check for log.Print/log.Printf (package-level function that returns void)
 	if typeutil.IsDirectLoggingFunc(callee) {
-		c.reportDirectLogging(call.Pos())
+		c.report(call.Pos(), "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)")
 		return
 	}
 }
 
-func (c *Checker) reportDirectLogging(pos token.Pos) {
+func (c *Checker) report(pos token.Pos, format string) {
 	if c.reported[pos] {
 		return
 	}
@@ -194,25 +193,10 @@ func (c *Checker) reportDirectLogging(pos token.Pos) {
 		return
 	}
 
-	c.pass.Reportf(pos, "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)", c.ctxName)
-}
-
-func (c *Checker) report(pos token.Pos) {
-	if c.reported[pos] {
-		return
-	}
-	c.reported[pos] = true
-
-	line := c.pass.Fset.Position(pos).Line
-	if c.ignoreMap != nil && c.ignoreMap.ShouldIgnore(line) {
-		return
-	}
-
-	c.pass.Reportf(pos, "zerolog call chain missing .Ctx(%s)", c.ctxName)
+	c.pass.Reportf(pos, format, c.ctxName)
 }
 
 // eventChainHasCtx traces an Event value to check if .Ctx() was called.
 func (c *Checker) eventChainHasCtx(v ssa.Value) bool {
-	registry := tracer.NewRegistry()
-	return c.traceValue(v, registry.EventTracer(), make(map[ssa.Value]bool))
+	return c.traceValue(v, tracerEvent, make(map[ssa.Value]bool))
 }
