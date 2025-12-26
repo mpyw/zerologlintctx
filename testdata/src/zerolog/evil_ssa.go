@@ -15,6 +15,7 @@
 //   - sync.Pool: Can't trace through Get/Put
 //   - Embedded struct: `h.Msg()` where h embeds *Event
 //   - Closure-modified capture: Closure writes to outer var
+//   - IIFE unreachable return: SSA doesn't eliminate unreachable code in IIFE
 package zerolog
 
 import (
@@ -1061,6 +1062,49 @@ func goodLoggerFromContext(ctx context.Context) {
 func badLoggerFromContextThenNew(ctx context.Context, logger zerolog.Logger) {
 	_ = zerolog.Ctx(ctx)                    // Get but don't use
 	logger.Info().Msg("ignored ctx logger") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// ===== CLOSURE IN LOOP WITH VARYING CTX =====
+
+// Test case: Closure created in loop with varying ctx
+// Each iteration should be checked independently
+func badClosureInLoopVaryingCtx(ctx context.Context, logger zerolog.Logger) {
+	for i := 0; i < 2; i++ {
+		e := logger.Info()
+		if i == 1 {
+			e = e.Ctx(ctx) // only second iteration has ctx
+		}
+		f := func() {
+			e.Msg("in loop closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		f()
+	}
+}
+
+// Test case: Multiple MakeClosure for same closure function
+// If created in different branches with different bindings, all must have ctx
+func badMultipleMakeClosureBranches(ctx context.Context, logger zerolog.Logger, cond bool) {
+	var f func()
+	if cond {
+		e := logger.Info().Ctx(ctx)
+		f = func() { e.Msg("branch 1") }
+	} else {
+		e := logger.Info() // no ctx
+		f = func() { e.Msg("branch 2") } // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	f()
+}
+
+// LIMITATION (false positive): IIFE with unreachable return
+// SSA doesn't always eliminate unreachable code, so all return paths are checked.
+// Even though the second return is unreachable, analyzer still reports.
+func limitationIIFEUnreachableReturn(ctx context.Context, logger zerolog.Logger) {
+	func() *zerolog.Event {
+		if true {
+			return logger.Info().Ctx(ctx)
+		}
+		return logger.Info() // unreachable, but SSA doesn't eliminate it
+	}().Msg("iife unreachable") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== POINTER WITH CONDITIONAL STORE =====
