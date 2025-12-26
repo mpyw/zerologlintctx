@@ -317,6 +317,20 @@ func goodDeferredLogWithCtx(ctx context.Context, logger zerolog.Logger) {
 	defer e.Msg("deferred with ctx") // OK
 }
 
+// Test case: Deferred bound method call
+// The bound method (method value) should also be checked for deferred calls
+func badDeferredBoundMethod(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	msg := e.Msg
+	defer msg("deferred bound method") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodDeferredBoundMethodWithCtx(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info().Ctx(ctx)
+	msg := e.Msg
+	defer msg("deferred bound method with ctx") // OK
+}
+
 // ===== LOOP-CREATED EVENTS =====
 
 func badEventInLoop(ctx context.Context, logger zerolog.Logger) {
