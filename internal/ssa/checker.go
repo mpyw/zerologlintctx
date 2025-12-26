@@ -80,6 +80,13 @@ func (c *Checker) checkDeferredCall(d *ssa.Defer) {
 		return
 	}
 
+	// Check if this is a bound method call (method value)
+	// e.g., msg := e.Msg; defer msg("text")
+	if mc, ok := d.Call.Value.(*ssa.MakeClosure); ok {
+		c.checkDeferredBoundMethodTerminator(d, mc, callee)
+		return
+	}
+
 	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
 	recv := d.Call.Signature().Recv()
 	if recv == nil || !typeutil.IsEvent(recv.Type()) || !typeutil.ReturnsVoid(callee) {
@@ -88,6 +95,31 @@ func (c *Checker) checkDeferredCall(d *ssa.Defer) {
 
 	// Trace back to find if context was set
 	if len(d.Call.Args) > 0 && c.eventChainHasCtx(d.Call.Args[0]) {
+		return
+	}
+
+	c.report(d.Pos(), "zerolog call chain missing .Ctx(%s)")
+}
+
+// checkDeferredBoundMethodTerminator checks if a deferred bound method call is a terminator
+// without context. Similar to checkBoundMethodTerminator but for defer statements.
+func (c *Checker) checkDeferredBoundMethodTerminator(d *ssa.Defer, mc *ssa.MakeClosure, callee *ssa.Function) {
+	// Check if it returns void (terminators return void)
+	if !typeutil.ReturnsVoid(callee) {
+		return
+	}
+
+	// Check if receiver (in Bindings[0]) is *zerolog.Event
+	if len(mc.Bindings) == 0 {
+		return
+	}
+	recvType := mc.Bindings[0].Type()
+	if !typeutil.IsEvent(recvType) {
+		return
+	}
+
+	// Trace the receiver to find if context was set
+	if c.eventChainHasCtx(mc.Bindings[0]) {
 		return
 	}
 
