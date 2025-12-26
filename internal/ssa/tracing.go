@@ -501,6 +501,15 @@ func (c *Checker) traceIIFEReturns(fn *ssa.Function, visited map[ssa.Value]bool,
 //	    *ptr = logger.Warn()  // no ctx in this branch!
 //	}
 //	(*ptr).Msg("msg")  // should report: one branch lacks ctx
+//
+// Self-referential stores (where the value loads from the same address) are skipped:
+//
+//	e := logger.Info().Ctx(ctx)
+//	ptr := &e
+//	for i := 0; i < 3; i++ {
+//	    *ptr = (*ptr).Str("k", "v")  // self-referential: skipped
+//	}
+//	(*ptr).Msg("msg")  // only traces initial store, finds ctx
 func findAllStoredValues(addr ssa.Value) []ssa.Value {
 	var fn *ssa.Function
 	switch v := addr.(type) {
@@ -527,11 +536,43 @@ func findAllStoredValues(addr ssa.Value) []ssa.Value {
 				continue
 			}
 			if addressesMatch(store.Addr, addr) {
+				// Skip self-referential stores where the value loads from the same address.
+				// These just transform the existing value (e.g., *ptr = (*ptr).Str(...))
+				// and would cause infinite recursion during tracing.
+				if valueLoadsFrom(store.Val, addr) {
+					continue
+				}
 				storedValues = append(storedValues, store.Val)
 			}
 		}
 	}
 	return storedValues
+}
+
+// valueLoadsFrom checks if a value (or its receiver chain) loads from the given address.
+// This is used to detect self-referential stores like: *ptr = (*ptr).Str(...)
+func valueLoadsFrom(v ssa.Value, addr ssa.Value) bool {
+	switch val := v.(type) {
+	case *ssa.UnOp:
+		// Check if this is a dereference of the address
+		if val.Op == token.MUL && addressesMatch(val.X, addr) {
+			return true
+		}
+		return valueLoadsFrom(val.X, addr)
+	case *ssa.Call:
+		// Check receiver (first argument for method calls)
+		if len(val.Call.Args) > 0 {
+			return valueLoadsFrom(val.Call.Args[0], addr)
+		}
+	case *ssa.Phi:
+		// Check all edges
+		for _, edge := range val.Edges {
+			if valueLoadsFrom(edge, addr) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // addressesMatch checks if two addresses refer to the same memory location.
