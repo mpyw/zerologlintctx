@@ -16,6 +16,7 @@
 //   - Embedded struct: `h.Msg()` where h embeds *Event
 //   - Closure-modified capture: Closure writes to outer var
 //   - IIFE unreachable return: SSA doesn't eliminate unreachable code in IIFE
+//   - Pointer-based loop: Cyclic Store dependencies through pointer in loop
 package zerolog
 
 import (
@@ -1149,6 +1150,31 @@ func goodLongMixedChainWithCtx(ctx context.Context, logger zerolog.Logger) {
 		Bool("c", true).
 		Float64("d", 3.14).
 		Msg("long mixed chain with ctx") // OK
+}
+
+// ===== POINTER-BASED LOOP =====
+
+// Test case: Loop modifying event through pointer
+// Tests edgeLeadsToImpl handling of UnOp
+func badPointerBasedLoop(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	ptr := &e
+	for i := 0; i < 3; i++ {
+		*ptr = (*ptr).Str("key", "val")
+	}
+	(*ptr).Msg("pointer loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): Pointer-based loop with ctx
+// When event is modified through pointer in a loop, the analyzer may report
+// false positives due to cyclic Store dependencies.
+func limitationPointerBasedLoopWithCtx(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info().Ctx(ctx)
+	ptr := &e
+	for i := 0; i < 3; i++ {
+		*ptr = (*ptr).Str("key", "val")
+	}
+	(*ptr).Msg("pointer loop with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== POINTER WITH CONDITIONAL STORE =====
