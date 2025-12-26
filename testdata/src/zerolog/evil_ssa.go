@@ -1107,6 +1107,50 @@ func limitationIIFEUnreachableReturn(ctx context.Context, logger zerolog.Logger)
 	}().Msg("iife unreachable") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// ===== DYNAMIC DISPATCH (INTERFACE) =====
+
+// Test case: Interface method call (no static callee)
+// The analyzer should trace through the receiver
+type EventProvider interface {
+	GetEvent() *zerolog.Event
+}
+
+type eventProviderImpl struct {
+	e *zerolog.Event
+}
+
+func (p *eventProviderImpl) GetEvent() *zerolog.Event {
+	return p.e
+}
+
+func badDynamicDispatch(ctx context.Context, logger zerolog.Logger) {
+	var provider EventProvider = &eventProviderImpl{e: logger.Info()}
+	e := provider.GetEvent()
+	e.Msg("dynamic dispatch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// ===== LONG CHAIN WITH MIXED METHODS =====
+
+// Test case: Long chain with mixed Event methods
+func badLongMixedChain(ctx context.Context, logger zerolog.Logger) {
+	logger.Info().
+		Str("a", "1").
+		Int("b", 2).
+		Bool("c", true).
+		Float64("d", 3.14).
+		Msg("long mixed chain") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLongMixedChainWithCtx(ctx context.Context, logger zerolog.Logger) {
+	logger.Info().
+		Ctx(ctx).
+		Str("a", "1").
+		Int("b", 2).
+		Bool("c", true).
+		Float64("d", 3.14).
+		Msg("long mixed chain with ctx") // OK
+}
+
 // ===== POINTER WITH CONDITIONAL STORE =====
 
 // Test case: Multiple stores to same pointer address - partial ctx
