@@ -1062,3 +1062,36 @@ func badLoggerFromContextThenNew(ctx context.Context, logger zerolog.Logger) {
 	_ = zerolog.Ctx(ctx)                    // Get but don't use
 	logger.Info().Msg("ignored ctx logger") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// ===== POINTER WITH CONDITIONAL STORE =====
+
+// Test case: Multiple stores to same pointer address - partial ctx
+// If only one branch has ctx, should report
+func badPointerConditionalStorePartialCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info() // no ctx
+	ptr := &e
+	if cond {
+		*ptr = logger.Warn().Ctx(ctx) // has ctx
+	}
+	(*ptr).Msg("ptr conditional partial") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Test case: Both stores have ctx - should be OK
+func goodPointerConditionalStoreAllCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info().Ctx(ctx) // has ctx
+	ptr := &e
+	if cond {
+		*ptr = logger.Warn().Ctx(ctx) // has ctx
+	}
+	(*ptr).Msg("ptr conditional all ctx") // OK - all paths have ctx
+}
+
+// Test case: Initial has ctx, conditional does not
+func badPointerConditionalStoreInitialCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info().Ctx(ctx) // has ctx
+	ptr := &e
+	if cond {
+		*ptr = logger.Warn() // no ctx
+	}
+	(*ptr).Msg("ptr initial ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

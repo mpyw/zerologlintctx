@@ -373,8 +373,9 @@ func edgeLeadsToImpl(v ssa.Value, target *ssa.Phi, seen map[ssa.Value]bool) bool
 // traceUnOp handles SSA unary operations, especially pointer dereferences.
 func (c *Checker) traceUnOp(unop *ssa.UnOp, visited map[ssa.Value]bool, t tracerType) bool {
 	if unop.Op == token.MUL {
-		if stored := findStoredValue(unop.X); stored != nil {
-			return c.traceValue(stored, t, visited)
+		storedValues := findAllStoredValues(unop.X)
+		if len(storedValues) > 0 {
+			return c.traceAllStoredValues(storedValues, visited, t)
 		}
 	}
 	return c.traceValue(unop.X, t, visited)
@@ -382,10 +383,24 @@ func (c *Checker) traceUnOp(unop *ssa.UnOp, visited map[ssa.Value]bool, t tracer
 
 // traceAlloc handles SSA Alloc nodes (local variable allocation).
 func (c *Checker) traceAlloc(alloc *ssa.Alloc, visited map[ssa.Value]bool, t tracerType) bool {
-	if stored := findStoredValue(alloc); stored != nil {
-		return c.traceValue(stored, t, visited)
+	storedValues := findAllStoredValues(alloc)
+	if len(storedValues) > 0 {
+		return c.traceAllStoredValues(storedValues, visited, t)
 	}
 	return false
+}
+
+// traceAllStoredValues traces all stored values and returns true only if ALL have context.
+// This is similar to Phi node handling - all paths must have context.
+func (c *Checker) traceAllStoredValues(storedValues []ssa.Value, visited map[ssa.Value]bool, t tracerType) bool {
+	for _, stored := range storedValues {
+		// Clone visited for independent tracing of each store
+		storeVisited := maps.Clone(visited)
+		if !c.traceValue(stored, t, storeVisited) {
+			return false
+		}
+	}
+	return true
 }
 
 // traceFreeVar traces a FreeVar back to the value bound in MakeClosure.
@@ -476,8 +491,17 @@ func (c *Checker) traceIIFEReturns(fn *ssa.Function, visited map[ssa.Value]bool,
 // Store Tracking
 // =============================================================================
 
-// findStoredValue finds the value that was stored at the given address.
-func findStoredValue(addr ssa.Value) ssa.Value {
+// findAllStoredValues finds all values that were stored at the given address.
+// Multiple stores can occur in different control flow paths (e.g., if/else branches).
+// All stored values must be checked for context to handle cases like:
+//
+//	e := logger.Info().Ctx(ctx)
+//	ptr := &e
+//	if cond {
+//	    *ptr = logger.Warn()  // no ctx in this branch!
+//	}
+//	(*ptr).Msg("msg")  // should report: one branch lacks ctx
+func findAllStoredValues(addr ssa.Value) []ssa.Value {
 	var fn *ssa.Function
 	switch v := addr.(type) {
 	case *ssa.FieldAddr:
@@ -495,6 +519,7 @@ func findStoredValue(addr ssa.Value) ssa.Value {
 		return nil
 	}
 
+	var storedValues []ssa.Value
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			store, ok := instr.(*ssa.Store)
@@ -502,11 +527,11 @@ func findStoredValue(addr ssa.Value) ssa.Value {
 				continue
 			}
 			if addressesMatch(store.Addr, addr) {
-				return store.Val
+				storedValues = append(storedValues, store.Val)
 			}
 		}
 	}
-	return nil
+	return storedValues
 }
 
 // addressesMatch checks if two addresses refer to the same memory location.
