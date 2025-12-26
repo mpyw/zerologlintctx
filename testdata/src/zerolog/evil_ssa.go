@@ -1222,3 +1222,44 @@ func badPointerConditionalStoreInitialCtx(ctx context.Context, logger zerolog.Lo
 	}
 	(*ptr).Msg("ptr initial ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// ===== PHI WITH POINTER ACCESS =====
+
+// Test case: Phi where all stores are via pointer - both have ctx
+func goodPhiAllViaPointerWithCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	var e *zerolog.Event
+	ptr := &e
+	if cond {
+		*ptr = logger.Info().Ctx(ctx)
+	} else {
+		*ptr = logger.Warn().Ctx(ctx)
+	}
+	(*ptr).Msg("phi all via pointer") // OK - all paths have ctx
+}
+
+// Test case: Mixed access - direct and via pointer
+func goodPhiMixedAccessWithCtx(ctx context.Context, logger zerolog.Logger, cond1, cond2 bool) {
+	var e *zerolog.Event
+	if cond1 {
+		e = logger.Info().Ctx(ctx) // direct assignment
+	} else {
+		ptr := &e
+		if cond2 {
+			*ptr = logger.Warn().Ctx(ctx) // via pointer
+		}
+	}
+	if e != nil {
+		e.Msg("mixed access with ctx") // OK - all non-nil paths have ctx
+	}
+}
+
+// Test case: Nested pointer with loop - all paths have ctx
+func goodNestedPointerLoopWithCtx(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info().Ctx(ctx)
+	ptr := &e
+	for i := 0; i < 2; i++ {
+		*ptr = (*ptr).Str("iter", "val")
+	}
+	ptr2 := &ptr
+	(**ptr2).Msg("nested pointer loop") // OK - ctx propagates through
+}
