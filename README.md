@@ -3,7 +3,6 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/mpyw/zerologlintctx.svg)](https://pkg.go.dev/github.com/mpyw/zerologlintctx)
 [![CI](https://github.com/mpyw/zerologlintctx/actions/workflows/ci.yml/badge.svg)](https://github.com/mpyw/zerologlintctx/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/mpyw/zerologlintctx/graph/badge.svg)](https://codecov.io/gh/mpyw/zerologlintctx)
-[![Go Report Card](https://goreportcard.com/badge/github.com/mpyw/zerologlintctx)](https://goreportcard.com/report/github.com/mpyw/zerologlintctx)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
