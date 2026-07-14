@@ -25,6 +25,3 @@ TASKS.md
 
 # Local config overrides
 .ctxrelay.local.yaml
-
-# MCP
-.mcp.json
