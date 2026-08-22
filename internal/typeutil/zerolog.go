@@ -159,15 +159,20 @@ func IsContextType(t types.Type) bool {
 // =============================================================================
 
 // unwrapPointer returns the element type if t is a pointer, otherwise returns t.
+// Aliases are resolved first, so `type E = *zerolog.Event` unwraps to zerolog.Event.
 func unwrapPointer(t types.Type) types.Type {
-	if ptr, ok := t.(*types.Pointer); ok {
+	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
 		return ptr.Elem()
 	}
 	return t
 }
 
 // isNamedType checks if the type matches the given package path and type name.
-// Handles pointer types transparently.
+// Handles pointer types and aliases transparently.
+//
+// Aliases must be resolved explicitly: go/types always represents an alias
+// declaration as a *types.Alias node, so a bare *types.Named assertion would
+// silently miss aliased zerolog types.
 //
 // Example type resolution:
 //
@@ -175,10 +180,11 @@ func unwrapPointer(t types.Type) types.Type {
 //	                                           │
 //	                   check pkg path: "github.com/rs/zerolog"
 //	                   check type name: "Event"
+//
+//	type E = zerolog.Event
+//	*E              →  unwrap pointer  →  E  →  unalias  →  zerolog.Event
 func isNamedType(t types.Type, pkgPath, typeName string) bool {
-	t = unwrapPointer(t)
-
-	named, ok := t.(*types.Named)
+	named, ok := types.Unalias(unwrapPointer(t)).(*types.Named)
 	if !ok {
 		return false
 	}
