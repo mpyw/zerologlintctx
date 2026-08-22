@@ -12,18 +12,18 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.27']
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Set up Go ${{ matrix.go-version }}
+      - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go-version }}
+          # Track the go directive in go.mod. setup-go sets GOTOOLCHAIN=local,
+          # so a hardcoded version fails outright once a dependency bump raises
+          # the directive above it, instead of picking up a newer toolchain.
+          go-version-file: go.mod
 
       - name: Run tests with coverage
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic -coverpkg=./... ./...
@@ -33,7 +33,7 @@ jobs:
         with:
           files: ./coverage.txt
           flags: unittests
-          name: codecov-go${{ matrix.go-version }}
+          name: codecov
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         continue-on-error: true
@@ -49,12 +49,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27'
+          go-version-file: go.mod
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          # Needs a binary built with Go 1.27 (v2.13.0+): golangci-lint refuses
-          # to load a module whose go directive is newer than its own build.
+          # golangci-lint refuses to load a module whose go directive is newer
+          # than the Go it was built with, so this pin has to move whenever the
+          # directive in go.mod does. v2.13.0+ is built with Go 1.27.
           version: v2.13.1
           args: --timeout=5m
