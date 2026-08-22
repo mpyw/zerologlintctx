@@ -60,15 +60,13 @@ func NewChecker(pass *analysis.Pass, ctxName string, ignoreMap directive.IgnoreM
 
 // CheckFunction analyzes all instructions in a function.
 func (c *Checker) CheckFunction(fn *ssa.Function) {
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			switch v := instr.(type) {
-			case *ssa.Call:
-				c.checkTerminatorCall(v)
-				c.checkDirectLoggingCall(v)
-			case *ssa.Defer:
-				c.checkDeferredCall(v)
-			}
+	for instr := range instrsIn(fn) {
+		switch v := instr.(type) {
+		case *ssa.Call:
+			c.checkTerminatorCall(v)
+			c.checkDirectLoggingCall(v)
+		case *ssa.Defer:
+			c.checkDeferredCall(v)
 		}
 	}
 }

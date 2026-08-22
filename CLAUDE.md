@@ -53,7 +53,9 @@ testdata/src/zerolog/
 ├── evil.go            # General edge cases (nesting, closures, conditionals)
 ├── evil_ssa.go        # SSA-specific patterns (IIFE, Phi, channels)
 ├── evil_logger.go     # Logger transformation patterns, direct logging
-└── with_logger.go     # WithLogger-specific tests
+├── with_logger.go     # WithLogger-specific tests
+├── alias.go           # zerolog/context types reached through aliases
+└── go127.go           # Go 1.27 syntax (promoted field keys, generic methods)
 ```
 
 ## Code Style

@@ -47,6 +47,12 @@ The analyzer uses **return type checking** instead of method name hardcoding for
 
 This approach automatically handles new zerolog methods without code changes.
 
+Type identity checks resolve aliases (`types.Unalias`) before comparing the
+package path and type name, since go/types represents every alias declaration
+as a `*types.Alias` node. Without that, a `type MyCtx = context.Context`
+parameter would not be recognized as a context, and the whole function would go
+unchecked.
+
 ### Exception: Direct Logging
 
 For Logger's direct logging methods, we use a **name prefix check**:
@@ -112,6 +118,32 @@ Each tracer type knows its context sources:
 - **FieldAddr/Field** - Struct field access
 - **Store tracking** - Values stored at addresses
 
+#### Address Matching
+
+Addresses are compared structurally, not by identity: SSA emits a fresh
+`FieldAddr`/`IndexAddr` for every access, so the write and read halves of a
+nested access (`h.inner.event`) never share a value.
+
+#### Aggregate Copies
+
+A composite literal is built in a temporary that is then copied into the
+destination as a single value, so no store ever names the destination field:
+
+```
+t0 = local eventHolder (h)
+t1 = local eventHolder (complit)
+t2 = &t1.event
+*t2 = v            // field initialized on the temporary
+t5 = *t1
+*t0 = t5           // whole struct copied into h
+t6 = &t0.event     // the address we want the value of
+```
+
+When no store matches an address directly, `findStoresThroughAggregateCopy`
+splits it into a root plus a chain of selections, follows the copy back to the
+temporary, and replays the same chain there. Both shapes are handled, since
+whether the compiler emits the temporary depends on the x/tools version.
+
 ## Terminator Detection
 
 Event chain terminators are detected by:
@@ -159,5 +191,7 @@ testdata/src/zerolog/
 ├── evil.go         # Edge cases (nesting, closures)
 ├── evil_ssa.go     # SSA-specific patterns (Phi, FreeVar)
 ├── evil_logger.go  # Logger patterns, direct logging
-└── with_logger.go  # WithLogger-specific tests
+├── with_logger.go  # WithLogger-specific tests
+├── alias.go        # zerolog/context types reached through aliases
+└── go127.go        # Go 1.27 syntax (promoted field keys, generic methods)
 ```
