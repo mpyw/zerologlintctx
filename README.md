@@ -20,6 +20,35 @@ Go 1.27 or later. The analyzed code may target any Go version.
 
 ## Installation & Usage
 
+### <a href="https://mise.jdx.dev/"><img src="https://mise.jdx.dev/logo.svg" height="28" alt=""></a> Using [mise](https://mise.jdx.dev/) (macOS/Linux/Windows)
+
+**Recommended.** zerologlintctx is installable directly from GitHub Releases via mise's `github` backend — no extra registry required, and no Go toolchain needed because the binaries are prebuilt:
+
+```bash
+mise use -g "github:mpyw/zerologlintctx"
+zerologlintctx ./...
+```
+
+Or pin it per project in `mise.toml`:
+
+```toml
+[tools]
+"github:mpyw/zerologlintctx" = "latest"
+```
+
+> [!IMPORTANT]
+> The `go`-based methods below build zerologlintctx from source, which requires **Go 1.27 or later** (see [Requirements](#requirements)).
+
+### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool) (Go 1.24+)
+
+```bash
+# Add to go.mod as a tool dependency
+go get -tool github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
+
+# Run via go tool
+go tool zerologlintctx ./...
+```
+
 ### Using [`go install`](https://pkg.go.dev/cmd/go#hdr-Compile_and_install_packages_and_dependencies)
 
 ```bash
@@ -36,16 +65,6 @@ go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
 go vet -vettool=$(which zerologlintctx) ./...
 ```
 
-### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool) (Go 1.24+)
-
-```bash
-# Add to go.mod as a tool dependency
-go get -tool github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
-
-# Run via go tool
-go tool zerologlintctx ./...
-```
-
 ### Using [`go run`](https://pkg.go.dev/cmd/go#hdr-Compile_and_run_Go_program)
 
 ```bash
@@ -53,7 +72,33 @@ go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...
 ```
 
 > [!CAUTION]
-> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.7.3`).
+> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.9.0`).
+
+<details>
+<summary><a href="https://curl.se/"><img src="https://cdn.simpleicons.org/curl" height="20" alt=""></a> Downloading the tarball directly (macOS/Linux/Windows)</summary>
+
+No package manager? Grab the archive for your platform from [GitHub Releases](https://github.com/mpyw/zerologlintctx/releases):
+
+```bash
+export VERSION=0.0.0
+export OS=linux    # or darwin
+export ARCH=amd64  # or arm64
+export BASE_URL="https://github.com/mpyw/zerologlintctx/releases/download/v${VERSION}"
+
+# Download the archive and the release's checksum list
+curl -LO "${BASE_URL}/zerologlintctx_${VERSION}_${OS}_${ARCH}.tar.gz"
+curl -LO "${BASE_URL}/checksums.txt"
+
+# Verify before installing (use `shasum -a 256 -c` on macOS)
+sha256sum --ignore-missing -c checksums.txt
+
+tar xzf "zerologlintctx_${VERSION}_${OS}_${ARCH}.tar.gz"
+sudo mv zerologlintctx /usr/local/bin/
+```
+
+On Windows, download `zerologlintctx_${VERSION}_windows_${ARCH}.zip` and extract `zerologlintctx.exe` somewhere on your `PATH`.
+
+</details>
 
 ## Flags
 
