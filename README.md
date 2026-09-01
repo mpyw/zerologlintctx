@@ -37,9 +37,9 @@ Or pin it per project in `mise.toml`:
 ```
 
 > [!IMPORTANT]
-> The `go`-based methods below build zerologlintctx from source, which requires **Go 1.27 or later** (see [Requirements](#requirements)).
+> The `go`-based methods below build zerologlintctx from source, which requires **Go 1.27 or later** (see [Requirements](#requirements)). `go tool` also needs Go 1.24+ on `PATH`, which is where tool directives were introduced.
 
-### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool) (Go 1.24+)
+### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool)
 
 ```bash
 # Add to go.mod as a tool dependency
