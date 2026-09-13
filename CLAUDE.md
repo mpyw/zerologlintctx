@@ -13,28 +13,34 @@ See [Architecture](./docs/ARCHITECTURE.md) for internal design details.
 
 ## Development Commands
 
+Every tool is pinned in `mise.toml`, so CI and a contributor's machine run the
+same binaries.
+
 ```bash
-# Run ALL tests (ALWAYS use this before committing)
-./test_all.sh
+# The full gate (ALWAYS use this before committing)
+mise run check       # toolchain, test, lint, declscope
 
-# Run tests
-go test ./...
-
-# Run tests with verbose output
-go test -v ./...
+# Individual tasks
+mise run test
+mise run lint
+mise run declscope   # file-granularity visibility inside each package
+mise run cover       # coverage.txt
 
 # Build CLI
 go build -o bin/zerologlintctx ./cmd/zerologlintctx
 
-# Run linter on itself
+# Run this linter on itself
 go vet -vettool=./bin/zerologlintctx ./...
-
-# Run golangci-lint
-golangci-lint run ./...
 ```
 
 > [!IMPORTANT]
-> Always use `./test_all.sh` before committing. This runs all tests including linting.
+> Always use `mise run check` before committing. It runs everything CI runs.
+
+> [!NOTE]
+> `internal/ssa` declares `//declscope:namespace ssa` on both its files.
+> `checker.go` holds `Checker`'s API and `tracing.go` holds its tracing methods,
+> so they are one unit split for size rather than two units with separate
+> ownership. declscope's namespaces model ownership, not file boundaries.
 
 ## Releasing
 

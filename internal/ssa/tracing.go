@@ -1,3 +1,5 @@
+//declscope:namespace ssa
+
 package ssa
 
 import (

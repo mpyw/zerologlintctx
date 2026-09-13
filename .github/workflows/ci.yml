@@ -9,24 +9,26 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test
+  check:
+    name: Check
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      # Every tool is pinned in mise.toml, so CI and a contributor's machine run
+      # the same binaries. The check task verifies that mise.toml's go still
+      # matches go.mod's, which golangci-lint is strict about.
+      - uses: jdx/mise-action@v2
         with:
-          # Track the go directive in go.mod. setup-go sets GOTOOLCHAIN=local,
-          # so a hardcoded version fails outright once a dependency bump raises
-          # the directive above it, instead of picking up a newer toolchain.
-          go-version-file: go.mod
+          cache: true
 
-      - name: Run tests with coverage
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic -coverpkg=./... ./...
+      # toolchain, test, lint, declscope.
+      - run: mise run check
+
+      # Coverage is its own task so that the gate above stays fast.
+      - run: mise run cover
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -37,25 +39,3 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         continue-on-error: true
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          # golangci-lint refuses to load a module whose go directive is newer
-          # than the Go it was built with, so this pin has to move whenever the
-          # directive in go.mod does. v2.13.0+ is built with Go 1.27.
-          version: v2.13.1
-          args: --timeout=5m
