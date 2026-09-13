@@ -1,4 +1,4 @@
-//declscope:namespace ssa
+//declscope:core
 
 // Package ssa provides SSA-based analysis for zerolog context propagation.
 //

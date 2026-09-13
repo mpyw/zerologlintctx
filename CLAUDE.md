@@ -37,10 +37,16 @@ go vet -vettool=./bin/zerologlintctx ./...
 > Always use `mise run check` before committing. It runs everything CI runs.
 
 > [!NOTE]
-> `internal/ssa` declares `//declscope:namespace ssa` on both its files.
-> `checker.go` holds `Checker`'s API and `tracing.go` holds its tracing methods,
-> so they are one unit split for size rather than two units with separate
-> ownership. declscope's namespaces model ownership, not file boundaries.
+> `internal/ssa` declares `//declscope:core` on both its files. `checker.go`
+> holds `Checker`'s API and `tracing.go` holds its tracing methods, so they are
+> one unit split for size rather than two units with separate ownership.
+> declscope's namespaces model ownership, not file boundaries.
+>
+> The core rather than a named namespace, because the core's prefix is empty.
+> Under `qualify: ondemand` a named one would ask nothing today and then ask
+> for a prefix on all 24 of these declarations the day a third file joins the
+> package — a rename in files that did not change. Inside the core that
+> question never arises.
 
 ## Releasing
 

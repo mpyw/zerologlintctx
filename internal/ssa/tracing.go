@@ -1,4 +1,4 @@
-//declscope:namespace ssa
+//declscope:core
 
 package ssa
 
