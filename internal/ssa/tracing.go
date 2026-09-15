@@ -3,7 +3,6 @@ package ssa
 import (
 	"go/token"
 	"go/types"
-	"iter"
 	"maps"
 	"slices"
 
@@ -22,6 +21,7 @@ type tracerType int
 
 const (
 	// tracerEvent traces *zerolog.Event values.
+	//declscope:package
 	tracerEvent tracerType = iota
 	// tracerLogger traces zerolog.Logger values.
 	tracerLogger
@@ -33,21 +33,21 @@ const (
 // Context Checking Result
 // =============================================================================
 
-// delegation hands tracing over to a different tracer, which is needed
+// tracingDelegation hands tracing over to a different tracer, which is needed
 // whenever the traced value changes zerolog type. The zero value (nil val)
-// means "no delegation".
-type delegation struct {
+// means "no tracingDelegation".
+type tracingDelegation struct {
 	to  tracerType // Tracer to switch to
 	val ssa.Value  // Value to continue tracing
 }
 
-// checkResult represents the outcome of checking a call for context.
+// traceResult represents the outcome of checking a call for context.
 //
-// delegation is embedded so a result can be built with promoted field keys,
-// e.g. checkResult{to: tracerLogger, val: recv}.
-type checkResult struct {
+// tracingDelegation is embedded so a result can be built with promoted field keys,
+// e.g. traceResult{to: tracerLogger, val: recv}.
+type traceResult struct {
 	found bool // Context was definitely found
-	delegation
+	tracingDelegation
 }
 
 // =============================================================================
@@ -71,7 +71,7 @@ type checkResult struct {
 //	│     │     │                                                      │
 //	│     │     ├─ Is IIFE? → trace return values                     │
 //	│     │     │                                                      │
-//	│     │     └─ checkContext()                                     │
+//	│     │     └─ traceContext()                                     │
 //	│     │           │                                                │
 //	│     │           ├─ Found → return true                          │
 //	│     │           ├─ Delegate → traceValue(result.val, result.to) │
@@ -79,6 +79,8 @@ type checkResult struct {
 //	│     │                                                            │
 //	│     └─ Not a Call → traceCommon (Phi, UnOp, Alloc, etc.)        │
 //	└─────────────────────────────────────────────────────────────────┘
+//
+//declscope:package
 func (c *Checker) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	if visited[v] {
 		return false
@@ -105,7 +107,7 @@ func (c *Checker) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bo
 	recv := call.Call.Signature().Recv()
 
 	// Check for context
-	result := c.checkContext(call, callee, recv, t)
+	result := c.traceContext(call, callee, recv, t)
 	if result.found {
 		return true
 	}
@@ -114,14 +116,14 @@ func (c *Checker) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bo
 	}
 
 	// Continue tracing through receiver if type matches
-	if c.shouldContinueOnReceiver(recv, t) {
+	if c.tracerContinuesOnReceiver(recv, t) {
 		return c.traceReceiver(call, visited, t)
 	}
 
 	return false
 }
 
-// checkContext examines a call and determines if context was set.
+// traceContext examines a call and determines if context was set.
 //
 // Context can be set via:
 //   - Event.Ctx(ctx) or Context.Ctx(ctx): Direct context setting
@@ -131,110 +133,110 @@ func (c *Checker) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bo
 //   - Logger.Info() returns Event: delegate to logger tracer
 //   - Context.Logger() returns Logger: delegate to context tracer
 //   - Logger.With() returns Context: delegate to logger tracer
-func (c *Checker) checkContext(
+func (c *Checker) traceContext(
 	call *ssa.Call,
 	callee *ssa.Function,
 	recv *types.Var,
 	t tracerType,
-) checkResult {
+) traceResult {
 	switch t {
 	case tracerEvent:
-		return c.checkContextForEvent(call, callee, recv)
+		return c.traceContextForEvent(call, callee, recv)
 	case tracerLogger:
-		return c.checkContextForLogger(call, callee, recv)
+		return c.traceContextForLogger(call, callee, recv)
 	case tracerContext:
-		return c.checkContextForContext(call, callee, recv)
+		return c.traceContextForContext(call, callee, recv)
 	}
-	return checkResult{}
+	return traceResult{}
 }
 
-// checkContextForEvent checks context for Event tracing.
-func (c *Checker) checkContextForEvent(
+// traceContextForEvent checks context for Event tracing.
+func (c *Checker) traceContextForEvent(
 	call *ssa.Call,
 	callee *ssa.Function,
 	recv *types.Var,
-) checkResult {
+) traceResult {
 	// Event.Ctx(ctx) or Context.Ctx(ctx) - direct context setting
 	if callee.Name() == typeutil.CtxMethod && recv != nil {
 		if typeutil.IsEvent(recv.Type()) || typeutil.IsContext(recv.Type()) {
-			return checkResult{found: true}
+			return traceResult{found: true}
 		}
 	}
 
 	// zerolog.Ctx(ctx) - returns Logger with context
 	if typeutil.IsCtxFunc(callee) {
-		return checkResult{found: true}
+		return traceResult{found: true}
 	}
 
 	// Logger methods that return Event - delegate to logger tracer
 	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsEvent(callee) {
 		if len(call.Call.Args) > 0 {
-			return checkResult{to: tracerLogger, val: call.Call.Args[0]}
+			return traceResult{to: tracerLogger, val: call.Call.Args[0]}
 		}
 	}
 
 	// Context methods that return Logger - delegate to context tracer
 	if recv != nil && typeutil.IsContext(recv.Type()) && typeutil.ReturnsLogger(callee) {
 		if len(call.Call.Args) > 0 {
-			return checkResult{to: tracerContext, val: call.Call.Args[0]}
+			return traceResult{to: tracerContext, val: call.Call.Args[0]}
 		}
 	}
 
-	return checkResult{}
+	return traceResult{}
 }
 
-// checkContextForLogger checks context for Logger tracing.
-func (c *Checker) checkContextForLogger(
+// traceContextForLogger checks context for Logger tracing.
+func (c *Checker) traceContextForLogger(
 	call *ssa.Call,
 	callee *ssa.Function,
 	recv *types.Var,
-) checkResult {
+) traceResult {
 	// zerolog.Ctx(ctx) - returns Logger with context
 	if typeutil.IsCtxFunc(callee) {
-		return checkResult{found: true}
+		return traceResult{found: true}
 	}
 
 	// Context methods that return Logger - delegate to context tracer
 	if recv != nil && typeutil.IsContext(recv.Type()) && typeutil.ReturnsLogger(callee) {
 		if len(call.Call.Args) > 0 {
-			return checkResult{to: tracerContext, val: call.Call.Args[0]}
+			return traceResult{to: tracerContext, val: call.Call.Args[0]}
 		}
 	}
 
 	// Logger.With() returns Context - continue tracing parent Logger
 	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsContext(callee) {
 		if len(call.Call.Args) > 0 {
-			return checkResult{to: tracerLogger, val: call.Call.Args[0]}
+			return traceResult{to: tracerLogger, val: call.Call.Args[0]}
 		}
 	}
 
-	return checkResult{}
+	return traceResult{}
 }
 
-// checkContextForContext checks context for Context tracing.
-func (c *Checker) checkContextForContext(
+// traceContextForContext checks context for Context tracing.
+func (c *Checker) traceContextForContext(
 	call *ssa.Call,
 	callee *ssa.Function,
 	recv *types.Var,
-) checkResult {
+) traceResult {
 	// Context.Ctx(ctx) - direct context setting
 	if callee.Name() == typeutil.CtxMethod && recv != nil && typeutil.IsContext(recv.Type()) {
-		return checkResult{found: true}
+		return traceResult{found: true}
 	}
 
 	// Logger.With() returns Context - delegate to logger tracer
 	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsContext(callee) {
 		if len(call.Call.Args) > 0 {
-			return checkResult{to: tracerLogger, val: call.Call.Args[0]}
+			return traceResult{to: tracerLogger, val: call.Call.Args[0]}
 		}
 	}
 
-	return checkResult{}
+	return traceResult{}
 }
 
-// shouldContinueOnReceiver returns true if we should continue tracing
+// tracerContinuesOnReceiver returns true if we should continue tracing
 // through the receiver for the given tracer type.
-func (c *Checker) shouldContinueOnReceiver(recv *types.Var, t tracerType) bool {
+func (c *Checker) tracerContinuesOnReceiver(recv *types.Var, t tracerType) bool {
 	if recv == nil {
 		return false
 	}
@@ -274,29 +276,6 @@ func (c *Checker) traceCommon(v ssa.Value, visited map[ssa.Value]bool, t tracerT
 	return false
 }
 
-// unwrapInner extracts the inner value from SSA wrapper types.
-func unwrapInner(v ssa.Value) ssa.Value {
-	switch val := v.(type) {
-	case *ssa.Extract:
-		return val.Tuple
-	case *ssa.MakeInterface:
-		return val.X
-	case *ssa.TypeAssert:
-		return val.X
-	case *ssa.FieldAddr:
-		return val.X
-	case *ssa.Field:
-		return val.X
-	case *ssa.IndexAddr:
-		return val.X
-	case *ssa.Index:
-		return val.X
-	case *ssa.Lookup:
-		return val.X
-	}
-	return nil
-}
-
 // =============================================================================
 // Phi Node Handling
 // =============================================================================
@@ -332,49 +311,6 @@ func (c *Checker) tracePhi(phi *ssa.Phi, visited map[ssa.Value]bool, t tracerTyp
 	}
 
 	return hasValidEdge
-}
-
-// isNilConst checks if a value is a nil constant.
-func isNilConst(v ssa.Value) bool {
-	c, ok := v.(*ssa.Const)
-	return ok && c.Value == nil
-}
-
-// edgeLeadsTo checks if tracing this edge would eventually lead back to target.
-func edgeLeadsTo(edge ssa.Value, target *ssa.Phi, visited map[ssa.Value]bool) bool {
-	seen := maps.Clone(visited)
-	return edgeLeadsToImpl(edge, target, seen)
-}
-
-func edgeLeadsToImpl(v ssa.Value, target *ssa.Phi, seen map[ssa.Value]bool) bool {
-	if v == target {
-		return true
-	}
-	if seen[v] {
-		return false
-	}
-	seen[v] = true
-
-	switch val := v.(type) {
-	case *ssa.Call:
-		if len(val.Call.Args) > 0 {
-			return edgeLeadsToImpl(val.Call.Args[0], target, seen)
-		}
-		return false
-	case *ssa.Phi:
-		for _, edge := range val.Edges {
-			if edgeLeadsToImpl(edge, target, seen) {
-				return true
-			}
-		}
-		return false
-	}
-
-	if inner := unwrapInner(v); inner != nil {
-		return edgeLeadsToImpl(inner, target, seen)
-	}
-
-	return false
 }
 
 // =============================================================================
@@ -489,266 +425,3 @@ func (c *Checker) traceIIFEReturns(fn *ssa.Function, visited map[ssa.Value]bool,
 // =============================================================================
 // Store Tracking
 // =============================================================================
-
-// findAllStoredValues finds all values that were stored at the given address.
-// Multiple stores can occur in different control flow paths (e.g., if/else branches).
-// All stored values must be checked for context to handle cases like:
-//
-//	e := logger.Info().Ctx(ctx)
-//	ptr := &e
-//	if cond {
-//	    *ptr = logger.Warn()  // no ctx in this branch!
-//	}
-//	(*ptr).Msg("msg")  // should report: one branch lacks ctx
-//
-// Self-referential stores (where the value loads from the same address) are skipped:
-//
-//	e := logger.Info().Ctx(ctx)
-//	ptr := &e
-//	for i := 0; i < 3; i++ {
-//	    *ptr = (*ptr).Str("k", "v")  // self-referential: skipped
-//	}
-//	(*ptr).Msg("msg")  // only traces initial store, finds ctx
-func findAllStoredValues(addr ssa.Value) []ssa.Value {
-	return findStoredValues(addr, make(map[ssa.Value]bool))
-}
-
-// findStoredValues implements findAllStoredValues, carrying the set of
-// addresses already resolved so that following aggregate copies terminates.
-func findStoredValues(addr ssa.Value, visited map[ssa.Value]bool) []ssa.Value {
-	if visited[addr] {
-		return nil
-	}
-	visited[addr] = true
-
-	fn := parentFunc(addr)
-	if fn == nil {
-		return nil
-	}
-
-	var storedValues []ssa.Value
-	for instr := range instrsIn(fn) {
-		store, ok := instr.(*ssa.Store)
-		if !ok || !addressesMatch(store.Addr, addr) {
-			continue
-		}
-		// Skip self-referential stores where the value loads from the same address.
-		// These just transform the existing value (e.g., *ptr = (*ptr).Str(...))
-		// and would cause infinite recursion during tracing.
-		if valueLoadsFrom(store.Val, addr) {
-			continue
-		}
-		storedValues = append(storedValues, store.Val)
-	}
-	if len(storedValues) > 0 {
-		return storedValues
-	}
-
-	return findStoresThroughAggregateCopy(fn, addr, visited)
-}
-
-// findStoresThroughAggregateCopy resolves stores hidden behind a whole-aggregate
-// copy. A composite literal is built in a temporary that is then copied into the
-// destination in one go, so the per-element stores never mention the destination:
-//
-//	h := eventHolder{event: logger.Info().Ctx(ctx)}
-//	h.event.Msg("msg")
-//
-// becomes
-//
-//	t0 = local eventHolder (h)
-//	t1 = local eventHolder (complit)
-//	t2 = &t1.event
-//	*t2 = t4                 // field initialized on the temporary
-//	t5 = *t1
-//	*t0 = t5                 // whole struct copied into h
-//	t6 = &t0.event           // ← the address we are asked about
-//
-// Searching for stores to t6 finds nothing, so follow the copy back to the
-// temporary and resolve the same selection path there instead. The path is
-// resolved element by element, so embedded structs nest arbitrarily deep.
-func findStoresThroughAggregateCopy(fn *ssa.Function, addr ssa.Value, visited map[ssa.Value]bool) []ssa.Value {
-	root, path := aggregatePath(addr)
-	if len(path) == 0 {
-		return nil
-	}
-
-	var storedValues []ssa.Value
-	for src := range copySourcesOf(fn, root) {
-		for _, equivalent := range resolvePath(fn, src, path) {
-			storedValues = append(storedValues, findStoredValues(equivalent, visited)...)
-		}
-	}
-	return storedValues
-}
-
-// aggregatePath decomposes an address into the root aggregate it derives from
-// and the chain of field/element selections applied to it, outermost first:
-//
-//	&t0.inner.event  →  root t0, path [&t0.inner, &(t0.inner).event]
-func aggregatePath(addr ssa.Value) (root ssa.Value, path []ssa.Value) {
-	for {
-		base := aggregateBase(addr)
-		if base == nil {
-			slices.Reverse(path)
-			return addr, path
-		}
-		path = append(path, addr)
-		addr = base
-	}
-}
-
-// copySourcesOf yields the addresses whose whole-aggregate value is copied
-// into root.
-func copySourcesOf(fn *ssa.Function, root ssa.Value) iter.Seq[ssa.Value] {
-	return func(yield func(ssa.Value) bool) {
-		for instr := range instrsIn(fn) {
-			store, ok := instr.(*ssa.Store)
-			if !ok || !addressesMatch(store.Addr, root) {
-				continue
-			}
-			if src := aggregateCopySource(store.Val); src != nil && !yield(src) {
-				return
-			}
-		}
-	}
-}
-
-// resolvePath returns the addresses reached by applying the same chain of
-// selections to base that path applies to its own root.
-func resolvePath(fn *ssa.Function, base ssa.Value, path []ssa.Value) []ssa.Value {
-	current := []ssa.Value{base}
-	for _, step := range path {
-		var next []ssa.Value
-		for _, from := range current {
-			for instr := range instrsIn(fn) {
-				if elem, ok := instr.(ssa.Value); ok && selectsSameElement(elem, step, from) {
-					next = append(next, elem)
-				}
-			}
-		}
-		if len(next) == 0 {
-			return nil
-		}
-		current = next
-	}
-	return current
-}
-
-// selectsSameElement reports whether elem selects, from base, the same field or
-// constant index that step selects from its own aggregate.
-func selectsSameElement(elem, step, base ssa.Value) bool {
-	switch s := step.(type) {
-	case *ssa.FieldAddr:
-		fa, ok := elem.(*ssa.FieldAddr)
-		return ok && fa.X == base && fa.Field == s.Field
-	case *ssa.IndexAddr:
-		ia, ok := elem.(*ssa.IndexAddr)
-		return ok && ia.X == base && constIndexesMatch(ia.Index, s.Index)
-	}
-	return false
-}
-
-// aggregateBase returns the aggregate that addr selects a field or element of,
-// or nil if addr is not such a selection.
-func aggregateBase(addr ssa.Value) ssa.Value {
-	switch a := addr.(type) {
-	case *ssa.FieldAddr:
-		return a.X
-	case *ssa.IndexAddr:
-		return a.X
-	}
-	return nil
-}
-
-// aggregateCopySource returns the address a whole-aggregate value was loaded
-// from (`t = *addr`), or nil for values produced any other way.
-func aggregateCopySource(v ssa.Value) ssa.Value {
-	if unop, ok := v.(*ssa.UnOp); ok && unop.Op == token.MUL {
-		return unop.X
-	}
-	return nil
-}
-
-// parentFunc returns the function an SSA value belongs to.
-func parentFunc(v ssa.Value) *ssa.Function {
-	if instr, ok := v.(ssa.Instruction); ok {
-		return instr.Parent()
-	}
-	return nil
-}
-
-// instrsIn yields every instruction of fn, in block order.
-func instrsIn(fn *ssa.Function) iter.Seq[ssa.Instruction] {
-	return func(yield func(ssa.Instruction) bool) {
-		for _, block := range fn.Blocks {
-			for _, instr := range block.Instrs {
-				if !yield(instr) {
-					return
-				}
-			}
-		}
-	}
-}
-
-// valueLoadsFrom checks if a value (or its receiver chain) loads from the given address.
-// This is used to detect self-referential stores like: *ptr = (*ptr).Str(...)
-func valueLoadsFrom(v ssa.Value, addr ssa.Value) bool {
-	switch val := v.(type) {
-	case *ssa.UnOp:
-		// Check if this is a dereference of the address
-		if val.Op == token.MUL && addressesMatch(val.X, addr) {
-			return true
-		}
-		return valueLoadsFrom(val.X, addr)
-	case *ssa.Call:
-		// Check receiver (first argument for method calls)
-		if len(val.Call.Args) > 0 {
-			return valueLoadsFrom(val.Call.Args[0], addr)
-		}
-	case *ssa.Phi:
-		// Check all edges
-		for _, edge := range val.Edges {
-			if valueLoadsFrom(edge, addr) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// addressesMatch checks if two addresses refer to the same memory location.
-//
-// Selections are compared structurally rather than by identity, because SSA
-// emits a fresh FieldAddr/IndexAddr for every access. Without that, the two
-// halves of a nested access would never line up:
-//
-//	t1 = &t0.inner ; t2 = &t1.event ; *t2 = v   // write
-//	t3 = &t0.inner ; t4 = &t3.event ; ... = *t4 // read, t3 != t1
-func addressesMatch(a, b ssa.Value) bool {
-	if a == b {
-		return true
-	}
-
-	fa1, ok1 := a.(*ssa.FieldAddr)
-	fa2, ok2 := b.(*ssa.FieldAddr)
-	if ok1 && ok2 {
-		return fa1.Field == fa2.Field && addressesMatch(fa1.X, fa2.X)
-	}
-
-	ia1, ok1 := a.(*ssa.IndexAddr)
-	ia2, ok2 := b.(*ssa.IndexAddr)
-	if ok1 && ok2 {
-		return constIndexesMatch(ia1.Index, ia2.Index) && addressesMatch(ia1.X, ia2.X)
-	}
-
-	return false
-}
-
-// constIndexesMatch reports whether two index operands are equal constants.
-// Non-constant indexes never match, since they may denote different elements.
-func constIndexesMatch(a, b ssa.Value) bool {
-	c1, ok1 := a.(*ssa.Const)
-	c2, ok2 := b.(*ssa.Const)
-	return ok1 && ok2 && c1.Value == c2.Value
-}

@@ -1,0 +1,14 @@
+# declscope holds each declaration to the file that declares it.
+# https://github.com/mpyw/declscope
+rules:
+  naming:
+    # Ask for the namespace in a name once the package has a second one.
+    qualify: ondemand
+    # Reach exported declarations too. Inside the package they are read as bare
+    # as any other name, so the namespace is wanted at the same call sites.
+    exported: true
+    vocabulary:
+      # tracing.go declares tracer* and trace*. They are the same verb, but the
+      # generator only lengthens a namespace, so it never derives trace from
+      # tracing. https://github.com/mpyw/declscope/issues/64
+      tracing: [trace]
