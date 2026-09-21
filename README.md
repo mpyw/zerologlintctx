@@ -5,9 +5,6 @@
 [![Codecov](https://codecov.io/gh/mpyw/zerologlintctx/graph/badge.svg)](https://codecov.io/gh/mpyw/zerologlintctx)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> [!NOTE]
-> This project was written by AI (Claude Code).
-
 A Go linter that checks zerolog logging chains for missing context propagation.
 
 ## Overview
