@@ -191,9 +191,9 @@ func goodIgnoredPreviousLine(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored")
 }
 
-// A space after "//" makes it an ordinary comment, not a directive.
+// A space after "//" makes it a malformed directive, which suppresses nothing.
 func badIgnoreWithSpaceSameLine(ctx context.Context, log zerolog.Logger) {
-	log.Info().Msg("not ignored") // zerologlintctx:ignore // want `zerolog call chain missing .Ctx\(ctx\)`
+	log.Info().Msg("not ignored") // zerologlintctx:ignore // want `zerolog call chain missing .Ctx\(ctx\)` `malformed zerologlintctx directive: write //zerologlintctx:ignore`
 }
 
 func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
@@ -202,7 +202,7 @@ func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
 }
 
 func badIgnoreWithSpacePreviousLine(ctx context.Context, log zerolog.Logger) {
-	// zerologlintctx:ignore
+	// zerologlintctx:ignore // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
@@ -216,6 +216,35 @@ func badIgnoreLookalikeName(ctx context.Context, log zerolog.Logger) {
 func badIgnoreLookalikeTool(ctx context.Context, log zerolog.Logger) {
 	//zerologlintctxx:ignore
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// ===== MALFORMED DIRECTIVES =====
+
+func badMalformedTabAfterSlashes(ctx context.Context, log zerolog.Logger) {
+	//	zerologlintctx:ignore // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badMalformedSpaceAfterColon(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx: ignore // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badMalformedBlockComment(ctx context.Context, log zerolog.Logger) {
+	/*zerologlintctx:ignore*/ // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badMalformedSpacedBlockComment(ctx context.Context, log zerolog.Logger) {
+	/* zerologlintctx:ignore */ // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Prose that mentions zerologlintctx:ignore in the middle of a comment is not
+// a directive, so it is not reported as malformed.
+func goodProseMentioningDirective(ctx context.Context, log zerolog.Logger) {
+	// Use zerologlintctx:ignore to suppress a report.
+	log.Info().Ctx(ctx).Msg("ok")
 }
 
 // ===== UNUSED IGNORE DIRECTIVES =====

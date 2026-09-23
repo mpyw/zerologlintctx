@@ -162,7 +162,17 @@ func handler(ctx context.Context, log zerolog.Logger) {
 
 The comment can be on the same line or the line above.
 
-It follows the Go directive syntax: write `//zerologlintctx:ignore` with no space after `//` or after the colon. Text after a space, such as a reason, is allowed. `// zerologlintctx:ignore` is an ordinary comment and suppresses nothing.
+It follows the Go directive syntax: write `//zerologlintctx:ignore` with no space after `//` or after the colon. Text after a space, such as a reason, is allowed.
+
+A comment that starts like a directive but is not in that form suppresses nothing, and is reported:
+
+| Comment | Report |
+| --- | --- |
+| `// zerologlintctx:ignore` | `malformed zerologlintctx directive: write //zerologlintctx:ignore` |
+| `//zerologlintctx: ignore` | same |
+| `/*zerologlintctx:ignore*/` | same |
+
+An ignore directive that suppresses nothing is reported as `unused zerologlintctx:ignore directive`.
 
 ## Design Principles
 
