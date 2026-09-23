@@ -22,16 +22,18 @@ Go 1.27 or later. The analyzed code may target any Go version.
 **Recommended.** zerologlintctx is installable directly from GitHub Releases via mise's `github` backend — no extra registry required, and no Go toolchain needed because the binaries are prebuilt:
 
 ```bash
-mise use -g "github:mpyw/zerologlintctx"
+mise use "github:mpyw/zerologlintctx@0.9.4"
 zerologlintctx ./...
 ```
 
-Or pin it per project in `mise.toml`:
+Run it in the project root. It pins the version in the project's `mise.toml`, so every checkout and CI run the same one:
 
 ```toml
 [tools]
-"github:mpyw/zerologlintctx" = "latest"
+"github:mpyw/zerologlintctx" = "0.9.4"
 ```
+
+Add `-g` to install it for every project on your machine instead.
 
 > [!IMPORTANT]
 > The `go`-based methods below build zerologlintctx from source, which requires **Go 1.27 or later** (see [Requirements](#requirements)). `go tool` also needs Go 1.24+ on `PATH`, which is where tool directives were introduced.
