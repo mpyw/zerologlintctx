@@ -6,6 +6,9 @@
 //
 //	//zerologlintctx:ignore
 //
+// It follows the Go directive syntax: no space after "//" or after the colon.
+// Free text, such as a reason, may follow after a space.
+//
 // This directive can be placed on the same line or the line before the code
 // to suppress warnings.
 //
@@ -26,7 +29,6 @@ package directive
 import (
 	"go/ast"
 	"go/token"
-	"strings"
 )
 
 // ignoreEntry tracks an ignore directive and whether it was used.
@@ -53,14 +55,9 @@ func BuildIgnoreMap(fset *token.FileSet, file *ast.File) IgnoreMap {
 }
 
 // isIgnoreComment checks if a comment is an ignore directive.
-// Supports both "//zerologlintctx:ignore" and "// zerologlintctx:ignore".
-// Text after the directive name, such as a reason, is allowed.
+// Only the canonical Go directive form "//zerologlintctx:ignore" counts, with
+// no space after "//". Free text may follow the name after a space.
 func isIgnoreComment(text string) bool {
-	// go/ast only recognises the canonical, space-free form, so re-attach the
-	// comment marker to the trimmed body before handing it over.
-	if body, ok := strings.CutPrefix(text, "//"); ok {
-		text = "//" + strings.TrimSpace(body)
-	}
 	d, ok := ast.ParseDirective(token.NoPos, text)
 	return ok && d.Tool == "zerologlintctx" && d.Name == "ignore"
 }

@@ -8,11 +8,12 @@ func TestIsIgnoreComment(t *testing.T) {
 		want bool
 	}{
 		{"//zerologlintctx:ignore", true},
-		{"// zerologlintctx:ignore", true},
-		{"//\tzerologlintctx:ignore", true},
 		{"//zerologlintctx:ignore - intentionally not passing context", true},
 		{"//zerologlintctx:ignore // reason", true},
-		{"// zerologlintctx:ignore reason", true},
+		{"// zerologlintctx:ignore", false},
+		{"//\tzerologlintctx:ignore", false},
+		{"// zerologlintctx:ignore reason", false},
+		{"//zerologlintctx: ignore", false},
 		{"//zerologlintctx:ignored", false},
 		{"//zerologlintctx:ignorefoo", false},
 		{"//zerologlintctxx:ignore", false},

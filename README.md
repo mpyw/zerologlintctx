@@ -162,6 +162,8 @@ func handler(ctx context.Context, log zerolog.Logger) {
 
 The comment can be on the same line or the line above.
 
+It follows the Go directive syntax: write `//zerologlintctx:ignore` with no space after `//` or after the colon. Text after a space, such as a reason, is allowed. `// zerologlintctx:ignore` is an ordinary comment and suppresses nothing.
+
 ## Design Principles
 
 1. **Zero false positives** - Prefer missing issues over false alarms

@@ -191,8 +191,9 @@ func goodIgnoredPreviousLine(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored")
 }
 
-func goodIgnoredWithSpace(ctx context.Context, log zerolog.Logger) {
-	log.Info().Msg("ignored") // zerologlintctx:ignore
+// A space after "//" makes it an ordinary comment, not a directive.
+func badIgnoreWithSpaceSameLine(ctx context.Context, log zerolog.Logger) {
+	log.Info().Msg("not ignored") // zerologlintctx:ignore // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
@@ -200,8 +201,9 @@ func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored")
 }
 
-func goodIgnoredWithSpaceAndReason(ctx context.Context, log zerolog.Logger) {
-	log.Info().Msg("ignored") // zerologlintctx:ignore background task
+func badIgnoreWithSpacePreviousLine(ctx context.Context, log zerolog.Logger) {
+	// zerologlintctx:ignore
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // A directive name that only starts with "ignore" is not the ignore directive.
