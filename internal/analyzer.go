@@ -92,7 +92,11 @@ func RunSSA(
 			continue
 		}
 		for _, m := range directive.FindMalformedDirectives(file) {
-			pass.Reportf(m.Pos, "malformed zerologlintctx directive: write //zerologlintctx:%s", m.Name)
+			if m.Suggestion == "" {
+				pass.Reportf(m.Pos, "malformed zerologlintctx directive")
+				continue
+			}
+			pass.Reportf(m.Pos, "malformed zerologlintctx directive: write %s", m.Suggestion)
 		}
 	}
 }

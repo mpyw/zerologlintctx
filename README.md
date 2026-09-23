@@ -171,6 +171,10 @@ A comment that starts like a directive but is not in that form suppresses nothin
 | `// zerologlintctx:ignore` | `malformed zerologlintctx directive: write //zerologlintctx:ignore` |
 | `//zerologlintctx: ignore` | same |
 | `/*zerologlintctx:ignore*/` | same |
+| `//zerologlintctx:Ignore` | `malformed zerologlintctx directive` |
+| `// zerologlintctx:` | same |
+
+A comment is checked when it starts with `zerologlintctx:` after `//` or `/*` and optional whitespace, so prose that mentions the directive is not reported. The `write ...` hint appears only when the rewritten comment is itself a valid directive. Directive names are lowercase.
 
 An ignore directive that suppresses nothing is reported as `unused zerologlintctx:ignore directive`.
 

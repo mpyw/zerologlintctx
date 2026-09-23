@@ -32,20 +32,25 @@ func TestIsIgnoreComment(t *testing.T) {
 	}
 }
 
-func TestMalformedDirectiveName(t *testing.T) {
+func TestMalformedDirective(t *testing.T) {
+	const suggest = "//zerologlintctx:ignore"
 	tests := []struct {
-		text     string
-		wantName string
-		wantOK   bool
+		text           string
+		wantSuggestion string
+		wantOK         bool
 	}{
-		{"// zerologlintctx:ignore", "ignore", true},
-		{"//\tzerologlintctx:ignore", "ignore", true},
-		{"// zerologlintctx:ignore - reason", "ignore", true},
-		{"//zerologlintctx: ignore", "ignore", true},
-		{"//zerologlintctx:Ignore", "ignore", true},
-		{"/*zerologlintctx:ignore*/", "ignore", true},
-		{"/* zerologlintctx:ignore */", "ignore", true},
-		{"// zerologlintctx:", "ignore", true},
+		{"// zerologlintctx:ignore", suggest, true},
+		{"//\tzerologlintctx:ignore", suggest, true},
+		{"// zerologlintctx:ignore - reason", suggest, true},
+		{"//zerologlintctx: ignore", suggest, true},
+		{"/*zerologlintctx:ignore*/", suggest, true},
+		{"/* zerologlintctx:ignore */", suggest, true},
+		{"// zerologlintctx:skip", "//zerologlintctx:skip", true},
+		{"//zerologlintctx:Ignore", "", true},
+		{"// zerologlintctx:Ignore", "", true},
+		{"//zerologlintctx:", "", true},
+		{"// zerologlintctx:", "", true},
+		{"/* zerologlintctx: */", "", true},
 		{"//zerologlintctx:ignore", "", false},
 		{"//zerologlintctx:ignore - reason", "", false},
 		{"//zerologlintctx:ignored", "", false},
@@ -55,10 +60,10 @@ func TestMalformedDirectiveName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
-			name, ok := malformedDirectiveName(tt.text)
-			if name != tt.wantName || ok != tt.wantOK {
-				t.Errorf("malformedDirectiveName(%q) = (%q, %v), want (%q, %v)",
-					tt.text, name, ok, tt.wantName, tt.wantOK)
+			suggestion, ok := malformedDirective(tt.text)
+			if suggestion != tt.wantSuggestion || ok != tt.wantOK {
+				t.Errorf("malformedDirective(%q) = (%q, %v), want (%q, %v)",
+					tt.text, suggestion, ok, tt.wantSuggestion, tt.wantOK)
 			}
 		})
 	}

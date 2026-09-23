@@ -240,6 +240,18 @@ func badMalformedSpacedBlockComment(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// An uppercase name is not a valid directive name, so no rewrite is suggested.
+func badMalformedUppercaseName(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:Ignore // want `^malformed zerologlintctx directive$`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A comment with no directive name gets no suggestion either.
+func badMalformedNoName(ctx context.Context, log zerolog.Logger) {
+	/* zerologlintctx: */ // want `^malformed zerologlintctx directive$`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // Prose that mentions zerologlintctx:ignore in the middle of a comment is not
 // a directive, so it is not reported as malformed.
 func goodProseMentioningDirective(ctx context.Context, log zerolog.Logger) {
