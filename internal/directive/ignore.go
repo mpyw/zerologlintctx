@@ -54,10 +54,15 @@ func BuildIgnoreMap(fset *token.FileSet, file *ast.File) IgnoreMap {
 
 // isIgnoreComment checks if a comment is an ignore directive.
 // Supports both "//zerologlintctx:ignore" and "// zerologlintctx:ignore".
+// Text after the directive name, such as a reason, is allowed.
 func isIgnoreComment(text string) bool {
-	text = strings.TrimPrefix(text, "//")
-	text = strings.TrimSpace(text)
-	return strings.HasPrefix(text, "zerologlintctx:ignore")
+	// go/ast only recognises the canonical, space-free form, so re-attach the
+	// comment marker to the trimmed body before handing it over.
+	if body, ok := strings.CutPrefix(text, "//"); ok {
+		text = "//" + strings.TrimSpace(body)
+	}
+	d, ok := ast.ParseDirective(token.NoPos, text)
+	return ok && d.Tool == "zerologlintctx" && d.Name == "ignore"
 }
 
 // ShouldIgnore returns true if the given line should be ignored.

@@ -195,6 +195,27 @@ func goodIgnoredWithSpace(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored") // zerologlintctx:ignore
 }
 
+func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore - intentionally not passing context
+	log.Info().Msg("ignored")
+}
+
+func goodIgnoredWithSpaceAndReason(ctx context.Context, log zerolog.Logger) {
+	log.Info().Msg("ignored") // zerologlintctx:ignore background task
+}
+
+// A directive name that only starts with "ignore" is not the ignore directive.
+func badIgnoreLookalikeName(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignored
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A tool name that only starts with "zerologlintctx" is not this tool.
+func badIgnoreLookalikeTool(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctxx:ignore
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== UNUSED IGNORE DIRECTIVES =====
 
 func badUnusedIgnore(ctx context.Context, log zerolog.Logger) {
