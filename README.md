@@ -180,9 +180,6 @@ An ignore directive that suppresses nothing is reported as `unused zerologlintct
 
 ## Related Tools
 
-- [goroutinectx](https://github.com/mpyw/goroutinectx) - Goroutine context propagation linter
-- [ctxweaver](https://github.com/mpyw/ctxweaver) - Code generator for context-aware instrumentation
-- [gormreuse](https://github.com/mpyw/gormreuse) - GORM instance reuse linter
 - [zerologlint](https://github.com/ykadowak/zerologlint) - General zerolog linting rules
 - [contextcheck](https://github.com/kkHAIKE/contextcheck) - Detects [`context.Background()`](https://pkg.go.dev/context#Background)/[`context.TODO()`](https://pkg.go.dev/context#TODO) usage and missing context parameters
 
