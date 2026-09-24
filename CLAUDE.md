@@ -60,7 +60,7 @@ Validate config changes with `goreleaser check`, and dry-run with `goreleaser re
 
 ```
 testdata/src/zerolog/
-├── basic.go           # Simple good/bad cases, ignore directives
+├── basic.go           # Simple good/bad cases, ignore and malformed directives
 ├── evil.go            # General edge cases (nesting, closures, conditionals)
 ├── evil_ssa.go        # SSA-specific patterns (IIFE, Phi, channels)
 ├── evil_logger.go     # Logger transformation patterns, direct logging

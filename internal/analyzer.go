@@ -20,7 +20,8 @@
 //	│   │    ├── Build function context map                               │   │
 //	│   │    ├── Skip excluded files                                      │   │
 //	│   │    ├── Run SSA analysis via ssa.Checker                         │   │
-//	│   │    └── Report unused ignore directives                          │   │
+//	│   │    ├── Report unused ignore directives                          │   │
+//	│   │    └── Report malformed directives                              │   │
 //	│   └─────────────────────────────────────────────────────────────────┘   │
 //	│        │                                                                 │
 //	│        ▼                                                                 │
@@ -82,6 +83,16 @@ func RunSSA(
 		}
 		for _, pos := range ignoreMap.GetUnusedIgnores() {
 			pass.Reportf(pos, "unused zerologlintctx:ignore directive")
+		}
+	}
+
+	// Report malformed directives
+	for _, file := range pass.Files {
+		if skipFiles[pass.Fset.Position(file.Pos()).Filename] {
+			continue
+		}
+		for _, pos := range directive.FindMalformedDirectives(file) {
+			pass.Reportf(pos, "malformed zerologlintctx directive: write it as //zerologlintctx:name")
 		}
 	}
 }

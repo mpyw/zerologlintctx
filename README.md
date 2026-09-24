@@ -162,6 +162,10 @@ func handler(ctx context.Context, log zerolog.Logger) {
 
 The comment can be on the same line or the line above.
 
+Only `//zerologlintctx:name` is a directive: a line comment, a lowercase name, and no space after `//` or after the colon. Text after a space, such as a reason, is allowed. Any other comment that starts with `zerologlintctx:` suppresses nothing, and is reported as `malformed zerologlintctx directive: write it as //zerologlintctx:name`.
+
+An ignore directive that suppresses nothing is reported as `unused zerologlintctx:ignore directive`.
+
 ## Design Principles
 
 1. **Zero false positives** - Prefer missing issues over false alarms

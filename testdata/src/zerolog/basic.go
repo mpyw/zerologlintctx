@@ -191,8 +191,56 @@ func goodIgnoredPreviousLine(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored")
 }
 
-func goodIgnoredWithSpace(ctx context.Context, log zerolog.Logger) {
-	log.Info().Msg("ignored") // zerologlintctx:ignore
+// A space after "//" makes it malformed, and it suppresses nothing.
+func badIgnoreWithSpaceSameLine(ctx context.Context, log zerolog.Logger) {
+	log.Info().Msg("not ignored") // zerologlintctx:ignore // want `zerolog call chain missing .Ctx\(ctx\)` `malformed zerologlintctx directive: write it as //zerologlintctx:name`
+}
+
+func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore - intentionally not passing context
+	log.Info().Msg("ignored")
+}
+
+func badIgnoreWithSpacePreviousLine(ctx context.Context, log zerolog.Logger) {
+	// zerologlintctx:ignore // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A directive name that only starts with "ignore" is not the ignore directive.
+func badIgnoreLookalikeName(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignored
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A tool name that only starts with "zerologlintctx" is not this tool.
+func badIgnoreLookalikeTool(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctxx:ignore
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// ===== MALFORMED DIRECTIVES =====
+
+func badMalformedSpaceAfterColon(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx: ignore // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badMalformedBlockComment(ctx context.Context, log zerolog.Logger) {
+	/*zerologlintctx:ignore*/ // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Directive names are lowercase.
+func badMalformedUppercaseName(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:Ignore // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Prose that mentions zerologlintctx:ignore in the middle of a comment is not
+// a directive, so it is not reported as malformed.
+func goodProseMentioningDirective(ctx context.Context, log zerolog.Logger) {
+	// Use zerologlintctx:ignore to suppress a report.
+	log.Info().Ctx(ctx).Msg("ok")
 }
 
 // ===== UNUSED IGNORE DIRECTIVES =====

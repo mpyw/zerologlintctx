@@ -12,7 +12,7 @@ zerologlintctx/
 ├── internal/                  # Core analysis logic
 │   ├── analyzer.go            # Entry point, function context discovery
 │   ├── directive/             # Comment directive handling
-│   │   └── ignore.go          # //zerologlintctx:ignore parsing
+│   │   └── ignore.go          # //zerologlintctx:ignore parsing, malformed directives
 │   ├── ssa/                   # SSA-based analysis
 │   │   ├── checker.go         # Checker struct, SSA inspection
 │   │   └── tracing.go         # Value tracing and context checking
@@ -187,7 +187,7 @@ func good(ctx context.Context, log zerolog.Logger) {
 
 ```
 testdata/src/zerolog/
-├── basic.go        # Simple cases, ignore directives
+├── basic.go        # Simple cases, ignore and malformed directives
 ├── evil.go         # Edge cases (nesting, closures)
 ├── evil_ssa.go     # SSA-specific patterns (Phi, FreeVar)
 ├── evil_logger.go  # Logger patterns, direct logging
