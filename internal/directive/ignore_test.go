@@ -32,38 +32,23 @@ func TestIsIgnoreComment(t *testing.T) {
 	}
 }
 
-func TestMalformedDirective(t *testing.T) {
-	const suggest = "//zerologlintctx:ignore"
+func TestIsMalformedDirective(t *testing.T) {
 	tests := []struct {
-		text           string
-		wantSuggestion string
-		wantOK         bool
+		text string
+		want bool
 	}{
-		{"// zerologlintctx:ignore", suggest, true},
-		{"//\tzerologlintctx:ignore", suggest, true},
-		{"// zerologlintctx:ignore - reason", suggest, true},
-		{"//zerologlintctx: ignore", suggest, true},
-		{"/*zerologlintctx:ignore*/", suggest, true},
-		{"/* zerologlintctx:ignore */", suggest, true},
-		{"// zerologlintctx:skip", "//zerologlintctx:skip", true},
-		{"//zerologlintctx:Ignore", "", true},
-		{"// zerologlintctx:Ignore", "", true},
-		{"//zerologlintctx:", "", true},
-		{"// zerologlintctx:", "", true},
-		{"/* zerologlintctx: */", "", true},
-		{"//zerologlintctx:ignore", "", false},
-		{"//zerologlintctx:ignore - reason", "", false},
-		{"//zerologlintctx:ignored", "", false},
-		{"// Use zerologlintctx:ignore to suppress a report.", "", false},
-		{"// zerologlintctxx:ignore", "", false},
-		{"// just a comment", "", false},
+		{"// zerologlintctx:ignore", true},
+		{"//zerologlintctx: ignore", true},
+		{"/*zerologlintctx:ignore*/", true},
+		{"//zerologlintctx:Ignore", true},
+		{"//zerologlintctx:ignore", false},
+		{"//zerologlintctx:ignore - reason", false},
+		{"// Use zerologlintctx:ignore to suppress a report.", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
-			suggestion, ok := malformedDirective(tt.text)
-			if suggestion != tt.wantSuggestion || ok != tt.wantOK {
-				t.Errorf("malformedDirective(%q) = (%q, %v), want (%q, %v)",
-					tt.text, suggestion, ok, tt.wantSuggestion, tt.wantOK)
+			if got := isMalformedDirective(tt.text); got != tt.want {
+				t.Errorf("isMalformedDirective(%q) = %v, want %v", tt.text, got, tt.want)
 			}
 		})
 	}

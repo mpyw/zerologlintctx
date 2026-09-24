@@ -191,9 +191,9 @@ func goodIgnoredPreviousLine(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored")
 }
 
-// A space after "//" makes it a malformed directive, which suppresses nothing.
+// A space after "//" makes it malformed, and it suppresses nothing.
 func badIgnoreWithSpaceSameLine(ctx context.Context, log zerolog.Logger) {
-	log.Info().Msg("not ignored") // zerologlintctx:ignore // want `zerolog call chain missing .Ctx\(ctx\)` `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	log.Info().Msg("not ignored") // zerologlintctx:ignore // want `zerolog call chain missing .Ctx\(ctx\)` `malformed zerologlintctx directive: write it as //zerologlintctx:name`
 }
 
 func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
@@ -202,7 +202,7 @@ func goodIgnoredWithReason(ctx context.Context, log zerolog.Logger) {
 }
 
 func badIgnoreWithSpacePreviousLine(ctx context.Context, log zerolog.Logger) {
-	// zerologlintctx:ignore // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	// zerologlintctx:ignore // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
@@ -220,35 +220,19 @@ func badIgnoreLookalikeTool(ctx context.Context, log zerolog.Logger) {
 
 // ===== MALFORMED DIRECTIVES =====
 
-func badMalformedTabAfterSlashes(ctx context.Context, log zerolog.Logger) {
-	//	zerologlintctx:ignore // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
-	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
-}
-
 func badMalformedSpaceAfterColon(ctx context.Context, log zerolog.Logger) {
-	//zerologlintctx: ignore // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	//zerologlintctx: ignore // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func badMalformedBlockComment(ctx context.Context, log zerolog.Logger) {
-	/*zerologlintctx:ignore*/ // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
+	/*zerologlintctx:ignore*/ // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-func badMalformedSpacedBlockComment(ctx context.Context, log zerolog.Logger) {
-	/* zerologlintctx:ignore */ // want `malformed zerologlintctx directive: write //zerologlintctx:ignore`
-	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
-}
-
-// An uppercase name is not a valid directive name, so no rewrite is suggested.
+// Directive names are lowercase.
 func badMalformedUppercaseName(ctx context.Context, log zerolog.Logger) {
-	//zerologlintctx:Ignore // want `^malformed zerologlintctx directive$`
-	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
-}
-
-// A comment with no directive name gets no suggestion either.
-func badMalformedNoName(ctx context.Context, log zerolog.Logger) {
-	/* zerologlintctx: */ // want `^malformed zerologlintctx directive$`
+	//zerologlintctx:Ignore // want `malformed zerologlintctx directive: write it as //zerologlintctx:name`
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 

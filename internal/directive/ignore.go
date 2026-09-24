@@ -24,8 +24,8 @@
 //	log.Info().Msg("no ctx needed")
 //
 // Unused ignore directives are reported as errors to keep the codebase clean.
-// A comment that starts like a directive but is not in the canonical form,
-// such as "// zerologlintctx:ignore", is reported as malformed.
+// Any other comment that starts with "zerologlintctx:", such as
+// "// zerologlintctx:ignore", is reported as malformed.
 package directive
 
 import (
@@ -69,70 +69,36 @@ func isIgnoreComment(text string) bool {
 	return ok && d.Tool == directiveTool && d.Name == "ignore"
 }
 
-// MalformedDirective is a comment that starts like a zerologlintctx directive
-// but is not in the canonical form.
-type MalformedDirective struct {
-	Pos token.Pos // Position of the comment
-	// Suggestion is the canonical directive to write instead, such as
-	// "//zerologlintctx:ignore". It is empty when the rewritten text would not
-	// be a valid directive either, such as for an uppercase or missing name.
-	Suggestion string
-}
-
-// FindMalformedDirectives returns the comments in a file that are addressed to
-// zerologlintctx but are not a canonical directive.
+// FindMalformedDirectives returns the positions of comments that are
+// addressed to zerologlintctx but are not a canonical directive.
 //
 // A comment is addressed when its body, after "//" or "/*", starts with
 // "zerologlintctx:" once leading whitespace is skipped. Prose that mentions
 // zerologlintctx elsewhere in a comment is not addressed.
-//
-//	//zerologlintctx:ignore       ← canonical
-//	// zerologlintctx:ignore      ← malformed: write //zerologlintctx:ignore
-//	//zerologlintctx: ignore      ← malformed: write //zerologlintctx:ignore
-//	/*zerologlintctx:ignore*/     ← malformed: write //zerologlintctx:ignore
-//	//zerologlintctx:Ignore       ← malformed, no suggestion
-//	// zerologlintctx:            ← malformed, no suggestion
-func FindMalformedDirectives(file *ast.File) []MalformedDirective {
-	var found []MalformedDirective
+func FindMalformedDirectives(file *ast.File) []token.Pos {
+	var found []token.Pos
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if suggestion, ok := malformedDirective(c.Text); ok {
-				found = append(found, MalformedDirective{Pos: c.Pos(), Suggestion: suggestion})
+			if isMalformedDirective(c.Text) {
+				found = append(found, c.Pos())
 			}
 		}
 	}
 	return found
 }
 
-// malformedDirective reports whether text is addressed to zerologlintctx but
-// is not a canonical directive. It also returns the canonical directive to
-// suggest, or "" when the rewritten text would not parse as one either.
-func malformedDirective(text string) (string, bool) {
-	var body string
-	switch {
-	case strings.HasPrefix(text, "//"):
-		body = text[len("//"):]
-	case strings.HasPrefix(text, "/*"):
-		body = strings.TrimSuffix(text[len("/*"):], "*/")
-	default:
-		return "", false
-	}
-	rest, ok := strings.CutPrefix(strings.TrimLeftFunc(body, unicode.IsSpace), directiveTool+":")
+// isMalformedDirective reports whether text is addressed to zerologlintctx but
+// is not accepted by go/ast.ParseDirective as a zerologlintctx directive.
+func isMalformedDirective(text string) bool {
+	body, ok := strings.CutPrefix(text, "//")
 	if !ok {
-		return "", false
+		body, ok = strings.CutPrefix(text, "/*")
 	}
-	if d, ok := ast.ParseDirective(token.NoPos, text); ok && d.Tool == directiveTool {
-		return "", false
+	if !ok || !strings.HasPrefix(strings.TrimLeftFunc(body, unicode.IsSpace), directiveTool+":") {
+		return false
 	}
-	var name string
-	if fields := strings.Fields(rest); len(fields) > 0 {
-		name = fields[0]
-	}
-	suggestion := "//" + directiveTool + ":" + name
-	if d, ok := ast.ParseDirective(token.NoPos, suggestion); !ok || d.Tool != directiveTool || d.Name != name {
-		suggestion = ""
-	}
-	return suggestion, true
+	d, ok := ast.ParseDirective(token.NoPos, text)
+	return !ok || d.Tool != directiveTool
 }
 
 // ShouldIgnore returns true if the given line should be ignored.
