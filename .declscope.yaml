@@ -12,11 +12,3 @@ rules:
       # generator only lengthens a namespace, so it never derives trace from
       # tracing. https://github.com/mpyw/declscope/issues/64
       tracing: [trace]
-  # Judge each declaration a //declscope:package widens, not only the directive
-  # as a whole. One that no other namespace needs is narrowed with
-  # //declscope:private.
-  surplus: strict
-  # Report and delete a scope directive that names the scope its declarations
-  # would have without it, under this configuration, so every directive left
-  # changes something today.
-  unused: strict
