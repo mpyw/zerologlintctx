@@ -176,7 +176,7 @@ An ignore directive that suppresses nothing is reported as `unused zerologlintct
 ## Documentation
 
 - [Architecture](./docs/ARCHITECTURE.md) - Internal design and detection logic
-- [CLAUDE.md](./CLAUDE.md) - AI assistant guidance for development
+- [AGENTS.md](./AGENTS.md) - Repository instructions for contributors and coding agents
 
 ## Related Tools
 
