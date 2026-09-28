@@ -208,7 +208,47 @@ func badIgnoreWithSpacePreviousLine(ctx context.Context, log zerolog.Logger) {
 
 // A directive name that only starts with "ignore" is not the ignore directive.
 func badIgnoreLookalikeName(ctx context.Context, log zerolog.Logger) {
-	//zerologlintctx:ignored
+	//zerologlintctx:ignored // want `unknown directive zerologlintctx:ignored`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A trailing comment is a reason, with or without a space before it.
+func goodIgnoredWithSlashReason(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore // intentionally not passing context
+	log.Info().Msg("ignored")
+}
+
+func goodIgnoredWithSlashReasonNoSpace(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore //intentionally not passing context
+	log.Info().Msg("ignored")
+}
+
+func goodIgnoredWithGluedSlashReason(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore//intentionally not passing context
+	log.Info().Msg("ignored")
+}
+
+func goodIgnoredWithDashAndSlashReason(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore - intentionally // not passing context
+	log.Info().Msg("ignored")
+}
+
+// The ignore takes no argument. Text that is not after "//" or " - " is
+// reported, and the ignore suppresses nothing.
+func badIgnoreWithFreeText(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore intentionally detached // want `zerologlintctx:ignore takes no argument; write a reason after //`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A misspelled name is an unknown directive, and suppresses nothing.
+func badIgnoreMisspelled(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignre // want `unknown directive zerologlintctx:ignre`
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A reason glued on with "-" makes the name unknown.
+func badIgnoreGluedDashReason(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore-reason // want `unknown directive zerologlintctx:ignore-reason`
 	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 

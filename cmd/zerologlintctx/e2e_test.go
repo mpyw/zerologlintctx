@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -118,13 +119,8 @@ func Handle(ctx context.Context) {
 }
 
 func TestE2ELineDirective(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "zerologlintctx")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
-
-	dir := e2eWriteModule(t)
+	bin := e2eBuild(t)
+	dir := e2eWriteModule(t, e2eModule)
 
 	tests := []struct {
 		pkg      string
@@ -146,41 +142,145 @@ func TestE2ELineDirective(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
-			cmd := exec.Command(bin, "./"+tt.pkg+"/")
-			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off", "GOWORK=off")
-			out, err := cmd.CombinedOutput()
-
-			code := 0
-			if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-				code = exitErr.ExitCode()
-			} else if err != nil {
-				t.Fatalf("run: %v", err)
-			}
-
-			var gotOut []string
-			if s := strings.TrimSpace(string(out)); s != "" {
-				gotOut = strings.Split(s, "\n")
-			}
-			if strings.Join(gotOut, "\n") != strings.Join(tt.wantOut, "\n") || code != tt.wantCode {
-				t.Errorf("exit %d, output:\n%s\nwant exit %d, output:\n%s",
-					code, strings.Join(gotOut, "\n"), tt.wantCode, strings.Join(tt.wantOut, "\n"))
-			}
+			e2eCheck(t, bin, dir, tt.pkg, tt.wantOut, tt.wantCode)
 		})
 	}
 }
 
-// e2eWriteModule writes e2eModule and a copy of the zerolog stub into a
+// TestE2EDirectiveForms runs the binary over the ways of writing an ignore
+// directive in #60. Each package holds one log call without .Ctx(ctx), under
+// one comment.
+func TestE2EDirectiveForms(t *testing.T) {
+	const report = "<repro>/%s/a.go:11:16: zerolog call chain missing .Ctx(ctx)"
+	tests := []struct {
+		pkg      string
+		comment  string
+		wantOut  []string
+		wantCode int
+	}{
+		{pkg: "bare", comment: "//zerologlintctx:ignore"},
+		{pkg: "dashreason", comment: "//zerologlintctx:ignore - intentionally not passing context"},
+		{pkg: "slashreason", comment: "//zerologlintctx:ignore // reason"},
+		{pkg: "slashreasonnospace", comment: "//zerologlintctx:ignore //reason"},
+		{pkg: "gluedslashreason", comment: "//zerologlintctx:ignore//reason"},
+		{
+			pkg: "freetext", comment: "//zerologlintctx:ignore intentionally detached",
+			wantOut: []string{
+				fmt.Sprintf(report, "freetext"),
+				"<repro>/freetext/a.go:10:2: zerologlintctx:ignore takes no argument; write a reason after //",
+			},
+			wantCode: 3,
+		},
+		{
+			pkg: "misspelled", comment: "//zerologlintctx:ignre",
+			wantOut: []string{
+				fmt.Sprintf(report, "misspelled"),
+				"<repro>/misspelled/a.go:10:2: unknown directive zerologlintctx:ignre",
+			},
+			wantCode: 3,
+		},
+		{
+			pkg: "glueddashreason", comment: "//zerologlintctx:ignore-reason",
+			wantOut: []string{
+				fmt.Sprintf(report, "glueddashreason"),
+				"<repro>/glueddashreason/a.go:10:2: unknown directive zerologlintctx:ignore-reason",
+			},
+			wantCode: 3,
+		},
+		{
+			pkg: "malformed", comment: "// zerologlintctx:ignore",
+			wantOut: []string{
+				fmt.Sprintf(report, "malformed"),
+				"<repro>/malformed/a.go:10:2: malformed zerologlintctx directive: write it as //zerologlintctx:name",
+			},
+			wantCode: 3,
+		},
+		{
+			// Control: no directive.
+			pkg: "control", comment: "// nothing",
+			wantOut:  []string{fmt.Sprintf(report, "control")},
+			wantCode: 3,
+		},
+	}
+
+	files := map[string]string{"go.mod": e2eModule["go.mod"]}
+	for _, tt := range tests {
+		files[tt.pkg+"/a.go"] = "package " + tt.pkg + `
+
+import (
+	"context"
+
+	"github.com/rs/zerolog/log"
+)
+
+func Handle(ctx context.Context) {
+	` + tt.comment + `
+	log.Info().Msg("hello")
+}
+`
+	}
+	bin := e2eBuild(t)
+	dir := e2eWriteModule(t, files)
+
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			want := make([]string, len(tt.wantOut))
+			for i, line := range tt.wantOut {
+				want[i] = strings.ReplaceAll(line, "<repro>", dir)
+			}
+			e2eCheck(t, bin, dir, tt.pkg, want, tt.wantCode)
+		})
+	}
+}
+
+// e2eBuild builds the binary into a temporary directory and returns its path.
+func e2eBuild(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "zerologlintctx")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// e2eCheck runs bin over the package pkg in dir, and checks its output lines
+// and exit code.
+func e2eCheck(t *testing.T, bin, dir, pkg string, wantOut []string, wantCode int) {
+	t.Helper()
+	cmd := exec.Command(bin, "./"+pkg+"/")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off", "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+
+	code := 0
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	var gotOut []string
+	if s := strings.TrimSpace(string(out)); s != "" {
+		gotOut = strings.Split(s, "\n")
+	}
+	if strings.Join(gotOut, "\n") != strings.Join(wantOut, "\n") || code != wantCode {
+		t.Errorf("exit %d, output:\n%s\nwant exit %d, output:\n%s",
+			code, strings.Join(gotOut, "\n"), wantCode, strings.Join(wantOut, "\n"))
+	}
+}
+
+// e2eWriteModule writes module and a copy of the zerolog stub into a
 // temporary directory and returns its path.
-func e2eWriteModule(t *testing.T) string {
+func e2eWriteModule(t *testing.T, module map[string]string) string {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	files := make(map[string]string, len(e2eModule)+3)
-	maps.Copy(files, e2eModule)
+	files := make(map[string]string, len(module)+3)
+	maps.Copy(files, module)
 	files["zerolog/go.mod"] = "module github.com/rs/zerolog\n\ngo 1.24\n"
 	stub := filepath.Join("..", "..", "testdata", "src", "github.com", "rs", "zerolog")
 	for _, name := range []string{"zerolog.go", "log/log.go"} {

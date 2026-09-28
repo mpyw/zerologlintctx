@@ -12,7 +12,7 @@ zerologlintctx/
 ├── internal/                  # Core analysis logic
 │   ├── analyzer.go            # Entry point, function context discovery
 │   ├── directive/             # Comment directive handling
-│   │   └── ignore.go          # //zerologlintctx:ignore parsing, malformed directives
+│   │   └── ignore.go          # //zerologlintctx:ignore parsing, directive problems
 │   ├── ssa/                   # SSA-based analysis
 │   │   ├── checker.go         # Checker struct, SSA inspection
 │   │   └── tracing.go         # Value tracing and context checking
@@ -159,6 +159,17 @@ event.MsgFunc(func() string { ... })
 event.Send()
 ```
 
+## Directives
+
+`internal/directive` reads comments the way mpyw/declscope and mpyw/errlogreturn do:
+
+1. A trailing `// ...` is a reason. The comment is cut at the first `//` after the leading one, then parsed with `go/ast.ParseDirective`. So `//zerologlintctx:ignore//reason` is a bare ignore.
+2. Only `//zerologlintctx:name [args]` is a directive. Another comment that starts with `zerologlintctx:` is malformed.
+3. `ignore` is the only name. Any other name, such as `ignre` or `ignore-reason`, is an unknown directive. `go/ast` takes the name up to the first space, so these parse as directives and would otherwise do nothing without a report.
+4. `ignore` takes no argument. A reason after ` - ` is kept for compatibility. Other text, such as `//zerologlintctx:ignore intentionally detached`, is reported.
+
+None of these reported comments silences anything (#60). Guessing what was meant would silence a report nobody asked to silence.
+
 ## Known Limitations
 
 Due to SSA analysis constraints:
@@ -187,7 +198,7 @@ func good(ctx context.Context, log zerolog.Logger) {
 
 ```
 testdata/src/zerolog/
-├── basic.go        # Simple cases, ignore and malformed directives
+├── basic.go        # Simple cases, ignore directives and directive problems
 ├── evil.go         # Edge cases (nesting, closures)
 ├── evil_ssa.go     # SSA-specific patterns (Phi, FreeVar)
 ├── evil_logger.go  # Logger patterns, direct logging
