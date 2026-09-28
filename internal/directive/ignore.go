@@ -91,8 +91,8 @@ func isReason(args string) bool {
 // are both a bare ignore.
 func parse(text string) (ast.Directive, bool) {
 	if body, ok := strings.CutPrefix(text, "//"); ok {
-		if i := strings.Index(body, "//"); i >= 0 {
-			text = "//" + body[:i]
+		if before, _, found := strings.Cut(body, "//"); found {
+			text = "//" + before
 		}
 	}
 	d, ok := ast.ParseDirective(token.NoPos, text)
