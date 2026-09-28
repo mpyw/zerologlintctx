@@ -66,7 +66,7 @@ func RunSSA(
 		if !pos.IsValid() {
 			continue
 		}
-		filename := pass.Fset.Position(pos).Filename
+		filename := pass.Fset.PositionFor(pos, false).Filename
 		if skipFiles[filename] {
 			continue
 		}
@@ -88,7 +88,7 @@ func RunSSA(
 
 	// Report malformed directives
 	for _, file := range pass.Files {
-		if skipFiles[pass.Fset.Position(file.Pos()).Filename] {
+		if skipFiles[pass.Fset.PositionFor(file.Pos(), false).Filename] {
 			continue
 		}
 		for _, pos := range directive.FindMalformedDirectives(file) {

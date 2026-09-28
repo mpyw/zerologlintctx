@@ -53,7 +53,7 @@ func BuildIgnoreMap(fset *token.FileSet, file *ast.File) IgnoreMap {
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
 			if isIgnoreComment(c.Text) {
-				line := fset.Position(c.Pos()).Line
+				line := fset.PositionFor(c.Pos(), false).Line
 				m[line] = &ignoreEntry{pos: c.Pos(), used: false}
 			}
 		}
