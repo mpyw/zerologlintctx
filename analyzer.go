@@ -49,7 +49,8 @@ func buildSkipFiles(pass *analysis.Pass) map[string]bool {
 	skipFiles := make(map[string]bool)
 
 	for _, file := range pass.Files {
-		filename := pass.Fset.Position(file.Pos()).Filename
+		// Unadjusted, so a //line directive cannot change the key.
+		filename := pass.Fset.PositionFor(file.Pos(), false).Filename
 
 		// Always skip generated files
 		if ast.IsGenerated(file) {
@@ -64,7 +65,7 @@ func buildSkipFiles(pass *analysis.Pass) map[string]bool {
 func buildIgnoreMaps(pass *analysis.Pass, skipFiles map[string]bool) map[string]directive.IgnoreMap {
 	ignoreMaps := make(map[string]directive.IgnoreMap)
 	for _, file := range pass.Files {
-		filename := pass.Fset.Position(file.Pos()).Filename
+		filename := pass.Fset.PositionFor(file.Pos(), false).Filename
 		if skipFiles[filename] {
 			continue
 		}

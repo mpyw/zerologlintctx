@@ -218,7 +218,8 @@ func (c *Checker) report(pos token.Pos, format string) {
 	}
 	c.reported[pos] = true
 
-	line := c.pass.Fset.Position(pos).Line
+	// Unadjusted, so a //line directive cannot move the call away from its ignore.
+	line := c.pass.Fset.PositionFor(pos, false).Line
 	if c.ignoreMap != nil && c.ignoreMap.ShouldIgnore(line) {
 		return
 	}

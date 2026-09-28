@@ -18,3 +18,9 @@ func TestFileFilter(t *testing.T) {
 	// Tests that generated files are skipped
 	analysistest.Run(t, testdata, zerologlintctx.Analyzer, "filefilter")
 }
+
+func TestLineDirective(t *testing.T) {
+	testdata := analysistest.TestData()
+	// Tests that //line directives do not break ignore directives or generated file skipping
+	analysistest.Run(t, testdata, zerologlintctx.Analyzer, "linedirective")
+}
