@@ -4,6 +4,7 @@ package ssa
 
 import (
 	"maps"
+	"slices"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -31,12 +32,9 @@ func edgeLeadsToImpl(v ssa.Value, target *ssa.Phi, seen map[ssa.Value]bool) bool
 		}
 		return false
 	case *ssa.Phi:
-		for _, edge := range val.Edges {
-			if edgeLeadsToImpl(edge, target, seen) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(val.Edges, func(edge ssa.Value) bool {
+			return edgeLeadsToImpl(edge, target, seen)
+		})
 	}
 
 	if inner := unwrapInner(v); inner != nil {
