@@ -160,24 +160,9 @@ func handler(ctx context.Context, log zerolog.Logger) {
 }
 ```
 
-The comment can be on the same line or the line above.
+The comment can be on the same line or the line above. Write a reason after `//`. A reason after ` - ` also works, for compatibility.
 
-The ignore takes no argument. Write a reason after `//`. A reason after ` - ` also works, for compatibility with older code:
-
-```go
-//zerologlintctx:ignore // intentionally not passing context
-//zerologlintctx:ignore - intentionally not passing context
-```
-
-Only `//zerologlintctx:name` is a directive: a line comment, a lowercase name, and no space after `//` or after the colon. A trailing `// ...` is a reason, and is not read. These comments suppress nothing, and are reported:
-
-| Comment | Report |
-|---------|--------|
-| Starts with `zerologlintctx:` but is not a directive, e.g. `// zerologlintctx:ignore` | `malformed zerologlintctx directive: write it as //zerologlintctx:name` |
-| A name zerologlintctx does not read, e.g. `//zerologlintctx:ignre` | `unknown directive zerologlintctx:ignre` |
-| Text after the ignore that is not after `//` or ` - `, e.g. `//zerologlintctx:ignore intentionally detached` | `zerologlintctx:ignore takes no argument; write a reason after //` |
-
-An ignore directive that suppresses nothing is reported as `unused zerologlintctx:ignore directive`.
+Any other comment that starts with `zerologlintctx:`, such as `//zerologlintctx:bogus`, does nothing and is reported. So is an ignore that suppresses nothing.
 
 ## Design Principles
 
