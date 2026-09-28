@@ -13,3 +13,11 @@ import (
 func badNoCtxInGenerated(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("no context in generated file")
 }
+
+// Directives that do nothing are not reported in a generated file either.
+func badDirectivesInGenerated(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignre
+	//zerologlintctx:ignore intentionally detached
+	// zerologlintctx:ignore
+	log.Info().Ctx(ctx).Msg("ok")
+}

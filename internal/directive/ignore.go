@@ -7,7 +7,11 @@
 //	//zerologlintctx:ignore
 //
 // It follows the Go directive syntax: no space after "//" or after the colon.
-// Free text, such as a reason, may follow after a space.
+// It takes no argument. A reason goes in a trailing comment after "//", or
+// after " - ", which is kept for compatibility:
+//
+//	//zerologlintctx:ignore // intentionally not passing context
+//	//zerologlintctx:ignore - intentionally not passing context
 //
 // This directive can be placed on the same line or the line before the code
 // to suppress warnings.
@@ -25,7 +29,9 @@
 //
 // Unused ignore directives are reported as errors to keep the codebase clean.
 // Any other comment that starts with "zerologlintctx:", such as
-// "// zerologlintctx:ignore", is reported as malformed.
+// "// zerologlintctx:ignore", is reported as malformed. A directive with
+// another name, such as "//zerologlintctx:ignre", is reported as unknown, and
+// an ignore with an argument is reported too. None of them silences anything.
 package directive
 
 import (
@@ -62,43 +68,90 @@ func BuildIgnoreMap(fset *token.FileSet, file *ast.File) IgnoreMap {
 }
 
 // isIgnoreComment checks if a comment is an ignore directive.
-// Only the canonical Go directive form "//zerologlintctx:ignore" counts, with
-// no space after "//". Free text may follow the name after a space.
+// Only the canonical form "//zerologlintctx:ignore" counts, with no space
+// after "//". A reason may follow after "//" or " - "; other text may not.
 func isIgnoreComment(text string) bool {
-	d, ok := ast.ParseDirective(token.NoPos, text)
-	return ok && d.Tool == directiveTool && d.Name == "ignore"
+	d, ok := parse(text)
+	return ok && d.Name == "ignore" && isReason(d.Args)
 }
 
-// FindMalformedDirectives returns the positions of comments that are
-// addressed to zerologlintctx but are not a canonical directive.
+// isReason reports whether args, the text after an ignore directive, is empty
+// or a reason after " - ". The " - " form predates "//" and is kept so that
+// existing ignores keep working.
+func isReason(args string) bool {
+	return args == "" || args == "-" || strings.HasPrefix(args, "- ")
+}
+
+// parse parses a comment as a zerologlintctx directive. It reports false for
+// any comment that is not the canonical form "//zerologlintctx:name [args]",
+// including another tool's directive.
 //
-// A comment is addressed when its body, after "//" or "/*", starts with
-// "zerologlintctx:" once leading whitespace is skipped. Prose that mentions
-// zerologlintctx elsewhere in a comment is not addressed.
-func FindMalformedDirectives(file *ast.File) []token.Pos {
-	var found []token.Pos
+// A trailing comment explains the directive and is dropped first:
+// "//zerologlintctx:ignore // reason" and "//zerologlintctx:ignore//reason"
+// are both a bare ignore.
+func parse(text string) (ast.Directive, bool) {
+	if body, ok := strings.CutPrefix(text, "//"); ok {
+		if i := strings.Index(body, "//"); i >= 0 {
+			text = "//" + body[:i]
+		}
+	}
+	d, ok := ast.ParseDirective(token.NoPos, text)
+	if !ok || d.Tool != directiveTool {
+		return ast.Directive{}, false
+	}
+	return d, true
+}
+
+// Problem is a comment addressed to zerologlintctx that does nothing.
+type Problem struct {
+	Pos     token.Pos
+	Message string
+}
+
+// FindProblems returns the comments that are addressed to zerologlintctx but
+// do nothing: malformed directives, unknown directives, and ignore directives
+// with text that is not a reason.
+func FindProblems(file *ast.File) []Problem {
+	var found []Problem
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if isMalformedDirective(c.Text) {
-				found = append(found, c.Pos())
+			if msg := problem(c.Text); msg != "" {
+				found = append(found, Problem{Pos: c.Pos(), Message: msg})
 			}
 		}
 	}
 	return found
 }
 
-// isMalformedDirective reports whether text is addressed to zerologlintctx but
-// is not accepted by go/ast.ParseDirective as a zerologlintctx directive.
-func isMalformedDirective(text string) bool {
+// problem returns why text, a comment addressed to zerologlintctx, does
+// nothing, or "" when it is a working directive or not addressed at all.
+//
+// A comment is addressed when its body, after "//" or "/*", starts with
+// "zerologlintctx:" once leading whitespace is skipped. Prose that mentions
+// zerologlintctx elsewhere in a comment is not addressed.
+func problem(text string) string {
+	d, ok := parse(text)
+	switch {
+	case !ok && isAddressed(text):
+		return "malformed zerologlintctx directive: write it as //zerologlintctx:name"
+	case !ok:
+		return ""
+	case d.Name != "ignore":
+		return "unknown directive zerologlintctx:" + d.Name
+	case !isReason(d.Args):
+		return "zerologlintctx:ignore takes no argument; write a reason after //"
+	}
+	return ""
+}
+
+// isAddressed reports whether text starts with "zerologlintctx:" after the
+// comment marker and any whitespace.
+func isAddressed(text string) bool {
 	body, ok := strings.CutPrefix(text, "//")
 	if !ok {
 		body, ok = strings.CutPrefix(text, "/*")
 	}
-	if !ok || !strings.HasPrefix(strings.TrimLeftFunc(body, unicode.IsSpace), directiveTool+":") {
-		return false
-	}
-	d, ok := ast.ParseDirective(token.NoPos, text)
-	return !ok || d.Tool != directiveTool
+	return ok && strings.HasPrefix(strings.TrimLeftFunc(body, unicode.IsSpace), directiveTool+":")
 }
 
 // ShouldIgnore returns true if the given line should be ignored.
