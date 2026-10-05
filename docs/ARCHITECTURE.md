@@ -9,6 +9,7 @@ zerologlintctx uses SSA (Static Single Assignment) form analysis to track zerolo
 ```
 zerologlintctx/
 ├── cmd/zerologlintctx/        # CLI entry point (singlechecker)
+├── plugin/                    # golangci-lint module plugin
 ├── internal/                  # Core analysis logic
 │   ├── analyzer.go            # Entry point, function context discovery
 │   ├── directive/             # Comment directive handling

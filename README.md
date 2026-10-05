@@ -22,7 +22,7 @@ Go 1.27 or later. The analyzed code may target any Go version.
 **Recommended.** zerologlintctx is installable directly from GitHub Releases via mise's `github` backend — no extra registry required, and no Go toolchain needed because the binaries are prebuilt:
 
 ```bash
-mise use "github:mpyw/zerologlintctx@0.11.0"
+mise use "github:mpyw/zerologlintctx@0.12.0"
 zerologlintctx ./...
 ```
 
@@ -30,7 +30,7 @@ Run it in the project root. It pins the version in the project's `mise.toml`, so
 
 ```toml
 [tools]
-"github:mpyw/zerologlintctx" = "0.11.0"
+"github:mpyw/zerologlintctx" = "0.12.0"
 ```
 
 Add `-g` to install it for every project on your machine instead.
@@ -96,6 +96,42 @@ sudo mv zerologlintctx /usr/local/bin/
 ```
 
 On Windows, download `zerologlintctx_${VERSION}_windows_${ARCH}.zip` and extract `zerologlintctx.exe` somewhere on your `PATH`.
+
+</details>
+
+<details>
+<summary>Running inside golangci-lint</summary>
+
+zerologlintctx is not bundled with golangci-lint. Build a golangci-lint binary that holds it as a [module plugin](https://golangci-lint.run/plugins/module-plugins/). Write `.custom-gcl.yml`:
+
+```yaml
+version: v2.13.1  # the golangci-lint release to build
+plugins:
+  - module: github.com/mpyw/zerologlintctx
+    import: github.com/mpyw/zerologlintctx/plugin
+    version: v0.12.0
+```
+
+Turn it on in `.golangci.yml`. It takes no settings, and any key under `settings` stops the run. To skip test files, use golangci-lint's `run.tests: false` instead of `-test=false`:
+
+```yaml
+version: "2"
+linters:
+  enable:
+    - zerologlintctx
+  settings:
+    custom:
+      zerologlintctx:
+        type: module
+        description: Checks that zerolog chains carry the context.
+```
+
+Then build and run it:
+
+```bash
+golangci-lint custom  # writes ./custom-gcl
+./custom-gcl run ./...
+```
 
 </details>
 
