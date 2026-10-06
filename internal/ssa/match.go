@@ -12,7 +12,7 @@ import (
 // valueLoadsFromMatchingAddress checks if a value (or its receiver chain) loads from the given address.
 // This is used to detect self-referential stores like: *ptr = (*ptr).Str(...)
 //
-//declscope:package // store.go asks this of a load
+//declscope:shared // store.go asks this of a load
 func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
 	switch val := v.(type) {
 	case *ssa.UnOp:
@@ -46,7 +46,7 @@ func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
 //	t1 = &t0.inner ; t2 = &t1.event ; *t2 = v   // write
 //	t3 = &t0.inner ; t4 = &t3.event ; ... = *t4 // read, t3 != t1
 //
-//declscope:package // store.go and aggregate.go both compare addresses
+//declscope:shared // store.go and aggregate.go both compare addresses
 func addressesMatch(a, b ssa.Value) bool {
 	if a == b {
 		return true
@@ -70,7 +70,7 @@ func addressesMatch(a, b ssa.Value) bool {
 // constIndexesMatch reports whether two index operands are equal constants.
 // Non-constant indexes never match, since they may denote different elements.
 //
-//declscope:package // aggregate.go compares two index selections
+//declscope:shared // aggregate.go compares two index selections
 func constIndexesMatch(a, b ssa.Value) bool {
 	c1, ok1 := a.(*ssa.Const)
 	c2, ok2 := b.(*ssa.Const)

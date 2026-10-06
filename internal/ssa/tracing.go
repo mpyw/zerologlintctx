@@ -21,7 +21,7 @@ type tracerType int
 
 const (
 	// tracerEvent traces *zerolog.Event values.
-	//declscope:package
+	//declscope:shared
 	tracerEvent tracerType = iota
 	// tracerLogger traces zerolog.Logger values.
 	tracerLogger
@@ -80,7 +80,7 @@ type traceResult struct {
 //	│     └─ Not a Call → traceCommon (Phi, UnOp, Alloc, etc.)        │
 //	└─────────────────────────────────────────────────────────────────┘
 //
-//declscope:package
+//declscope:shared
 func (c *Checker) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	if visited[v] {
 		return false

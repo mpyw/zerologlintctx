@@ -28,7 +28,7 @@ import (
 //	}
 //	(*ptr).Msg("msg")  // only traces initial store, finds ctx
 //
-//declscope:package // tracing.go asks this; the rest of the file is its working parts
+//declscope:shared // tracing.go asks this; the rest of the file is its working parts
 func findAllStoredValues(addr ssa.Value) []ssa.Value {
 	return findStoredValues(addr, make(map[ssa.Value]bool))
 }

@@ -16,7 +16,7 @@ import (
 //
 //	&t0.inner.event  →  root t0, path [&t0.inner, &(t0.inner).event]
 //
-//declscope:package // store.go walks a path before resolving it
+//declscope:shared // store.go walks a path before resolving it
 func aggregatePath(addr ssa.Value) (root ssa.Value, path []ssa.Value) {
 	for {
 		base := aggregateBase(addr)
@@ -32,7 +32,7 @@ func aggregatePath(addr ssa.Value) (root ssa.Value, path []ssa.Value) {
 // copySourcesOfAggregate yields the addresses whose whole-aggregate value is copied
 // into root.
 //
-//declscope:package // store.go follows copies of a root
+//declscope:shared // store.go follows copies of a root
 func copySourcesOfAggregate(fn *ssa.Function, root ssa.Value) iter.Seq[ssa.Value] {
 	return func(yield func(ssa.Value) bool) {
 		for instr := range instrsIn(fn) {
@@ -50,7 +50,7 @@ func copySourcesOfAggregate(fn *ssa.Function, root ssa.Value) iter.Seq[ssa.Value
 // resolveAggregatePath returns the addresses reached by applying the same chain of
 // selections to base that path applies to its own root.
 //
-//declscope:package // store.go resolves a path against a base
+//declscope:shared // store.go resolves a path against a base
 func resolveAggregatePath(fn *ssa.Function, base ssa.Value, path []ssa.Value) []ssa.Value {
 	current := []ssa.Value{base}
 	for _, step := range path {
