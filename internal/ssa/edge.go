@@ -11,7 +11,7 @@ import (
 
 // edgeLeadsTo checks if tracing this edge would eventually lead back to target.
 //
-//declscope:package // tracing.go asks this
+//declscope:shared // tracing.go asks this
 func edgeLeadsTo(edge ssa.Value, target *ssa.Phi, visited map[ssa.Value]bool) bool {
 	seen := maps.Clone(visited)
 	return edgeLeadsToImpl(edge, target, seen)

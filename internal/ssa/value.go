@@ -7,7 +7,7 @@
 // their own.
 //
 //declscope:core
-//declscope:package
+//declscope:shared
 
 package ssa
 
