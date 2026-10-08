@@ -47,12 +47,6 @@ const directiveTool = "zerologlintctx"
 // IgnoreMap tracks line numbers that have ignore comments.
 type IgnoreMap map[int]*ignoreEntry
 
-// ignoreEntry tracks an ignore directive and whether it was used.
-type ignoreEntry struct {
-	pos  token.Pos // Position of the ignore comment
-	used bool      // Whether this ignore was actually used to suppress a warning
-}
-
 // BuildIgnoreMap scans a file for ignore comments and returns a map.
 func BuildIgnoreMap(fset *token.FileSet, file *ast.File) IgnoreMap {
 	m := make(IgnoreMap)
@@ -65,6 +59,12 @@ func BuildIgnoreMap(fset *token.FileSet, file *ast.File) IgnoreMap {
 		}
 	}
 	return m
+}
+
+// ignoreEntry tracks an ignore directive and whether it was used.
+type ignoreEntry struct {
+	pos  token.Pos // Position of the ignore comment
+	used bool      // Whether this ignore was actually used to suppress a warning
 }
 
 // isIgnoreComment checks if a comment is an ignore directive.
