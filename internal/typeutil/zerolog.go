@@ -31,6 +31,9 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
+// CtxMethod is the method name for setting context.
+const CtxMethod = "Ctx"
+
 // Package paths.
 const (
 	zerologPkgPath = "github.com/rs/zerolog"
@@ -44,9 +47,6 @@ const (
 	contextType = "Context"
 	loggerType  = "Logger"
 )
-
-// CtxMethod is the method name for setting context.
-const CtxMethod = "Ctx"
 
 // =============================================================================
 // Zerolog Type Checking
