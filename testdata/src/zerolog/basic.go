@@ -362,6 +362,56 @@ func goodEventCtxResultUnusedPointerParamField(ctx context.Context, h *inPlaceHo
 	h.e.Msg("ctx result unused, pointer param field") // OK - .Ctx() set the context of h.e
 }
 
+// A path that stores an event with context of its own needs no Ctx call in
+// place (#184).
+
+func goodEventCtxInPlaceThenStoredWithCtx(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	defer func() { _ = e }()
+	e.Ctx(ctx)
+	for range n {
+		e.Msg("ctx in place, then stored with ctx") // OK - each path has ctx one way or the other
+		e = log.Warn().Ctx(ctx)
+	}
+}
+
+func goodEventCtxInPlaceThenReplacedWithCtxInLoop(ctx context.Context, log zerolog.Logger, n int) {
+	withCtx := log.With().Ctx(ctx).Logger()
+	e := log.Info()
+	e.Ctx(ctx)
+	for range n {
+		e.Msg("ctx in place, then replaced with ctx in a loop") // OK - each edge has ctx one way or the other
+		e = withCtx.Warn()
+	}
+}
+
+func badEventCtxInPlaceThenReplacedWithoutCtxInLoop(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	e.Ctx(ctx)
+	for range n {
+		e.Msg("ctx in place, then replaced without ctx in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+		e = log.Warn()
+	}
+}
+
+func badEventCtxInPlaceThenStoredWithoutCtx(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	defer func() { _ = e }()
+	e.Ctx(ctx)
+	for range n {
+		e.Msg("ctx in place, then stored without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		e = log.Warn()
+	}
+}
+
+func badEventCtxInPlaceHolderReplacedWithCtxField(ctx context.Context, log zerolog.Logger, other inPlaceHolder) {
+	var h inPlaceHolder
+	h.e = log.Info()
+	h.e.Ctx(ctx)
+	h = other
+	h.e.Msg("ctx in place, holder replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // LIMITATION (false positive): An in-place Ctx call is not seen by a
 // terminator in a closure, in a func literal the event is passed to, or on
 // another variable the event was copied to (#139). The event reaches it
