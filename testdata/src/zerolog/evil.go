@@ -967,6 +967,24 @@ func evilCtxPointerParam(ctx *context.Context, logger zerolog.Logger) {
 	logger.Info().Msg("pointer ctx") // want `zerolog call chain missing .Ctx\(\*ctx\)`
 }
 
+// A shadow of the other kind, a pointer for a value or a value for a pointer,
+// cannot be passed as the name was given either (#159).
+func evilCtxShadowedByPointer(ctx context.Context, logger zerolog.Logger) {
+	{
+		ctx := &ctx
+		_ = ctx
+		logger.Info().Msg("shadowed by a pointer") // OK - no context named ctx here
+	}
+}
+
+func evilCtxPointerShadowedByValue(ctx *context.Context, logger zerolog.Logger) {
+	{
+		ctx := *ctx
+		_ = ctx
+		logger.Info().Msg("pointer shadowed by a value") // OK - no context named *ctx here
+	}
+}
+
 var evilGlobalClosureShadowed = func(ctx context.Context) {
 	func(ctx int) {
 		log.Info().Int("n", ctx).Msg("global closure shadowed") // OK - no usable context

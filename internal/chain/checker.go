@@ -113,7 +113,8 @@ func (c *Checker) reportOnce(pos token.Pos, format string) {
 	c.report(pos, fmt.Sprintf(format, c.ctxName))
 }
 
-// ctxInScopeAt reports whether the context name refers to a context at pos.
+// ctxInScopeAt reports whether the context name refers to a context at pos,
+// of the same kind: a context.Context, or a pointer to one for a *name.
 // A closure takes the name from the function it is declared in, where a
 // parameter or a variable of its own may shadow it:
 //
@@ -124,7 +125,13 @@ func (c *Checker) reportOnce(pos token.Pos, format string) {
 //	}
 func (c *Checker) ctxInScopeAt(pos token.Pos) bool {
 	inner := cmp.Or(c.scope.Innermost(pos), c.scope) // A call is always in a file of the package
-	_, obj := inner.LookupParent(strings.TrimPrefix(c.ctxName, "*"), pos)
+	name, deref := strings.CutPrefix(c.ctxName, "*")
+	_, obj := inner.LookupParent(name, pos)
 	v, ok := obj.(*types.Var)
-	return ok && typeutil.IsContextType(v.Type())
+	if !ok || !typeutil.IsContextType(v.Type()) {
+		return false
+	}
+	// A *context.Context is named as *name, and a context.Context as name
+	_, isPtr := v.Type().Underlying().(*types.Pointer)
+	return isPtr == deref
 }
