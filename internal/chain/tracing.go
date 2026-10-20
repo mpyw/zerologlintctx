@@ -850,8 +850,9 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, t tracerType, 
 	}), true
 }
 
-// traceFuncLiteralsOf returns the func literals that v, a Phi, can be, when
-// every edge is a func literal or a closure of one, or another such Phi:
+// traceFuncLiteralsOf returns the func literals that v can be, when it is a
+// func literal or a closure of one, a Phi of such values, or a load of a
+// variable that only such values are stored to:
 //
 //	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
 //	if debug {
@@ -859,27 +860,113 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, t tracerType, 
 //	}
 //	ev().Msg("x")           // ev is a Phi of the two
 func traceFuncLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.Function, bool) {
-	phi, ok := v.(*ssa.Phi)
-	if !ok || seen[v] {
-		return nil, ok
+	if mc, ok := v.(*ssa.MakeClosure); ok {
+		v = mc.Fn
+	}
+	if fn, ok := v.(*ssa.Function); ok {
+		return []*ssa.Function{fn}, fn.Parent() != nil
+	}
+	if seen[v] {
+		return nil, true // A loop, which adds nothing new
 	}
 	seen[v] = true
+	var values []ssa.Value
+	switch val := v.(type) {
+	case *ssa.Phi:
+		values = val.Edges
+	case *ssa.UnOp:
+		stored, ok := traceStoredFuncs(val)
+		if !ok {
+			return nil, false
+		}
+		values = stored
+	default:
+		return nil, false
+	}
 	var fns []*ssa.Function
-	for _, edge := range phi.Edges {
-		if mc, ok := edge.(*ssa.MakeClosure); ok {
-			edge = mc.Fn
-		}
-		if fn, ok := edge.(*ssa.Function); ok && fn.Parent() != nil {
-			fns = append(fns, fn)
-			continue
-		}
-		more, ok := traceFuncLiteralsOf(edge, seen)
+	for _, value := range values {
+		more, ok := traceFuncLiteralsOf(value, seen)
 		if !ok {
 			return nil, false
 		}
 		fns = append(fns, more...)
 	}
 	return fns, true
+}
+
+// traceStoredFuncs returns the values stored to the variable that load reads,
+// when it is a local variable, or one a closure captures, whose address is
+// only stored to, loaded and captured, in the function that declares it and
+// the closures declared there:
+//
+//	f := func() *zerolog.Event { return logger.Warn() }
+//	func() { _ = f }()      // f is kept in memory, and loaded to be called
+//	f().Msg("x")
+func traceStoredFuncs(load *ssa.UnOp) ([]ssa.Value, bool) {
+	if load.Op != token.MUL {
+		return nil, false
+	}
+	v := load.X
+	for fv, ok := v.(*ssa.FreeVar); ok; fv, ok = v.(*ssa.FreeVar) {
+		v = traceFreeVarBinding(fv)
+	}
+	alloc, ok := v.(*ssa.Alloc)
+	if !ok {
+		return nil, false // Not a local variable, or its binding is not found
+	}
+	aliases := map[ssa.Value]bool{alloc: true}
+	scope := alloc.Parent()
+	for changed := true; changed; {
+		changed = false
+		for instr := range traceInstrsInScope(scope) {
+			mc, ok := instr.(*ssa.MakeClosure)
+			if !ok {
+				continue
+			}
+			closure, _ := mc.Fn.(*ssa.Function)
+			for i, b := range mc.Bindings {
+				if aliases[b] && closure != nil && !aliases[closure.FreeVars[i]] {
+					aliases[closure.FreeVars[i]], changed = true, true
+				}
+			}
+		}
+	}
+	var stored []ssa.Value
+	for instr := range traceInstrsInScope(scope) {
+		for _, op := range instr.Operands(nil) {
+			if !aliases[*op] {
+				continue
+			}
+			switch in := instr.(type) {
+			case *ssa.Store:
+				if op != &in.Addr {
+					return nil, false // The address itself is stored
+				}
+				stored = append(stored, in.Val)
+			case *ssa.UnOp, *ssa.MakeClosure:
+				// A load of the variable, or a capture of it
+			default:
+				return nil, false // The address is passed on
+			}
+		}
+	}
+	return stored, true
+}
+
+// traceFreeVarBinding returns the value bound to fv where its closure is
+// made, or nil when that is not found.
+func traceFreeVarBinding(fv *ssa.FreeVar) ssa.Value {
+	fn := fv.Parent()
+	idx := slices.Index(fn.FreeVars, fv)
+	var binding ssa.Value
+	if parent := fn.Parent(); parent != nil { // Not a wrapper, such as a method value
+		for instr := range instrsIn(parent) {
+			if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == fn {
+				binding = mc.Bindings[idx]
+			}
+		}
+	}
+	return binding
 }
 
 // traceIsFuncValue reports whether v is fn, or a closure of it.
