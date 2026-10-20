@@ -22,7 +22,7 @@ Go 1.27 or later. The analyzed code may target any Go version.
 **Recommended.** zerologlintctx is installable directly from GitHub Releases via mise's `github` backend — no extra registry required, and no Go toolchain needed because the binaries are prebuilt:
 
 ```bash
-mise use "github:mpyw/zerologlintctx@0.12.0"
+mise use "github:mpyw/zerologlintctx@0.13.0"
 zerologlintctx ./...
 ```
 
@@ -30,7 +30,7 @@ Run it in the project root. It pins the version in the project's `mise.toml`, so
 
 ```toml
 [tools]
-"github:mpyw/zerologlintctx" = "0.12.0"
+"github:mpyw/zerologlintctx" = "0.13.0"
 ```
 
 Add `-g` to install it for every project on your machine instead.
@@ -71,7 +71,7 @@ go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...
 ```
 
 > [!CAUTION]
-> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.9.0`).
+> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.13.0`).
 
 <details>
 <summary><a href="https://curl.se/"><img src="https://cdn.simpleicons.org/curl" height="20" alt=""></a> Downloading the tarball directly (macOS/Linux/Windows)</summary>
@@ -79,7 +79,7 @@ go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...
 No package manager? Grab the archive for your platform from [GitHub Releases](https://github.com/mpyw/zerologlintctx/releases):
 
 ```bash
-export VERSION=0.0.0
+export VERSION=0.13.0
 export OS=linux    # or darwin
 export ARCH=amd64  # or arm64
 export BASE_URL="https://github.com/mpyw/zerologlintctx/releases/download/v${VERSION}"
@@ -105,11 +105,11 @@ On Windows, download `zerologlintctx_${VERSION}_windows_${ARCH}.zip` and extract
 zerologlintctx is not bundled with golangci-lint. Build a golangci-lint binary that holds it as a [module plugin](https://golangci-lint.run/plugins/module-plugins/). Write `.custom-gcl.yml`:
 
 ```yaml
-version: v2.13.1  # the golangci-lint release to build
+version: v2.15.0  # the golangci-lint release to build
 plugins:
   - module: github.com/mpyw/zerologlintctx
     import: github.com/mpyw/zerologlintctx/plugin
-    version: v0.12.0
+    version: v0.13.0
 ```
 
 Turn it on in `.golangci.yml`. It takes no settings, and any key under `settings` stops the run. To skip test files, use golangci-lint's `run.tests: false` instead of `-test=false`:
