@@ -314,11 +314,28 @@ func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool
 func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 	fn := before.block.Parent()
 	calls := make(map[ssa.Instruction]bool)
+	makes := make(map[ssa.Instruction]bool) // Where another event is in v on the path
+	def, made := v.(ssa.Instruction)        // A parameter or a free variable is not made, but given at the entry
+	if load, ok := v.(*ssa.UnOp); ok && load.Op == token.MUL && parentFunc(load.X) == fn {
+		// An event in memory, read by a load of its own at each use. A Ctx call
+		// on any load of the same address counts, unless another event is
+		// stored there in between.
+		if loads, overwrites, ok := storeLoadsOf(load.X); ok {
+			for _, other := range loads {
+				tr.traceCtxCalls(other, fn, calls, make(map[ssa.Value]bool))
+			}
+			makes = overwrites
+			_, local := aggregateRoot(load.X).(*ssa.Alloc)
+			made = local
+		}
+	}
+	if len(makes) == 0 && made {
+		makes[def] = true
+	}
 	tr.traceCtxCalls(v, fn, calls, make(map[ssa.Value]bool))
 	if len(calls) == 0 {
 		return false
 	}
-	def, made := v.(ssa.Instruction) // A parameter or a free variable is not made, but given at the entry
 	type step struct {
 		block *ssa.BasicBlock
 		to    int // Index after the last instruction of block to look at
@@ -333,7 +350,7 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 			instr := s.block.Instrs[i]
 			if calls[instr] {
 				stopped = true // Ctx runs on this path
-			} else if made && instr == def {
+			} else if makes[instr] {
 				return false // v is made on this path, and Ctx does not run after
 			}
 		}

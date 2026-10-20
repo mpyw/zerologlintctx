@@ -298,6 +298,70 @@ func goodDeferredChainCtxOnEachBranch(ctx context.Context, other context.Context
 	}
 }
 
+// An event in memory is read by a load of its own at each use. A Ctx call on
+// an earlier load counts, unless another event is stored in between (#182).
+
+type inPlaceHolder struct{ e *zerolog.Event }
+
+func goodEventCtxResultUnusedCapturedVar(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	defer func() { _ = e }()
+	e.Ctx(ctx)
+	e.Msg("ctx result unused, captured variable") // OK - .Ctx() set the context of e
+}
+
+func goodEventCtxResultUnusedField(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	h.e = log.Info()
+	h.e.Ctx(ctx)
+	h.e.Msg("ctx result unused, field") // OK - .Ctx() set the context of h.e
+}
+
+func badEventCtxResultUnusedFieldReplaced(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	h.e = log.Info()
+	h.e.Ctx(ctx)
+	h.e = log.Warn()
+	h.e.Msg("ctx result unused, field replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxResultUnusedHolderReplaced(ctx context.Context, log zerolog.Logger, other inPlaceHolder) {
+	var h inPlaceHolder
+	h.e = log.Info()
+	h.e.Ctx(ctx)
+	h = other
+	h.e.Msg("ctx result unused, holder replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxResultUnusedCapturedVarOnOneBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	defer func() { _ = e }()
+	if cond {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx result unused, captured variable, one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxResultUnusedOtherField(ctx context.Context, log zerolog.Logger) {
+	var a, b inPlaceHolder
+	a.e = log.Info()
+	b.e = log.Warn()
+	a.e.Ctx(ctx)
+	b.e.Msg("ctx result unused, other field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxResultUnusedPointerParamField(ctx context.Context, h *inPlaceHolder, cond bool) {
+	if cond {
+		h.e.Ctx(ctx)
+	}
+	h.e.Msg("ctx result unused, pointer param field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxResultUnusedPointerParamField(ctx context.Context, h *inPlaceHolder) {
+	h.e.Ctx(ctx)
+	h.e.Msg("ctx result unused, pointer param field") // OK - .Ctx() set the context of h.e
+}
+
 // LIMITATION (false positive): An in-place Ctx call is not seen by a
 // terminator in a closure, in a func literal the event is passed to, or on
 // another variable the event was copied to (#139). The event reaches it
