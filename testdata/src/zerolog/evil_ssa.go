@@ -88,6 +88,87 @@ func goodIIFEMultipleReturnsAllCtx(ctx context.Context, logger zerolog.Logger, c
 	}().Msg("multiple returns all ctx") // OK - all return paths have ctx
 }
 
+// ===== IIFE PARAMETERS =====
+
+// A func literal that is only called where it is written takes the context
+// of the arguments it is called with (#103).
+
+func goodIIFEEventParam(ctx context.Context, logger zerolog.Logger) {
+	func(e *zerolog.Event) {
+		e.Msg("iife param") // OK - the argument has ctx
+	}(logger.Info().Ctx(ctx))
+}
+
+func goodIIFELoggerParam(ctx context.Context, logger zerolog.Logger) {
+	func(l zerolog.Logger) {
+		l.Info().Msg("iife logger param") // OK - the argument has ctx
+	}(logger.With().Ctx(ctx).Logger())
+}
+
+func goodIIFEParamWithCapture(ctx context.Context, logger zerolog.Logger) {
+	key := "k"
+	func(e *zerolog.Event) {
+		e.Str(key, "v").Msg("iife param with capture") // OK - the argument has ctx
+	}(logger.Info().Ctx(ctx))
+}
+
+func goodDeferredIIFEParam(ctx context.Context, logger zerolog.Logger) {
+	defer func(e *zerolog.Event) {
+		e.Msg("deferred iife param") // OK - the argument has ctx
+	}(logger.Info().Ctx(ctx))
+}
+
+func goodFuncLiteralCalledTwice(ctx context.Context, logger zerolog.Logger) {
+	send := func(e *zerolog.Event) {
+		e.Msg("called twice") // OK - both arguments have ctx
+	}
+	send(logger.Info().Ctx(ctx))
+	send(logger.Warn().Ctx(ctx))
+}
+
+func badIIFEEventParam(ctx context.Context, logger zerolog.Logger) {
+	func(e *zerolog.Event) {
+		e.Msg("iife param") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(logger.Info())
+}
+
+func badFuncLiteralOneCallWithoutCtx(ctx context.Context, logger zerolog.Logger) {
+	send := func(e *zerolog.Event) {
+		e.Msg("one call without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	send(logger.Info().Ctx(ctx))
+	send(logger.Warn())
+}
+
+// A func literal that is passed on may be called with anything.
+func badFuncLiteralPassedOn(ctx context.Context, logger zerolog.Logger, run func(func(*zerolog.Event))) {
+	send := func(e *zerolog.Event) {
+		e.Msg("passed on") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	send(logger.Info().Ctx(ctx))
+	run(send)
+}
+
+func badClosurePassedOn(ctx context.Context, logger zerolog.Logger, run func(func(*zerolog.Event))) {
+	key := "k"
+	send := func(e *zerolog.Event) {
+		e.Str(key, "v").Msg("closure passed on") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	send(logger.Info().Ctx(ctx))
+	run(send)
+}
+
+func badFuncLiteralNeverCalled(ctx context.Context, logger zerolog.Logger) {
+	send := func(e *zerolog.Event) {
+		e.Msg("never called") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	_ = send
+}
+
+func badDeclaredFuncParam(ctx context.Context, e *zerolog.Event) {
+	e.Msg("declared func param") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== HELPER FUNCTIONS RETURNING EVENT =====
 
 func badHelperReturnsEvent(ctx context.Context, logger zerolog.Logger) {

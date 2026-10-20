@@ -149,6 +149,7 @@ once, and `tracerHandoffs` lists which ones each tracer follows:
 - **UnOp** - Pointer dereferences
 - **Alloc** - Local variable allocation (traces stored values)
 - **FreeVar** - Closure captured variables
+- **Parameter** - A parameter of a func literal that is only called where it is written, as an IIFE is, takes the argument of every such call. A parameter of a declared function, or of a func literal passed on, is not known
 - **FieldAddr/Field** - Struct field access
 - **Store tracking** - The stores that reach each read of an address
 
@@ -253,7 +254,7 @@ None of these reported comments silences anything (#60). Guessing what was meant
 
 Due to SSA analysis constraints:
 
-- **Helper function returns**: Can't track through interprocedural analysis (IIFE is supported)
+- **Helper function returns**: Can't track through interprocedural analysis (IIFE returns and arguments are supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
