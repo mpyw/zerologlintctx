@@ -2153,6 +2153,8 @@ func badOnlyNilStoredToCapturedEvent(ctx context.Context, logger zerolog.Logger)
 		e = nil
 	}
 	e.Msg("nil or no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A field or constant element of a captured variable is what is at the same
 // selections of the variable bound where the closure is made (#153).
 
