@@ -381,6 +381,14 @@ func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Ins
 	}
 }
 
+// foundBefore reports whether v was found to have context before, as t traces
+// it, so that a caller can skip the copy of visited it would trace v with.
+//
+//declscope:shared // phi.go skips the copy for an edge found before
+func (tr *tracer) foundBefore(v ssa.Value, t tracerType) bool {
+	return tr.hasCtx[tracedValue{v: v, t: t}]
+}
+
 // traceValue traces an SSA value backwards to find if context was set.
 //
 // Tracing flow:
@@ -609,6 +617,10 @@ func (tr *tracer) traceStored(stored storeReaching, t tracerType, visited map[ss
 	for _, v := range stored.values {
 		if visited[v] || isNilConst(v) {
 			continue // A nil event logs nothing, as for an edge of a Phi
+		}
+		if tr.foundBefore(v, t) {
+			found = true // With no need to copy visited for it
+			continue
 		}
 		// Each store is traced on its own copy of visited, unless it is the
 		// only one: copying on every step of a long chain of updates would

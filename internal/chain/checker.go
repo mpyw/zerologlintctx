@@ -49,29 +49,31 @@ const (
 //   - Direct logging: Logger.Print(), log.Print(), etc.
 //
 // For each terminator, it traces backwards to verify .Ctx(ctx) was called.
+//
+// One Checker serves every function of a package. Its tracer keeps what it
+// found of each value, so a closure does not trace again the values of the
+// function it is declared in, which every closure there would otherwise do.
 type Checker struct {
-	ctxName  string                          // Context variable name (for error messages)
-	report   func(pos token.Pos, msg string) // Receives each finding
+	ctxName  string                          // Context variable name of the function checked (for error messages)
+	report   func(pos token.Pos, msg string) // Receives each finding of the function checked
 	reported map[token.Pos]bool              // Deduplication: same position reported once
 	tracer   tracer                          // Traces each terminator's receiver
 	scope    *types.Scope                    // The scope of the package of the function checked
 }
 
-// NewChecker creates a new checker for analyzing a function that has ctxName
-// in scope. It passes each finding to report, at most once per position.
-func NewChecker(ctxName string, report func(pos token.Pos, msg string)) *Checker {
-	return &Checker{
-		ctxName:  ctxName,
-		report:   report,
-		reported: make(map[token.Pos]bool),
-	}
+// NewChecker creates a new checker for the functions of one package.
+func NewChecker() *Checker {
+	return &Checker{reported: make(map[token.Pos]bool)}
 }
 
-// CheckFunction analyzes all instructions in a function. Calls, go
-// statements and defer statements are checked alike, and each is reported at
-// the "(" of its call. The position of a go or defer statement itself is its
-// keyword, which a trailing ignore on the line of the "(" would not reach.
-func (c *Checker) CheckFunction(fn *ssa.Function) {
+// CheckFunction analyzes all instructions in fn, a function that has ctxName
+// in scope, and passes each finding to report, at most once per position.
+// Calls, go statements and defer statements are checked alike, and each is
+// reported at the "(" of its call. The position of a go or defer statement
+// itself is its keyword, which a trailing ignore on the line of the "(" would
+// not reach.
+func (c *Checker) CheckFunction(fn *ssa.Function, ctxName string, report func(pos token.Pos, msg string)) {
+	c.ctxName, c.report = ctxName, report
 	c.scope = fn.Pkg.Pkg.Scope()
 	for instr := range instrsIn(fn) {
 		if call, ok := instr.(ssa.CallInstruction); ok {

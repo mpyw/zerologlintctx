@@ -1,6 +1,7 @@
 package zerologlintctx_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,5 +64,46 @@ func TestManyCallsOnOneLogger(t *testing.T) {
 	case <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatalf("checking %d log calls on one logger took over 30s", calls)
+	}
+}
+
+// TestManyClosuresOverUpdatedLogger checks a function with hundreds of
+// closures, called on the spot and deferred, that log with a captured logger
+// updated hundreds of times. Each closure traced the updates of the function
+// again, with a search of the control flow for each store, which took time
+// over cubic in their number (#160): minutes for this function, against well
+// under a second now.
+func TestManyClosuresOverUpdatedLogger(t *testing.T) {
+	const closures = 800
+	dir := t.TempDir()
+	if err := os.CopyFS(filepath.Join(dir, "src"), os.DirFS(filepath.Join(analysistest.TestData(), "src"))); err != nil {
+		t.Fatal(err)
+	}
+	var src strings.Builder
+	src.WriteString("package manyclosures\n\nimport (\n\t\"context\"\n\n\t\"github.com/rs/zerolog\"\n)\n\n")
+	for _, kind := range []string{"", "defer "} {
+		fmt.Fprintf(&src, "func f%d(ctx context.Context, l zerolog.Logger, c []bool) {\n\tlc := l.With().Ctx(ctx).Logger()\n", len(kind))
+		for i := range closures {
+			fmt.Fprintf(&src, "\t%sfunc() { lc.Info().Msg(\"x\") }()\n\tif c[%d] {\n\t\tlc = lc.With().Str(\"k\", \"v\").Logger()\n\t}\n", kind, i)
+		}
+		src.WriteString("}\n\n")
+	}
+	pkgDir := filepath.Join(dir, "src", "manyclosures")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "a.go"), []byte(src.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		analysistest.Run(t, dir, zerologlintctx.Analyzer, "manyclosures")
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("checking %d closures over an updated logger took over 30s", closures)
 	}
 }

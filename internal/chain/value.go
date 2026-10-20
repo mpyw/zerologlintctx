@@ -107,24 +107,26 @@ func (p instrPositions) of(instr ssa.Instruction) int {
 
 // reaches reports whether b can run after a.
 func (p instrPositions) reaches(a, b ssa.Instruction) bool {
-	if a.Block() == b.Block() && p.of(a) < p.of(b) {
-		return true
-	}
-	seen := make(map[*ssa.BasicBlock]bool)
+	return p.after(a)(b)
+}
+
+// after returns a test of whether an instruction can run after a. It finds
+// the blocks that follow a once, for every instruction it is asked about.
+func (p instrPositions) after(a ssa.Instruction) func(ssa.Instruction) bool {
+	following := make(map[*ssa.BasicBlock]bool)
 	queue := slices.Clone(a.Block().Succs)
 	for len(queue) > 0 {
 		block := queue[0]
 		queue = queue[1:]
-		if seen[block] {
+		if following[block] {
 			continue
 		}
-		seen[block] = true
-		if block == b.Block() {
-			return true
-		}
+		following[block] = true
 		queue = append(queue, block.Succs...)
 	}
-	return false
+	return func(b ssa.Instruction) bool {
+		return following[b.Block()] || a.Block() == b.Block() && p.of(a) < p.of(b)
+	}
 }
 
 // isNilConst checks if a value is a nil constant.
