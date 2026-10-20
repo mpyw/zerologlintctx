@@ -5,13 +5,13 @@ package zerologlintctx
 import (
 	"errors"
 	"go/ast"
+	"go/token"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 
-	"github.com/mpyw/zerologlintctx/internal"
+	"github.com/mpyw/zerologlintctx/internal/chain"
 	"github.com/mpyw/zerologlintctx/internal/directive"
-	"github.com/mpyw/zerologlintctx/internal/typeutil"
 )
 
 // Analyzer is the main analyzer for zerologlintctx.
@@ -24,52 +24,75 @@ var Analyzer = &analysis.Analyzer{
 
 var ErrNoSSA = errors.New("SSA analyzer result not found")
 
+// run checks every function that has a context in scope, then reports the
+// ignore directives that silenced nothing and the directives that do nothing.
+//
+// The analysis tracks context through three zerolog types:
+//   - Event: The log event being built (e.g., log.Info().Str("k","v"))
+//   - Context: The builder for derived loggers (e.g., log.With().Str("k","v"))
+//   - Logger: The logger instance
+//
+// Context can be set via:
+//   - Event.Ctx(ctx): Sets context on the current event
+//   - Context.Ctx(ctx): Sets default context for the derived logger
+//   - zerolog.Ctx(ctx): Returns a logger from context (already has ctx)
 func run(pass *analysis.Pass) (any, error) {
 	ssaInfo, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	if !ok {
 		return nil, ErrNoSSA
 	}
 
-	// Build set of files to skip
-	skipFiles := buildSkipFiles(pass)
+	ignoreMaps, problems := scanFiles(pass)
 
-	// Build ignore maps for each file (excluding skipped files)
-	ignoreMaps := buildIgnoreMaps(pass, skipFiles)
+	for fn, ctxName := range chain.ContextNames(ssaInfo.SrcFuncs) {
+		ignoreMap, ok := ignoreMaps[unadjustedFilename(pass.Fset, fn.Pos())]
+		if !ok {
+			continue // Not in a checked file, or no position at all
+		}
+		chain.NewChecker(ctxName, func(pos token.Pos, msg string) {
+			// Unadjusted, so a //line directive cannot move the call away from its ignore.
+			if ignoreMap.ShouldIgnore(pass.Fset.PositionFor(pos, false).Line) {
+				return
+			}
+			pass.Report(analysis.Diagnostic{Pos: pos, Message: msg})
+		}).CheckFunction(fn)
+	}
 
-	// Run SSA-based zerolog analysis
-	internal.RunSSA(pass, ssaInfo, ignoreMaps, skipFiles, typeutil.IsContextType)
+	for _, ignoreMap := range ignoreMaps {
+		for _, pos := range ignoreMap.GetUnusedIgnores() {
+			pass.Reportf(pos, "unused zerologlintctx:ignore directive")
+		}
+	}
+
+	for _, p := range problems {
+		pass.Reportf(p.Pos, "%s", p.Message)
+	}
 
 	return nil, nil
 }
 
-// buildSkipFiles creates a set of filenames to skip.
-// Generated files are always skipped.
-// Test files can be skipped via the driver's built-in -test flag.
-func buildSkipFiles(pass *analysis.Pass) map[string]bool {
-	skipFiles := make(map[string]bool)
-
-	for _, file := range pass.Files {
-		// Unadjusted, so a //line directive cannot change the key.
-		filename := pass.Fset.PositionFor(file.Pos(), false).Filename
-
-		// Always skip generated files
-		if ast.IsGenerated(file) {
-			skipFiles[filename] = true
-		}
-	}
-
-	return skipFiles
-}
-
-// buildIgnoreMaps creates ignore maps for each file in the pass.
-func buildIgnoreMaps(pass *analysis.Pass, skipFiles map[string]bool) map[string]directive.IgnoreMap {
+// scanFiles reads the directives of each file to check. It returns the
+// ignore map of each such file, keyed by its unadjusted filename, and the
+// directives that do nothing, in file order.
+//
+// Generated files are not checked, and get no entry. Test files can be
+// skipped via the driver's built-in -test flag.
+func scanFiles(pass *analysis.Pass) (map[string]directive.IgnoreMap, []directive.Problem) {
 	ignoreMaps := make(map[string]directive.IgnoreMap)
+	var problems []directive.Problem
 	for _, file := range pass.Files {
-		filename := pass.Fset.PositionFor(file.Pos(), false).Filename
-		if skipFiles[filename] {
+		if ast.IsGenerated(file) {
 			continue
 		}
-		ignoreMaps[filename] = directive.BuildIgnoreMap(pass.Fset, file)
+		ignoreMap, fileProblems := directive.Scan(pass.Fset, file)
+		ignoreMaps[unadjustedFilename(pass.Fset, file.Pos())] = ignoreMap
+		problems = append(problems, fileProblems...)
 	}
-	return ignoreMaps
+	return ignoreMaps, problems
+}
+
+// unadjustedFilename names the file pos is in, ignoring //line directives so
+// that one cannot change the key. It is "" for an invalid pos.
+func unadjustedFilename(fset *token.FileSet, pos token.Pos) string {
+	return fset.PositionFor(pos, false).Filename
 }

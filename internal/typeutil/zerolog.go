@@ -16,19 +16,16 @@
 //
 // Instead of hardcoding method names, we use return type analysis:
 //
-//	ReturnsEvent(fn)   → identifies Logger.Info, Logger.Debug, etc.
-//	ReturnsLogger(fn)  → identifies Context.Logger, zerolog.Ctx
-//	ReturnsContext(fn) → identifies Logger.With
-//	ReturnsVoid(fn)    → identifies Event terminators (Msg, Send, etc.)
+//	ReturnsEvent(sig)   → identifies Logger.Info, Logger.Debug, etc.
+//	ReturnsLogger(sig)  → identifies Context.Logger, zerolog.Ctx
+//	ReturnsContext(sig) → identifies Logger.With
+//	ReturnsVoid(sig)    → identifies Event terminators (Msg, Send, etc.)
 //
 // This approach is more robust against API changes and works with custom wrappers.
 package typeutil
 
 import (
 	"go/types"
-	"strings"
-
-	"golang.org/x/tools/go/ssa"
 )
 
 // CtxMethod is the method name for setting context.
@@ -68,81 +65,52 @@ func IsLogger(t types.Type) bool {
 }
 
 // =============================================================================
-// Function Checking
+// Package Checking
 // =============================================================================
 
-// IsCtxFunc returns true for zerolog.Ctx() or log.Ctx() functions.
-func IsCtxFunc(fn *ssa.Function) bool {
-	if fn.Name() != CtxMethod {
-		return false
-	}
-	pkg := fn.Package()
-	if pkg == nil || pkg.Pkg == nil {
-		return false
-	}
-	path := pkg.Pkg.Path()
-	return path == zerologPkgPath || path == zerologLogPath
+// IsZerologPkg reports whether pkg is github.com/rs/zerolog or its global
+// logger package github.com/rs/zerolog/log.
+func IsZerologPkg(pkg *types.Package) bool {
+	return pkg != nil && (pkg.Path() == zerologPkgPath || pkg.Path() == zerologLogPath)
+}
+
+// IsZerologLogPkg reports whether pkg is the global logger package
+// github.com/rs/zerolog/log.
+func IsZerologLogPkg(pkg *types.Package) bool {
+	return pkg != nil && pkg.Path() == zerologLogPath
 }
 
 // =============================================================================
-// Method Classification
+// Signature Classification
 // =============================================================================
 
-// ReturnsEvent checks if a function returns *zerolog.Event.
-func ReturnsEvent(fn *ssa.Function) bool {
-	return returnsSingleType(fn, IsEvent)
+// ReturnsEvent checks if a signature returns *zerolog.Event.
+func ReturnsEvent(sig *types.Signature) bool {
+	return returnsSingleType(sig, IsEvent)
 }
 
-// ReturnsLogger checks if a function returns zerolog.Logger.
-func ReturnsLogger(fn *ssa.Function) bool {
-	return returnsSingleType(fn, IsLogger)
+// ReturnsLogger checks if a signature returns zerolog.Logger.
+func ReturnsLogger(sig *types.Signature) bool {
+	return returnsSingleType(sig, IsLogger)
 }
 
-// ReturnsContext checks if a function returns zerolog.Context.
-func ReturnsContext(fn *ssa.Function) bool {
-	return returnsSingleType(fn, IsContext)
+// ReturnsContext checks if a signature returns zerolog.Context.
+func ReturnsContext(sig *types.Signature) bool {
+	return returnsSingleType(sig, IsContext)
 }
 
-// returnsSingleType checks if a function returns exactly one value matching the predicate.
-func returnsSingleType(fn *ssa.Function, predicate func(types.Type) bool) bool {
-	results := fn.Signature.Results()
+// returnsSingleType checks if a signature returns exactly one value matching the predicate.
+func returnsSingleType(sig *types.Signature, predicate func(types.Type) bool) bool {
+	results := sig.Results()
 	if results.Len() != 1 {
 		return false
 	}
 	return predicate(results.At(0).Type())
 }
 
-// ReturnsVoid checks if a function has no return values.
-func ReturnsVoid(fn *ssa.Function) bool {
-	return fn.Signature.Results().Len() == 0
-}
-
-// IsDirectLoggingMethod checks if a function is a direct logging method on Logger
-// that bypasses the Event chain (Print, Printf, Println).
-func IsDirectLoggingMethod(fn *ssa.Function, recv *types.Var) bool {
-	if recv == nil || !IsLogger(recv.Type()) {
-		return false
-	}
-	if !ReturnsVoid(fn) {
-		return false
-	}
-	return strings.HasPrefix(fn.Name(), "Print")
-}
-
-// IsDirectLoggingFunc checks if a function is a direct logging function from
-// zerolog/log package that bypasses the Event chain (log.Print, log.Printf).
-func IsDirectLoggingFunc(fn *ssa.Function) bool {
-	pkg := fn.Package()
-	if pkg == nil || pkg.Pkg == nil {
-		return false
-	}
-	if pkg.Pkg.Path() != zerologLogPath {
-		return false
-	}
-	if !ReturnsVoid(fn) {
-		return false
-	}
-	return strings.HasPrefix(fn.Name(), "Print")
+// ReturnsVoid checks if a signature has no return values.
+func ReturnsVoid(sig *types.Signature) bool {
+	return sig.Results().Len() == 0
 }
 
 // =============================================================================
