@@ -107,7 +107,8 @@ func storesReachingClosure(
 // a closure that captures it. What it passes the address on to may read it at
 // any point after, so what reaches esc, and every store after it, may be what
 // it reads. A closure that is only deferred reads it at the returns after it,
-// unless the variable is declared in a loop.
+// unless the variable is declared in a loop, and one that is only called reads
+// it at each call.
 func (w *storeWalk) walkEscape(esc ssa.Instruction) {
 	if rets, deferred := storeDeferredReturns(esc, w.positions); deferred && !w.declaredInLoop() {
 		for _, ret := range rets {
@@ -115,8 +116,35 @@ func (w *storeWalk) walkEscape(esc ssa.Instruction) {
 		}
 		return
 	}
+	if calls, called := storeCallsOnly(esc); called {
+		for _, call := range calls {
+			w.walkBefore(call)
+		}
+		return
+	}
 	w.walkBefore(esc)
 	w.addStoresAfter(esc)
+}
+
+// storeCallsOnly reports whether esc is a closure whose only uses are calls
+// of it, not go or defer statements, and returns them. Such a closure runs at
+// each call, and reads what reaches it there, as an IIFE does:
+//
+//	func() { l.Info().Msg("x") }() // reads l here, not after
+//	l = other
+func storeCallsOnly(esc ssa.Instruction) (calls []ssa.Instruction, ok bool) {
+	mc, ok := esc.(*ssa.MakeClosure)
+	if !ok {
+		return nil, false
+	}
+	for _, ref := range *mc.Referrers() {
+		call, isCall := ref.(*ssa.Call)
+		if !isCall || call.Call.Value != mc {
+			return nil, false
+		}
+		calls = append(calls, call)
+	}
+	return calls, true
 }
 
 // declaredInLoop reports whether the root of the walk is a local variable

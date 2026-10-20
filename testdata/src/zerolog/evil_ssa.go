@@ -2315,6 +2315,40 @@ func goodLoggerPointerPickedOnBranch(ctx context.Context, logger zerolog.Logger,
 	p.Info().Msg("logger pointer picked on a branch") // OK - both loggers have ctx
 }
 
+// A closure that is only called runs at each call, and reads what reaches it
+// there, not the stores after (#173).
+
+func goodIIFEBeforeEventReplaced(ctx context.Context, logger zerolog.Logger, base zerolog.Logger) {
+	lc := logger.With().Ctx(ctx).Logger()
+	e := lc.Info()
+	func() {
+		e.Msg("iife before the event is replaced") // OK - e has ctx at the call
+	}()
+	e = base.Info()
+	_ = e
+}
+
+func goodIIFEInLoopBeforeLoggerReplaced(ctx context.Context, logger zerolog.Logger, n int) {
+	l := logger.With().Ctx(ctx).Logger()
+	for range n {
+		func() {
+			l.Info().Msg("iife in a loop") // OK - l has ctx at every call
+		}()
+	}
+	l = logger
+	_ = l
+}
+
+func badIIFEInLoopLoggerReplacedInLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	l := logger.With().Ctx(ctx).Logger()
+	for range n {
+		func() {
+			l.Info().Msg("iife in a loop, replaced in the loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+		l = logger
+	}
+}
+
 func badClosureStoreAfterIsMade(ctx context.Context, logger zerolog.Logger) {
 	l := logger.With().Ctx(ctx).Logger()
 	f := func() {
