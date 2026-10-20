@@ -207,6 +207,56 @@ func goodIIFEStructParam(ctx context.Context, logger zerolog.Logger) {
 	}(iifeLoggerHolder{l: logger.With().Ctx(ctx).Logger()})
 }
 
+// A recursive call that passes the parameter on keeps what it holds (#131).
+
+func goodRecursiveFuncLiteralPointerParam(ctx context.Context, logger zerolog.Logger, n int) {
+	l := logger.With().Ctx(ctx).Logger()
+	var walk func(p *zerolog.Logger, n int)
+	walk = func(p *zerolog.Logger, n int) {
+		if n > 0 {
+			walk(p, n-1)
+		}
+		p.Info().Msg("recursive pointer param") // OK - every call passes on &l
+	}
+	walk(&l, n)
+}
+
+func goodRecursiveFuncLiteralStructParam(ctx context.Context, logger zerolog.Logger, n int) {
+	var walk func(h iifeLoggerHolder, n int)
+	walk = func(h iifeLoggerHolder, n int) {
+		if n > 0 {
+			walk(h, n-1)
+		}
+		h.l.Info().Msg("recursive struct param") // OK - every call passes on the holder
+	}
+	walk(iifeLoggerHolder{l: logger.With().Ctx(ctx).Logger()}, n)
+}
+
+func badRecursiveFuncLiteralPointerParam(ctx context.Context, logger zerolog.Logger, n int) {
+	l := logger
+	var walk func(p *zerolog.Logger, n int)
+	walk = func(p *zerolog.Logger, n int) {
+		if n > 0 {
+			walk(p, n-1)
+		}
+		p.Info().Msg("recursive pointer param") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	walk(&l, n)
+}
+
+func badRecursiveFuncLiteralPointerParamOverwritten(ctx context.Context, logger zerolog.Logger, n int) {
+	l := logger.With().Ctx(ctx).Logger()
+	other := logger
+	var walk func(p *zerolog.Logger, n int)
+	walk = func(p *zerolog.Logger, n int) {
+		p.Info().Msg("recursive pointer param overwritten") // want `zerolog call chain missing .Ctx\(ctx\)`
+		if n > 0 {
+			walk(&other, n-1)
+		}
+	}
+	walk(&l, n)
+}
+
 func badIIFELoggerPointerParam(ctx context.Context, logger zerolog.Logger) {
 	l := logger
 	func(p *zerolog.Logger) {
