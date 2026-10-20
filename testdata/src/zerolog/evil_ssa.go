@@ -88,6 +88,35 @@ func goodIIFEMultipleReturnsAllCtx(ctx context.Context, logger zerolog.Logger, c
 	}().Msg("multiple returns all ctx") // OK - all return paths have ctx
 }
 
+// A func literal that captures nothing is called as the function itself, not
+// through a closure (#112).
+
+func goodIIFEWithoutCapturesReturnsEvent(ctx context.Context) {
+	e := func(c context.Context) *zerolog.Event {
+		return log.Ctx(c).Info()
+	}(ctx)
+	e.Msg("iife without captures") // OK - the IIFE returns an event with ctx
+}
+
+func goodFuncLiteralWithoutCapturesReturnsEvent(ctx context.Context) {
+	mk := func(c context.Context) *zerolog.Event { return log.Info().Ctx(c) }
+	mk(ctx).Msg("func literal without captures") // OK - mk returns an event with ctx
+}
+
+func goodIIFEWithoutCapturesReturnsLogger(ctx context.Context) {
+	l := func(c context.Context) zerolog.Logger {
+		return log.With().Ctx(c).Logger()
+	}(ctx)
+	l.Info().Msg("iife without captures returns logger") // OK - the IIFE returns a logger with ctx
+}
+
+func badIIFEWithoutCapturesReturnsEvent(ctx context.Context) {
+	e := func() *zerolog.Event {
+		return log.Info()
+	}()
+	e.Msg("iife without captures, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== IIFE PARAMETERS =====
 
 // A func literal that is only called where it is written takes the context

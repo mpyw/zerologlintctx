@@ -168,7 +168,7 @@ func (tr *tracer) eventHasCtx(v ssa.Value) bool {
 //	│     │     │                                                      │
 //	│     │     ├─ No static callee? → trace receiver                 │
 //	│     │     │                                                      │
-//	│     │     ├─ Is IIFE? → trace return values                     │
+//	│     │     ├─ Func literal? → trace return values                │
 //	│     │     │                                                      │
 //	│     │     ├─ Sets context? → return true                        │
 //	│     │     ├─ Handoff? → trace receiver with its own tracer      │
@@ -216,11 +216,10 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 			}
 			return tr.traceReceiver(call.Call.Args[0], call, t, visited)
 		}
-		// An IIFE (Immediately Invoked Function Expression)
-		if _, ok := call.Call.Value.(*ssa.MakeClosure); ok {
-			return tr.traceReturns(sfn, t, visited)
-		}
-		return false
+		// A func literal, called on the spot as an IIFE (Immediately Invoked
+		// Function Expression) or through a variable. One that captures
+		// nothing is called as the function itself, not as a closure.
+		return sfn.Parent() != nil && tr.traceReturns(sfn, t, visited)
 	}
 
 	if t.isCtxSetBy(c) {
