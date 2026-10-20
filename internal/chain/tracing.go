@@ -437,7 +437,7 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 		// A func literal, called on the spot as an IIFE (Immediately Invoked
 		// Function Expression) or through a variable. One that captures
 		// nothing is called as the function itself, not as a closure.
-		return sfn.Parent() != nil && tr.traceReturns(sfn, t, visited)
+		return sfn.Parent() != nil && tr.traceReturns(sfn, 0, t, visited)
 	}
 
 	if t.isCtxSetBy(c) {
@@ -462,6 +462,13 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 // traceCommon handles common SSA value types (Phi, UnOp, FreeVar, etc.).
 func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	switch val := v.(type) {
+	case *ssa.Extract:
+		if call, ok := val.Tuple.(*ssa.Call); ok {
+			if sfn := call.Call.StaticCallee(); sfn != nil && sfn.Parent() != nil {
+				return tr.traceReturns(sfn, val.Index, t, visited)
+			}
+		}
+		return tr.traceValue(val.Tuple, t, visited)
 	case *ssa.Phi:
 		return tr.tracePhi(val, t, visited)
 	case *ssa.UnOp:
@@ -537,7 +544,7 @@ func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t trac
 // Logger.UpdateContext returns has context.
 func (tr *tracer) updaterSetsCtx(visited map[ssa.Value]bool) func(*ssa.Function) bool {
 	return func(fn *ssa.Function) bool {
-		return tr.traceReturns(fn, tracerContext, maps.Clone(visited))
+		return tr.traceReturns(fn, 0, tracerContext, maps.Clone(visited))
 	}
 }
 
@@ -829,17 +836,17 @@ func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, t tracerTy
 	return tr.traceValue(recv, t, visited)
 }
 
-// traceReturns reports whether every value fn returns has context, as for an
-// IIFE (Immediately Invoked Function Expression) or a func passed to
-// Logger.UpdateContext.
-func (tr *tracer) traceReturns(fn *ssa.Function, t tracerType, visited map[ssa.Value]bool) bool {
+// traceReturns reports whether the value at resultIndex from every return of
+// fn has context, as for an IIFE (Immediately Invoked Function Expression) or
+// a func passed to Logger.UpdateContext.
+func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, t tracerType, visited map[ssa.Value]bool) bool {
 	results := fn.Signature.Results()
-	if results == nil || results.Len() == 0 {
+	if results == nil || resultIndex < 0 || resultIndex >= results.Len() {
 		return false
 	}
 
 	// Only trace if return type is Event, Logger, or Context
-	retType := results.At(0).Type()
+	retType := results.At(resultIndex).Type()
 	if !typeutil.IsEvent(retType) && !typeutil.IsLogger(retType) && !typeutil.IsContext(retType) {
 		return false
 	}
@@ -848,13 +855,16 @@ func (tr *tracer) traceReturns(fn *ssa.Function, t tracerType, visited map[ssa.V
 	hasReturn := false
 	for instr := range instrsIn(fn) {
 		ret, ok := instr.(*ssa.Return)
-		if !ok || len(ret.Results) == 0 {
+		if !ok {
 			continue
+		}
+		if len(ret.Results) <= resultIndex {
+			return false
 		}
 
 		hasReturn = true
 		retVisited := maps.Clone(visited)
-		if !tr.traceValue(ret.Results[0], t, retVisited) {
+		if !tr.traceValue(ret.Results[resultIndex], t, retVisited) {
 			return false
 		}
 	}
