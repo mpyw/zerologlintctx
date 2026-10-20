@@ -330,6 +330,20 @@ func goodDeferredBoundMethodWithCtx(ctx context.Context, logger zerolog.Logger) 
 	defer msg("deferred bound method with ctx") // OK
 }
 
+// A chain run by a go statement is checked as a deferred one is (#78).
+func badGoStatementLog(ctx context.Context, logger zerolog.Logger) {
+	go logger.Info().Msg("go") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodGoStatementLogWithCtx(ctx context.Context, logger zerolog.Logger) {
+	go logger.Info().Ctx(ctx).Msg("go with ctx") // OK
+}
+
+func badGoStatementBoundMethod(ctx context.Context, logger zerolog.Logger) {
+	msg := logger.Info().Msg
+	go msg("go bound method") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== LOOP-CREATED EVENTS =====
 
 func badEventInLoop(ctx context.Context, logger zerolog.Logger) {
@@ -622,6 +636,17 @@ func goodMethodValueWithCtx(ctx context.Context, logger zerolog.Logger) {
 	e := logger.Info().Ctx(ctx)
 	msg := e.Msg
 	msg("method value with ctx") // OK - ctx set via .Ctx(ctx)
+}
+
+// A method expression passes the receiver as the first argument (#79).
+func badMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	msg := (*zerolog.Event).Msg
+	msg(logger.Info(), "method expression") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodMethodExpressionWithCtx(ctx context.Context, logger zerolog.Logger) {
+	msg := (*zerolog.Event).Msg
+	msg(logger.Info().Ctx(ctx), "method expression with ctx") // OK - ctx set via .Ctx(ctx)
 }
 
 // ===== STRUCT WITH MULTIPLE EVENT FIELDS =====

@@ -17,6 +17,8 @@ import (
 
 // tracerType identifies which zerolog type we're currently tracing.
 // The tracing logic differs based on what type of value we're following.
+//
+//declscope:shared // phi.go traces each edge with the Phi's tracer
 type tracerType int
 
 const (
@@ -154,6 +156,8 @@ func (tr *tracer) eventHasCtx(v ssa.Value) bool {
 //	│     │                                                            │
 //	│     └─ Not a Call → traceCommon (Phi, UnOp, Alloc, etc.)        │
 //	└─────────────────────────────────────────────────────────────────┘
+//
+//declscope:shared // phi.go traces each edge of a Phi
 func (tr *tracer) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	if visited[v] {
 		return false
@@ -217,43 +221,6 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 	}
 
 	return false
-}
-
-// =============================================================================
-// Phi Node Handling
-// =============================================================================
-
-// tracePhi handles SSA Phi nodes where multiple control flow paths merge.
-//
-// All edges must have context set for the Phi node to be considered valid.
-// Cyclic edges and nil constants are skipped.
-func (tr *tracer) tracePhi(phi *ssa.Phi, t tracerType, visited map[ssa.Value]bool) bool {
-	if len(phi.Edges) == 0 {
-		return false
-	}
-
-	hasValidEdge := false
-	for _, edge := range phi.Edges {
-		// Skip edges that would cycle back to this Phi
-		if edgeLeadsTo(edge, phi, visited) {
-			continue
-		}
-
-		// Skip nil constant edges
-		if isNilConst(edge) {
-			continue
-		}
-
-		hasValidEdge = true
-
-		// Clone visited for independent tracing of each branch
-		edgeVisited := maps.Clone(visited)
-		if !tr.traceValue(edge, t, edgeVisited) {
-			return false
-		}
-	}
-
-	return hasValidEdge
 }
 
 // =============================================================================

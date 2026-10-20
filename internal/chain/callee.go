@@ -1,4 +1,5 @@
-// callee.go classifies the function a call goes to by what it is, where the
+// callee.go resolves the function a call runs, seen through method values and
+// method expressions, and classifies a callee by what it is where the
 // signature alone cannot tell: its name and its package.
 
 package chain
@@ -12,6 +13,84 @@ import (
 	"github.com/mpyw/zerologlintctx/internal/typeutil"
 )
 
+// callee is the declared function or method a call runs.
+//
+//declscope:shared // checker.go classifies each call by it
+type callee struct {
+	// recv is the receiver the method runs on, or nil for a function.
+	recv ssa.Value
+	// fn is the declared function or method. For a method value or a method
+	// expression, it is the method, not the wrapper SSA calls.
+	//
+	//declscope:private
+	fn *types.Func
+}
+
+// calleeOf resolves the callee of a call, a go statement or a defer
+// statement. It reports false when the callee is not known statically, or
+// is not a declared function, such as a closure.
+//
+// A method is called in one of three forms, and each passes its receiver in
+// a different place:
+//
+//	e.Msg("x")       // (*Event).Msg(e, "x")        receiver in Args[0]
+//	m := e.Msg       // (*Event).Msg$bound(e)       receiver in Bindings[0]
+//	m("x")           // t0("x")
+//	f := (*Event).Msg
+//	f(e, "x")        // (*Event).Msg$thunk(e, "x")  receiver in Args[0]
+//
+//declscope:shared // checker.go resolves every call through it
+func calleeOf(cc *ssa.CallCommon) (callee, bool) {
+	sfn := cc.StaticCallee()
+	if sfn == nil {
+		return callee{}, false
+	}
+	fn, ok := sfn.Object().(*types.Func)
+	if !ok {
+		return callee{}, false
+	}
+	c := callee{fn: fn}
+	if fn.Signature().Recv() == nil {
+		return c, true
+	}
+	if mc, bound := cc.Value.(*ssa.MakeClosure); bound {
+		if len(mc.Bindings) == 0 {
+			return callee{}, false
+		}
+		c.recv = mc.Bindings[0]
+		return c, true
+	}
+	if len(cc.Args) == 0 {
+		return callee{}, false
+	}
+	c.recv = cc.Args[0]
+	return c, true
+}
+
+// endsEventChain reports whether c ends an Event chain: a method of
+// *zerolog.Event that returns nothing, such as Msg, Msgf, MsgFunc or Send.
+//
+//declscope:shared // checker.go traces the chain such a call ends
+func (c callee) endsEventChain() bool {
+	recv := c.fn.Signature().Recv()
+	return recv != nil && typeutil.IsEvent(recv.Type()) && typeutil.ReturnsVoid(c.fn.Signature())
+}
+
+// logsDirectly reports whether c logs without an Event chain: a Print method
+// of Logger, or a Print function of zerolog/log.
+//
+//declscope:shared // checker.go reports such a call
+func (c callee) logsDirectly() bool {
+	sig := c.fn.Signature()
+	if !strings.HasPrefix(c.fn.Name(), "Print") || !typeutil.ReturnsVoid(sig) {
+		return false
+	}
+	if recv := sig.Recv(); recv != nil {
+		return typeutil.IsLogger(recv.Type())
+	}
+	return typeutil.IsZerologLogPkg(c.fn.Pkg())
+}
+
 // isCtxCallee reports whether fn is zerolog.Ctx or log.Ctx, or a Ctx method
 // declared in zerolog.
 //
@@ -21,19 +100,4 @@ func isCtxCallee(fn *ssa.Function) bool {
 		return false
 	}
 	return typeutil.IsZerologPkg(fn.Pkg.Pkg)
-}
-
-// isDirectLoggingCallee reports whether fn, called with receiver recv, logs
-// without an Event chain: a Print method of Logger, or a Print function of
-// zerolog/log. recv is nil for a call that has no receiver.
-//
-//declscope:shared // checker.go reports such a call
-func isDirectLoggingCallee(fn *ssa.Function, recv *types.Var) bool {
-	if !strings.HasPrefix(fn.Name(), "Print") || !typeutil.ReturnsVoid(fn.Signature) {
-		return false
-	}
-	if recv != nil && typeutil.IsLogger(recv.Type()) {
-		return true
-	}
-	return fn.Pkg != nil && typeutil.IsZerologLogPkg(fn.Pkg.Pkg)
 }
