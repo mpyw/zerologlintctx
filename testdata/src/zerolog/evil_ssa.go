@@ -103,6 +103,18 @@ func badIIFEMultipleResultsUsesSecond(ctx context.Context, logger zerolog.Logger
 	e.Msg("second result has no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A result of an interface type is traced through to the value it holds.
+
+func goodIIFEResultAsInterface(ctx context.Context, logger zerolog.Logger) {
+	v, _ := func() (any, bool) { return logger.Info().Ctx(ctx), true }()
+	v.(*zerolog.Event).Msg("iife result as interface") // OK - the value it holds has ctx
+}
+
+func badIIFEResultAsInterface(ctx context.Context, logger zerolog.Logger) {
+	v := func() any { return logger.Info() }()
+	v.(*zerolog.Event).Msg("iife result as interface") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A func literal that captures nothing is called as the function itself, not
 // through a closure (#112).
 
