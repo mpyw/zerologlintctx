@@ -8,6 +8,7 @@
 //
 // False Negatives (should report but doesn't):
 //   - Helper methods: An event logged inside a method that has no context of its own
+//   - Writes through another reference: a function passed the address, or an alias
 //
 // False Positives (reports when shouldn't):
 //   - Helper returns: .Ctx() set inside a helper is not seen (IIFE is supported)
@@ -1065,6 +1066,44 @@ func limitationPtrReceiverMethod(ctx context.Context, logger zerolog.Logger) {
 	h := &ptrHolder{e: logger.Info()}
 	h.log() // LIMITATION: should report inside h.log() but doesn't
 }
+
+// ===== WRITES THROUGH ANOTHER REFERENCE =====
+
+// LIMITATION (false negative): A write through another reference to the same
+// memory is not seen (#115). Taking every call that is passed the address, or
+// every store through a pointer of the same type, as a possible write would
+// report common code, such as a method called on a struct before its logger is
+// read, so the value stored before is taken as what the read gets.
+
+func limitationAddressPassedToWriter(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	replaceLoggerAt(&l)
+	l.Info().Msg("address passed to a writer") // LIMITATION: should report but doesn't
+}
+
+func limitationSlicePassedToWriter(ctx context.Context, logger zerolog.Logger, es []*zerolog.Event) {
+	es[0] = logger.Info().Ctx(ctx)
+	replaceFirstEvent(es)
+	es[0].Msg("slice passed to a writer") // LIMITATION: should report but doesn't
+}
+
+func limitationSliceSharingArray(ctx context.Context, logger zerolog.Logger) {
+	es := make([]*zerolog.Event, 1)
+	es[0] = logger.Info().Ctx(ctx)
+	alias := es[:]
+	alias[0] = logger.Info()
+	es[0].Msg("slice sharing an array") // LIMITATION: should report but doesn't
+}
+
+func limitationPointerParamsAlias(ctx context.Context, logger zerolog.Logger, p, q *ptrHolder) {
+	p.e = logger.Info().Ctx(ctx)
+	q.e = logger.Info()
+	p.e.Msg("pointer params may alias") // LIMITATION: should report but doesn't
+}
+
+func replaceLoggerAt(p *zerolog.Logger) { *p = zerolog.Nop() }
+
+func replaceFirstEvent(es []*zerolog.Event) { es[0] = log.Info() }
 
 // ===== CLOSURE THAT MODIFIES CAPTURED VAR =====
 
