@@ -46,7 +46,7 @@ func unwrapInner(v ssa.Value) ssa.Value {
 }
 
 // derivesFrom reports whether found holds for v, or for a value v derives
-// from: the receiver of a call, an edge of a Phi, or what next returns for
+// from: the receiver of a call (see calleeReceiver), an edge of a Phi, or what next returns for
 // any other value (nil to stop). Values in seen are not followed, and each
 // value followed is added to it, so cycles end.
 func derivesFrom(
@@ -65,8 +65,8 @@ func derivesFrom(
 
 	switch val := v.(type) {
 	case *ssa.Call:
-		if len(val.Call.Args) > 0 {
-			return derivesFrom(val.Call.Args[0], found, next, seen)
+		if recv := calleeReceiver(&val.Call); recv != nil {
+			return derivesFrom(recv, found, next, seen)
 		}
 		return false
 	case *ssa.Phi:
