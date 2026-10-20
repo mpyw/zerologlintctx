@@ -62,11 +62,14 @@ func NewChecker(ctxName string, report func(pos token.Pos, msg string)) *Checker
 }
 
 // CheckFunction analyzes all instructions in a function. Calls, go
-// statements and defer statements are checked alike.
+// statements and defer statements are checked alike, and each is reported at
+// the "(" of its call. The position of a go or defer statement itself is its
+// keyword, which a trailing ignore on the line of the "(" would not reach.
 func (c *Checker) CheckFunction(fn *ssa.Function) {
 	for instr := range instrsIn(fn) {
 		if call, ok := instr.(ssa.CallInstruction); ok {
-			c.checkCall(call.Common(), call.Pos())
+			cc := call.Common()
+			c.checkCall(cc, cc.Pos())
 		}
 	}
 }

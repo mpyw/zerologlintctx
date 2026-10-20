@@ -213,6 +213,26 @@ func goodIgnoredAboveMultiLineDefer(ctx context.Context, log zerolog.Logger) {
 		Msg("ignored")
 }
 
+// A go or defer call is reported at the "(" of the call, like any other, so a
+// trailing ignore on that line reaches it (#100).
+func goodTrailingIgnoreOnMultiLineDefer(ctx context.Context, log zerolog.Logger) {
+	defer log.Info().
+		Str("k", "v").
+		Msg("ignored") //zerologlintctx:ignore
+}
+
+func goodTrailingIgnoreOnMultiLineGo(ctx context.Context, log zerolog.Logger) {
+	go log.Info().
+		Str("k", "v").
+		Msg("ignored") //zerologlintctx:ignore
+}
+
+func badMultiLineDeferReportedAtCall(ctx context.Context, log zerolog.Logger) {
+	defer log.Info().
+		Str("k", "v").
+		Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // An ignore above a call does not reach the calls inside a closure passed to it.
 func badIgnoreAboveCallDoesNotReachClosure(ctx context.Context, log zerolog.Logger, run func(func())) {
 	//zerologlintctx:ignore // want `unused zerologlintctx:ignore directive`
