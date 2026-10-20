@@ -328,6 +328,41 @@ func storesReachingAt(
 	return r, true
 }
 
+// storeLoadsOf returns, for addr, a local variable, a pointer parameter or a
+// captured variable, or a field or constant element of one, the loads of the
+// same address in the function, and the instructions after which another
+// value is there: the stores to it, or to an aggregate that holds it, and the
+// declaration of a local variable. ok is false for any other address.
+//
+//declscope:shared // tracing.go finds the Ctx calls on an event in memory
+func storeLoadsOf(addr ssa.Value) (loads []*ssa.UnOp, overwrites map[ssa.Instruction]bool, ok bool) {
+	root, path := aggregatePath(addr)
+	switch root.(type) {
+	case *ssa.Alloc, *ssa.Parameter, *ssa.FreeVar:
+	default:
+		return nil, nil, false
+	}
+	w := &storeWalk{root: root, path: path}
+	overwrites = make(map[ssa.Instruction]bool)
+	for instr := range instrsIn(parentFunc(addr)) {
+		switch in := instr.(type) {
+		case *ssa.UnOp:
+			if n, ok := w.prefixLen(in.X); ok && in.Op == token.MUL && n == len(path) {
+				loads = append(loads, in)
+			}
+		case *ssa.Store:
+			if _, ok := w.prefixLen(in.Addr); ok {
+				overwrites[in] = true
+			}
+		case *ssa.Alloc:
+			if in == root {
+				overwrites[in] = true
+			}
+		}
+	}
+	return loads, overwrites, true
+}
+
 // storeWalk walks the control flow backwards from a read, and stops each path
 // at the first store to the address it looks for.
 type storeWalk struct {

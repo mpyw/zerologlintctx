@@ -29,6 +29,15 @@ func aggregatePath(addr ssa.Value) (root ssa.Value, path []ssa.Value) {
 	}
 }
 
+// aggregateRoot returns the root aggregate that addr derives from, as
+// aggregatePath does.
+//
+//declscope:shared // tracing.go asks whether an event in memory is a local variable's
+func aggregateRoot(addr ssa.Value) ssa.Value {
+	root, _ := aggregatePath(addr)
+	return root
+}
+
 // copySourcesOfAggregate yields the addresses whose whole-aggregate value is copied
 // into root.
 //
