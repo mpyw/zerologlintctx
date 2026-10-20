@@ -840,18 +840,9 @@ func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, t tracerTy
 // fn has context, as for an IIFE (Immediately Invoked Function Expression) or
 // a func passed to Logger.UpdateContext.
 func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, t tracerType, visited map[ssa.Value]bool) bool {
-	results := fn.Signature.Results()
-	if results == nil || resultIndex < 0 || resultIndex >= results.Len() {
-		return false
-	}
-
-	// Only trace if return type is Event, Logger, or Context
-	retType := results.At(resultIndex).Type()
-	if !typeutil.IsEvent(retType) && !typeutil.IsLogger(retType) && !typeutil.IsContext(retType) {
-		return false
-	}
-
-	// Find all return statements and trace their values
+	// Find all return statements and trace their values. A result of
+	// another type, such as an interface, is traced through to the value it
+	// holds.
 	hasReturn := false
 	for instr := range instrsIn(fn) {
 		ret, ok := instr.(*ssa.Return)
