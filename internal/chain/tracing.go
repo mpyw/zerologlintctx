@@ -878,8 +878,28 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, t tracerType, 
 		return false, false
 	}
 	return !slices.ContainsFunc(fns, func(fn *ssa.Function) bool {
-		return !tr.traceReturns(fn, idx, t, maps.Clone(visited))
+		return !tr.traceReturns(fn, idx, call.Call.Args, t, maps.Clone(visited))
 	}), true
+}
+
+// traceArgumentReturned reports whether result, returned by fn, is one of its
+// parameters, or a chain of event methods on one, and the argument that args
+// pass for it has context. The result of a call is what that call passes, not
+// what every call of fn does, which traceArguments asks:
+//
+//	id := func(e *zerolog.Event) *zerolog.Event { return e }
+//	a := id(logger.Info().Ctx(ctx)) // a is this argument
+//	b := id(logger.Info())          // and b this one
+func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
+	for v := result; v != nil; v = traceEventReceiver(v) {
+		param, ok := v.(*ssa.Parameter)
+		if !ok {
+			continue
+		}
+		idx := slices.Index(fn.Params, param)
+		return idx >= 0 && idx < len(args) && tr.traceValue(args[idx], t, maps.Clone(visited))
+	}
+	return false
 }
 
 // traceFuncLiteralsOf returns the func literals that v can be, when it is a
@@ -1069,7 +1089,9 @@ func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, t tracerTy
 
 // traceReturns reports whether the value at resultIndex from every return of
 // fn has context, as for an IIFE (Immediately Invoked Function Expression).
-func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, t tracerType, visited map[ssa.Value]bool) bool {
+// args are what the call whose result is traced passes, which a parameter
+// returned stands for.
+func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, args []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	// Find all return statements and trace their values. A result of
 	// another type, such as an interface, is traced through to the value it
 	// holds.
@@ -1084,8 +1106,8 @@ func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, t tracerType, 
 		}
 
 		hasReturn = true
-		retVisited := maps.Clone(visited)
-		if !tr.traceValue(ret.Results[resultIndex], t, retVisited) {
+		result := ret.Results[resultIndex]
+		if !tr.traceValue(result, t, maps.Clone(visited)) && !tr.traceArgumentReturned(result, fn, args, t, visited) {
 			return false
 		}
 	}

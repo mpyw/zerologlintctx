@@ -583,6 +583,22 @@ func badFuncLiteralPointerParamPassedOn(ctx context.Context, logger zerolog.Logg
 	run(f)
 }
 
+// The result of a call of a func literal that returns its parameter is what
+// that call passes (#174).
+
+func badFuncLiteralReturnsParamPerCall(ctx context.Context, logger zerolog.Logger) {
+	id := func(e *zerolog.Event) *zerolog.Event { return e.Str("k", "v") }
+	a := id(logger.Info().Ctx(ctx))
+	b := id(logger.Info())
+	a.Msg("result of the call with ctx")    // OK - this call passes ctx
+	b.Msg("result of the call without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodFuncLiteralReturnsParamWithCtx(ctx context.Context, logger zerolog.Logger) {
+	set := func(e *zerolog.Event) *zerolog.Event { return e.Ctx(ctx) }
+	set(logger.Info()).Msg("returns its param with ctx") // OK - the func literal sets ctx
+}
+
 func badIIFEEventParam(ctx context.Context, logger zerolog.Logger) {
 	func(e *zerolog.Event) {
 		e.Msg("iife param") // want `zerolog call chain missing .Ctx\(ctx\)`
