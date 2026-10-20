@@ -1350,3 +1350,794 @@ func goodSelfReferentialStoresAroundCtx(ctx context.Context, logger zerolog.Logg
 	*p = p.With().Str("b", "2").Logger()
 	p.Info().Msg("updates around ctx") // OK - ctx set via With().Ctx(ctx)
 }
+
+// ===== MANY BRANCHES THAT REASSIGN THE EVENT =====
+
+// Each branch adds a Phi whose edges both lead to the previous one. Tracing
+// must stay linear in the number of branches: traced once per path, these
+// 64 branches would never finish (#75).
+func goodManyBranchesReassignEvent(ctx context.Context, logger zerolog.Logger, c []bool) {
+	e := logger.Info().Ctx(ctx)
+	if c[0] {
+		e = e.Str("k", "v")
+	}
+	if c[1] {
+		e = e.Str("k", "v")
+	}
+	if c[2] {
+		e = e.Str("k", "v")
+	}
+	if c[3] {
+		e = e.Str("k", "v")
+	}
+	if c[4] {
+		e = e.Str("k", "v")
+	}
+	if c[5] {
+		e = e.Str("k", "v")
+	}
+	if c[6] {
+		e = e.Str("k", "v")
+	}
+	if c[7] {
+		e = e.Str("k", "v")
+	}
+	if c[8] {
+		e = e.Str("k", "v")
+	}
+	if c[9] {
+		e = e.Str("k", "v")
+	}
+	if c[10] {
+		e = e.Str("k", "v")
+	}
+	if c[11] {
+		e = e.Str("k", "v")
+	}
+	if c[12] {
+		e = e.Str("k", "v")
+	}
+	if c[13] {
+		e = e.Str("k", "v")
+	}
+	if c[14] {
+		e = e.Str("k", "v")
+	}
+	if c[15] {
+		e = e.Str("k", "v")
+	}
+	if c[16] {
+		e = e.Str("k", "v")
+	}
+	if c[17] {
+		e = e.Str("k", "v")
+	}
+	if c[18] {
+		e = e.Str("k", "v")
+	}
+	if c[19] {
+		e = e.Str("k", "v")
+	}
+	if c[20] {
+		e = e.Str("k", "v")
+	}
+	if c[21] {
+		e = e.Str("k", "v")
+	}
+	if c[22] {
+		e = e.Str("k", "v")
+	}
+	if c[23] {
+		e = e.Str("k", "v")
+	}
+	if c[24] {
+		e = e.Str("k", "v")
+	}
+	if c[25] {
+		e = e.Str("k", "v")
+	}
+	if c[26] {
+		e = e.Str("k", "v")
+	}
+	if c[27] {
+		e = e.Str("k", "v")
+	}
+	if c[28] {
+		e = e.Str("k", "v")
+	}
+	if c[29] {
+		e = e.Str("k", "v")
+	}
+	if c[30] {
+		e = e.Str("k", "v")
+	}
+	if c[31] {
+		e = e.Str("k", "v")
+	}
+	if c[32] {
+		e = e.Str("k", "v")
+	}
+	if c[33] {
+		e = e.Str("k", "v")
+	}
+	if c[34] {
+		e = e.Str("k", "v")
+	}
+	if c[35] {
+		e = e.Str("k", "v")
+	}
+	if c[36] {
+		e = e.Str("k", "v")
+	}
+	if c[37] {
+		e = e.Str("k", "v")
+	}
+	if c[38] {
+		e = e.Str("k", "v")
+	}
+	if c[39] {
+		e = e.Str("k", "v")
+	}
+	if c[40] {
+		e = e.Str("k", "v")
+	}
+	if c[41] {
+		e = e.Str("k", "v")
+	}
+	if c[42] {
+		e = e.Str("k", "v")
+	}
+	if c[43] {
+		e = e.Str("k", "v")
+	}
+	if c[44] {
+		e = e.Str("k", "v")
+	}
+	if c[45] {
+		e = e.Str("k", "v")
+	}
+	if c[46] {
+		e = e.Str("k", "v")
+	}
+	if c[47] {
+		e = e.Str("k", "v")
+	}
+	if c[48] {
+		e = e.Str("k", "v")
+	}
+	if c[49] {
+		e = e.Str("k", "v")
+	}
+	if c[50] {
+		e = e.Str("k", "v")
+	}
+	if c[51] {
+		e = e.Str("k", "v")
+	}
+	if c[52] {
+		e = e.Str("k", "v")
+	}
+	if c[53] {
+		e = e.Str("k", "v")
+	}
+	if c[54] {
+		e = e.Str("k", "v")
+	}
+	if c[55] {
+		e = e.Str("k", "v")
+	}
+	if c[56] {
+		e = e.Str("k", "v")
+	}
+	if c[57] {
+		e = e.Str("k", "v")
+	}
+	if c[58] {
+		e = e.Str("k", "v")
+	}
+	if c[59] {
+		e = e.Str("k", "v")
+	}
+	if c[60] {
+		e = e.Str("k", "v")
+	}
+	if c[61] {
+		e = e.Str("k", "v")
+	}
+	if c[62] {
+		e = e.Str("k", "v")
+	}
+	if c[63] {
+		e = e.Str("k", "v")
+	}
+	e.Msg("many branches with ctx") // OK - ctx set via .Ctx(ctx)
+}
+
+func badManyBranchesReassignEvent(ctx context.Context, logger zerolog.Logger, c []bool) {
+	e := logger.Info()
+	if c[0] {
+		e = e.Str("k", "v")
+	}
+	if c[1] {
+		e = e.Str("k", "v")
+	}
+	if c[2] {
+		e = e.Str("k", "v")
+	}
+	if c[3] {
+		e = e.Str("k", "v")
+	}
+	if c[4] {
+		e = e.Str("k", "v")
+	}
+	if c[5] {
+		e = e.Str("k", "v")
+	}
+	if c[6] {
+		e = e.Str("k", "v")
+	}
+	if c[7] {
+		e = e.Str("k", "v")
+	}
+	if c[8] {
+		e = e.Str("k", "v")
+	}
+	if c[9] {
+		e = e.Str("k", "v")
+	}
+	if c[10] {
+		e = e.Str("k", "v")
+	}
+	if c[11] {
+		e = e.Str("k", "v")
+	}
+	if c[12] {
+		e = e.Str("k", "v")
+	}
+	if c[13] {
+		e = e.Str("k", "v")
+	}
+	if c[14] {
+		e = e.Str("k", "v")
+	}
+	if c[15] {
+		e = e.Str("k", "v")
+	}
+	if c[16] {
+		e = e.Str("k", "v")
+	}
+	if c[17] {
+		e = e.Str("k", "v")
+	}
+	if c[18] {
+		e = e.Str("k", "v")
+	}
+	if c[19] {
+		e = e.Str("k", "v")
+	}
+	if c[20] {
+		e = e.Str("k", "v")
+	}
+	if c[21] {
+		e = e.Str("k", "v")
+	}
+	if c[22] {
+		e = e.Str("k", "v")
+	}
+	if c[23] {
+		e = e.Str("k", "v")
+	}
+	if c[24] {
+		e = e.Str("k", "v")
+	}
+	if c[25] {
+		e = e.Str("k", "v")
+	}
+	if c[26] {
+		e = e.Str("k", "v")
+	}
+	if c[27] {
+		e = e.Str("k", "v")
+	}
+	if c[28] {
+		e = e.Str("k", "v")
+	}
+	if c[29] {
+		e = e.Str("k", "v")
+	}
+	if c[30] {
+		e = e.Str("k", "v")
+	}
+	if c[31] {
+		e = e.Str("k", "v")
+	}
+	if c[32] {
+		e = e.Str("k", "v")
+	}
+	if c[33] {
+		e = e.Str("k", "v")
+	}
+	if c[34] {
+		e = e.Str("k", "v")
+	}
+	if c[35] {
+		e = e.Str("k", "v")
+	}
+	if c[36] {
+		e = e.Str("k", "v")
+	}
+	if c[37] {
+		e = e.Str("k", "v")
+	}
+	if c[38] {
+		e = e.Str("k", "v")
+	}
+	if c[39] {
+		e = e.Str("k", "v")
+	}
+	if c[40] {
+		e = e.Str("k", "v")
+	}
+	if c[41] {
+		e = e.Str("k", "v")
+	}
+	if c[42] {
+		e = e.Str("k", "v")
+	}
+	if c[43] {
+		e = e.Str("k", "v")
+	}
+	if c[44] {
+		e = e.Str("k", "v")
+	}
+	if c[45] {
+		e = e.Str("k", "v")
+	}
+	if c[46] {
+		e = e.Str("k", "v")
+	}
+	if c[47] {
+		e = e.Str("k", "v")
+	}
+	if c[48] {
+		e = e.Str("k", "v")
+	}
+	if c[49] {
+		e = e.Str("k", "v")
+	}
+	if c[50] {
+		e = e.Str("k", "v")
+	}
+	if c[51] {
+		e = e.Str("k", "v")
+	}
+	if c[52] {
+		e = e.Str("k", "v")
+	}
+	if c[53] {
+		e = e.Str("k", "v")
+	}
+	if c[54] {
+		e = e.Str("k", "v")
+	}
+	if c[55] {
+		e = e.Str("k", "v")
+	}
+	if c[56] {
+		e = e.Str("k", "v")
+	}
+	if c[57] {
+		e = e.Str("k", "v")
+	}
+	if c[58] {
+		e = e.Str("k", "v")
+	}
+	if c[59] {
+		e = e.Str("k", "v")
+	}
+	if c[60] {
+		e = e.Str("k", "v")
+	}
+	if c[61] {
+		e = e.Str("k", "v")
+	}
+	if c[62] {
+		e = e.Str("k", "v")
+	}
+	if c[63] {
+		e = e.Str("k", "v")
+	}
+	e.Msg("many branches") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badManyBranchesOneWithoutCtx(ctx context.Context, logger zerolog.Logger, c []bool) {
+	e := logger.Info().Ctx(ctx)
+	if c[0] {
+		e = e.Str("k", "v")
+	}
+	if c[1] {
+		e = e.Str("k", "v")
+	}
+	if c[2] {
+		e = e.Str("k", "v")
+	}
+	if c[3] {
+		e = e.Str("k", "v")
+	}
+	if c[4] {
+		e = e.Str("k", "v")
+	}
+	if c[5] {
+		e = e.Str("k", "v")
+	}
+	if c[6] {
+		e = e.Str("k", "v")
+	}
+	if c[7] {
+		e = e.Str("k", "v")
+	}
+	if c[8] {
+		e = e.Str("k", "v")
+	}
+	if c[9] {
+		e = e.Str("k", "v")
+	}
+	if c[10] {
+		e = e.Str("k", "v")
+	}
+	if c[11] {
+		e = e.Str("k", "v")
+	}
+	if c[12] {
+		e = e.Str("k", "v")
+	}
+	if c[13] {
+		e = e.Str("k", "v")
+	}
+	if c[14] {
+		e = e.Str("k", "v")
+	}
+	if c[15] {
+		e = e.Str("k", "v")
+	}
+	if c[16] {
+		e = e.Str("k", "v")
+	}
+	if c[17] {
+		e = e.Str("k", "v")
+	}
+	if c[18] {
+		e = e.Str("k", "v")
+	}
+	if c[19] {
+		e = e.Str("k", "v")
+	}
+	if c[20] {
+		e = e.Str("k", "v")
+	}
+	if c[21] {
+		e = e.Str("k", "v")
+	}
+	if c[22] {
+		e = e.Str("k", "v")
+	}
+	if c[23] {
+		e = e.Str("k", "v")
+	}
+	if c[24] {
+		e = e.Str("k", "v")
+	}
+	if c[25] {
+		e = e.Str("k", "v")
+	}
+	if c[26] {
+		e = e.Str("k", "v")
+	}
+	if c[27] {
+		e = e.Str("k", "v")
+	}
+	if c[28] {
+		e = e.Str("k", "v")
+	}
+	if c[29] {
+		e = e.Str("k", "v")
+	}
+	if c[30] {
+		e = e.Str("k", "v")
+	}
+	if c[31] {
+		e = e.Str("k", "v")
+	}
+	if c[32] {
+		e = e.Str("k", "v")
+	}
+	if c[33] {
+		e = e.Str("k", "v")
+	}
+	if c[34] {
+		e = e.Str("k", "v")
+	}
+	if c[35] {
+		e = e.Str("k", "v")
+	}
+	if c[36] {
+		e = e.Str("k", "v")
+	}
+	if c[37] {
+		e = e.Str("k", "v")
+	}
+	if c[38] {
+		e = e.Str("k", "v")
+	}
+	if c[39] {
+		e = e.Str("k", "v")
+	}
+	if c[40] {
+		e = e.Str("k", "v")
+	}
+	if c[41] {
+		e = e.Str("k", "v")
+	}
+	if c[42] {
+		e = e.Str("k", "v")
+	}
+	if c[43] {
+		e = e.Str("k", "v")
+	}
+	if c[44] {
+		e = e.Str("k", "v")
+	}
+	if c[45] {
+		e = e.Str("k", "v")
+	}
+	if c[46] {
+		e = e.Str("k", "v")
+	}
+	if c[47] {
+		e = e.Str("k", "v")
+	}
+	if c[48] {
+		e = e.Str("k", "v")
+	}
+	if c[49] {
+		e = e.Str("k", "v")
+	}
+	if c[50] {
+		e = e.Str("k", "v")
+	}
+	if c[51] {
+		e = e.Str("k", "v")
+	}
+	if c[52] {
+		e = e.Str("k", "v")
+	}
+	if c[53] {
+		e = e.Str("k", "v")
+	}
+	if c[54] {
+		e = e.Str("k", "v")
+	}
+	if c[55] {
+		e = e.Str("k", "v")
+	}
+	if c[56] {
+		e = e.Str("k", "v")
+	}
+	if c[57] {
+		e = e.Str("k", "v")
+	}
+	if c[58] {
+		e = e.Str("k", "v")
+	}
+	if c[59] {
+		e = e.Str("k", "v")
+	}
+	if c[60] {
+		e = e.Str("k", "v")
+	}
+	if c[61] {
+		e = e.Str("k", "v")
+	}
+	if c[62] {
+		e = e.Str("k", "v")
+	}
+	if c[63] {
+		e = e.Str("k", "v")
+	}
+	if c[64] {
+		e = logger.Warn()
+	}
+	if c[0] {
+		e = e.Str("k", "v")
+	}
+	if c[1] {
+		e = e.Str("k", "v")
+	}
+	if c[2] {
+		e = e.Str("k", "v")
+	}
+	if c[3] {
+		e = e.Str("k", "v")
+	}
+	if c[4] {
+		e = e.Str("k", "v")
+	}
+	if c[5] {
+		e = e.Str("k", "v")
+	}
+	if c[6] {
+		e = e.Str("k", "v")
+	}
+	if c[7] {
+		e = e.Str("k", "v")
+	}
+	if c[8] {
+		e = e.Str("k", "v")
+	}
+	if c[9] {
+		e = e.Str("k", "v")
+	}
+	if c[10] {
+		e = e.Str("k", "v")
+	}
+	if c[11] {
+		e = e.Str("k", "v")
+	}
+	if c[12] {
+		e = e.Str("k", "v")
+	}
+	if c[13] {
+		e = e.Str("k", "v")
+	}
+	if c[14] {
+		e = e.Str("k", "v")
+	}
+	if c[15] {
+		e = e.Str("k", "v")
+	}
+	if c[16] {
+		e = e.Str("k", "v")
+	}
+	if c[17] {
+		e = e.Str("k", "v")
+	}
+	if c[18] {
+		e = e.Str("k", "v")
+	}
+	if c[19] {
+		e = e.Str("k", "v")
+	}
+	if c[20] {
+		e = e.Str("k", "v")
+	}
+	if c[21] {
+		e = e.Str("k", "v")
+	}
+	if c[22] {
+		e = e.Str("k", "v")
+	}
+	if c[23] {
+		e = e.Str("k", "v")
+	}
+	if c[24] {
+		e = e.Str("k", "v")
+	}
+	if c[25] {
+		e = e.Str("k", "v")
+	}
+	if c[26] {
+		e = e.Str("k", "v")
+	}
+	if c[27] {
+		e = e.Str("k", "v")
+	}
+	if c[28] {
+		e = e.Str("k", "v")
+	}
+	if c[29] {
+		e = e.Str("k", "v")
+	}
+	if c[30] {
+		e = e.Str("k", "v")
+	}
+	if c[31] {
+		e = e.Str("k", "v")
+	}
+	if c[32] {
+		e = e.Str("k", "v")
+	}
+	if c[33] {
+		e = e.Str("k", "v")
+	}
+	if c[34] {
+		e = e.Str("k", "v")
+	}
+	if c[35] {
+		e = e.Str("k", "v")
+	}
+	if c[36] {
+		e = e.Str("k", "v")
+	}
+	if c[37] {
+		e = e.Str("k", "v")
+	}
+	if c[38] {
+		e = e.Str("k", "v")
+	}
+	if c[39] {
+		e = e.Str("k", "v")
+	}
+	if c[40] {
+		e = e.Str("k", "v")
+	}
+	if c[41] {
+		e = e.Str("k", "v")
+	}
+	if c[42] {
+		e = e.Str("k", "v")
+	}
+	if c[43] {
+		e = e.Str("k", "v")
+	}
+	if c[44] {
+		e = e.Str("k", "v")
+	}
+	if c[45] {
+		e = e.Str("k", "v")
+	}
+	if c[46] {
+		e = e.Str("k", "v")
+	}
+	if c[47] {
+		e = e.Str("k", "v")
+	}
+	if c[48] {
+		e = e.Str("k", "v")
+	}
+	if c[49] {
+		e = e.Str("k", "v")
+	}
+	if c[50] {
+		e = e.Str("k", "v")
+	}
+	if c[51] {
+		e = e.Str("k", "v")
+	}
+	if c[52] {
+		e = e.Str("k", "v")
+	}
+	if c[53] {
+		e = e.Str("k", "v")
+	}
+	if c[54] {
+		e = e.Str("k", "v")
+	}
+	if c[55] {
+		e = e.Str("k", "v")
+	}
+	if c[56] {
+		e = e.Str("k", "v")
+	}
+	if c[57] {
+		e = e.Str("k", "v")
+	}
+	if c[58] {
+		e = e.Str("k", "v")
+	}
+	if c[59] {
+		e = e.Str("k", "v")
+	}
+	if c[60] {
+		e = e.Str("k", "v")
+	}
+	if c[61] {
+		e = e.Str("k", "v")
+	}
+	if c[62] {
+		e = e.Str("k", "v")
+	}
+	if c[63] {
+		e = e.Str("k", "v")
+	}
+	e.Msg("many branches, one without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
