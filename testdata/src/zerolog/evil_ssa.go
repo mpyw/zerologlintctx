@@ -1556,6 +1556,54 @@ func goodUpdateInLoopKeepsCtx(ctx context.Context, logger zerolog.Logger, xs []i
 	l.Info().Msg("after loop") // OK - ctx set before the loop
 }
 
+// A helper may return any value, so a loop that passes the value through one
+// does not keep the context it had before (#114).
+
+func badEventThroughHelperInLoop(ctx context.Context, logger zerolog.Logger, xs []int) {
+	e := logger.Info().Ctx(ctx)
+	for range xs {
+		e = replaceEvent(e)
+	}
+	e.Msg("through helper in loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerThroughHelperInLoop(ctx context.Context, logger zerolog.Logger, xs []int) {
+	l := logger.With().Ctx(ctx).Logger()
+	for range xs {
+		l = replaceLogger(l)
+	}
+	l.Info().Msg("logger through helper in loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventThroughMethodValueInLoop(ctx context.Context, logger zerolog.Logger, xs []int) {
+	e := logger.Info().Ctx(ctx)
+	for range xs {
+		str := e.Str
+		e = str("k", "v")
+	}
+	e.Msg("through method value in loop") // OK - the method keeps the event
+}
+
+func goodEventThroughFuncValueInLoop(ctx context.Context, logger zerolog.Logger, xs []int, wrap func(*zerolog.Event) *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	for range xs {
+		e = wrap(e)
+	}
+	e.Msg("through func value in loop") // OK - a call not known statically is taken to keep its first argument
+}
+
+func badEventReplacedByIIFEInLoop(ctx context.Context, logger zerolog.Logger, xs []int) {
+	e := logger.Info().Ctx(ctx)
+	for range xs {
+		e = func() *zerolog.Event { return logger.Warn() }()
+	}
+	e.Msg("replaced by iife in loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func replaceEvent(*zerolog.Event) *zerolog.Event { return log.Info() }
+
+func replaceLogger(zerolog.Logger) zerolog.Logger { return zerolog.Nop() }
+
 func goodStoreAfterClosureIsMade(ctx context.Context, logger zerolog.Logger) {
 	var l zerolog.Logger
 	f := func() { l.Info().Msg("store after closure") } // OK - the only store has ctx

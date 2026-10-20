@@ -67,6 +67,22 @@ func calleeOf(cc *ssa.CallCommon) (callee, bool) {
 	return c, true
 }
 
+// calleeReceiver returns the value a call runs on, as tracing follows it: the
+// receiver of a method, or the first argument of a call whose callee is not
+// known statically. It is nil for a call of a function, such as a helper
+// that may return a value unrelated to its arguments.
+//
+//declscope:shared // value.go walks back through the receivers of calls
+func calleeReceiver(cc *ssa.CallCommon) ssa.Value {
+	if c, ok := calleeOf(cc); ok {
+		return c.recv
+	}
+	if cc.StaticCallee() == nil && len(cc.Args) > 0 {
+		return cc.Args[0]
+	}
+	return nil
+}
+
 // endsEventChain reports whether c ends an Event chain: a method of
 // *zerolog.Event that returns nothing, such as Msg, Msgf, MsgFunc or Send.
 //
