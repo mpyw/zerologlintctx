@@ -155,6 +155,26 @@ func goodFuncLiteralCalledTwice(ctx context.Context, logger zerolog.Logger) {
 	send(logger.Warn().Ctx(ctx))
 }
 
+// A func literal in a variable that a closure captures is kept in that
+// variable, and called through it (#111).
+
+func goodFuncLiteralCalledFromClosure(ctx context.Context, logger zerolog.Logger) {
+	send := func(e *zerolog.Event) {
+		e.Msg("called from closure") // OK - both arguments have ctx
+	}
+	send(logger.Info().Ctx(ctx))
+	func() { send(logger.Warn().Ctx(ctx)) }()
+}
+
+func goodFuncLiteralCalledFromNestedClosures(ctx context.Context, logger zerolog.Logger) {
+	send := func(e *zerolog.Event) {
+		e.Msg("called from nested closures") // OK - the argument has ctx
+	}
+	go func() {
+		defer func() { send(logger.Info().Ctx(ctx)) }()
+	}()
+}
+
 func badIIFEEventParam(ctx context.Context, logger zerolog.Logger) {
 	func(e *zerolog.Event) {
 		e.Msg("iife param") // want `zerolog call chain missing .Ctx\(ctx\)`
@@ -185,6 +205,39 @@ func badClosurePassedOn(ctx context.Context, logger zerolog.Logger, run func(fun
 	}
 	send(logger.Info().Ctx(ctx))
 	run(send)
+}
+
+func badFuncLiteralCalledFromClosureWithoutCtx(ctx context.Context, logger zerolog.Logger) {
+	send := func(e *zerolog.Event) {
+		e.Msg("closure call without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	send(logger.Info().Ctx(ctx))
+	func() { send(logger.Warn()) }()
+}
+
+func badFuncLiteralPassedOnFromClosure(ctx context.Context, logger zerolog.Logger, run func(func(*zerolog.Event))) {
+	send := func(e *zerolog.Event) {
+		e.Msg("passed on from closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	send(logger.Info().Ctx(ctx))
+	func() { run(send) }()
+}
+
+func badFuncLiteralReplacedInClosure(ctx context.Context, logger zerolog.Logger, other func(*zerolog.Event)) {
+	send := func(e *zerolog.Event) {
+		e.Msg("replaced in closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	send(logger.Info().Ctx(ctx))
+	func() { send = other }()
+	send(logger.Warn().Ctx(ctx))
+}
+
+func badFuncLiteralVariableAddressTaken(ctx context.Context, logger zerolog.Logger, keep func(*func(*zerolog.Event))) {
+	send := func(e *zerolog.Event) {
+		e.Msg("variable address taken") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	keep(&send)
+	send(logger.Info().Ctx(ctx))
 }
 
 func badFuncLiteralNeverCalled(ctx context.Context, logger zerolog.Logger) {

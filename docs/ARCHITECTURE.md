@@ -149,7 +149,7 @@ once, and `tracerHandoffs` lists which ones each tracer follows:
 - **UnOp** - Pointer dereferences
 - **Alloc** - Local variable allocation (traces stored values)
 - **FreeVar** - Closure captured variables
-- **Parameter** - A parameter of a func literal that is only called where it is written, as an IIFE is, takes the argument of every such call. A parameter of a declared function, or of a func literal passed on, is not known
+- **Parameter** - A parameter of a func literal that is only called where it is written, as an IIFE is, takes the argument of every such call, including calls from closures that capture the variable it is kept in. A parameter of a declared function, or of a func literal passed on, is not known
 - **FieldAddr/Field** - Struct field access
 - **Store tracking** - The stores that reach each read of an address
 
