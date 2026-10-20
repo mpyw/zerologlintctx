@@ -18,12 +18,6 @@ func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
 		unop, ok := v.(*ssa.UnOp)
 		return ok && unop.Op == token.MUL && addressesMatch(unop.X, addr)
 	}
-	unOpOperand := func(v ssa.Value) ssa.Value {
-		if unop, ok := v.(*ssa.UnOp); ok {
-			return unop.X
-		}
-		return nil
-	}
 	return derivesFrom(v, isLoadFromAddr, unOpOperand, make(map[ssa.Value]bool))
 }
 

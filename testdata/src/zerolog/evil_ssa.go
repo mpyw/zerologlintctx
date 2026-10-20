@@ -1288,3 +1288,58 @@ func goodNestedPointerLoopWithCtx(ctx context.Context, logger zerolog.Logger) {
 	ptr2 := &ptr
 	(**ptr2).Msg("nested pointer loop") // OK - ctx propagates through
 }
+
+// ===== SELF-REFERENTIAL STORE THAT SETS CTX =====
+
+// A store whose value is built from the address it is stored to, as
+// l = l.With().Ctx(ctx).Logger() is once l has its address taken, sets the
+// context itself. Real zerolog takes the address for every Logger.Info call.
+func goodSelfReferentialStoreSetsCtx(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	p := &l
+	*p = p.With().Ctx(ctx).Logger()
+	p.Info().Msg("self-referential store with ctx") // OK - ctx set via With().Ctx(ctx)
+}
+
+func goodSelfReferentialEventStoreSetsCtx(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	p := &e
+	*p = (*p).Ctx(ctx)
+	(*p).Msg("self-referential event store with ctx") // OK - ctx set via .Ctx(ctx)
+}
+
+func badSelfReferentialStoreWithoutCtx(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	p := &l
+	*p = p.With().Str("k", "v").Logger()
+	p.Info().Msg("self-referential store without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// The store that sets ctx runs only on one path, so the read is reported.
+func badSelfReferentialStoreInBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger
+	p := &l
+	if cond {
+		*p = p.With().Ctx(ctx).Logger()
+	}
+	p.Info().Msg("self-referential store in branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A plain store after the one that sets ctx replaces the value.
+func badPlainStoreAfterSelfReferentialStore(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	p := &l
+	*p = p.With().Ctx(ctx).Logger()
+	*p = logger
+	p.Info().Msg("overwritten after ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Updates on either side of the one that sets ctx keep it.
+func goodSelfReferentialStoresAroundCtx(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	p := &l
+	*p = p.With().Str("a", "1").Logger()
+	*p = p.With().Ctx(ctx).Logger()
+	*p = p.With().Str("b", "2").Logger()
+	p.Info().Msg("updates around ctx") // OK - ctx set via With().Ctx(ctx)
+}
