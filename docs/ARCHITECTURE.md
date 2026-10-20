@@ -206,7 +206,8 @@ changed elsewhere. For those, every store in the function must have context.
 When the read is not known, such as for an address that a Phi picks, every
 read of the address counts. An instruction that passes the address on, such
 as a closure that captures it, may read it later, so every store after it
-counts too.
+counts too. A closure that is only deferred runs at the returns after the
+`defer` statement, so the stores that reach those returns count instead.
 
 #### Address Matching
 
