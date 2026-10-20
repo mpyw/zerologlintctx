@@ -2078,6 +2078,28 @@ func badClosureStoreAfterIsMade(ctx context.Context, logger zerolog.Logger) {
 	f()
 }
 
+// A nil stored to an event in memory logs nothing, and is skipped as a nil
+// edge of a Phi is (#158).
+
+func goodNilStoredToCapturedEvent(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	func() { _ = e }()
+	if cond {
+		e = nil
+	}
+	e.Msg("nil stored to a captured event") // OK - the other store has ctx
+}
+
+func badOnlyNilStoredToCapturedEvent(ctx context.Context, logger zerolog.Logger) {
+	var e *zerolog.Event
+	func() { _ = e }()
+	e = logger.Info()
+	if e != nil {
+		e = nil
+	}
+	e.Msg("nil or no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func goodStoreAfterClosureIsMade(ctx context.Context, logger zerolog.Logger) {
 	var l zerolog.Logger
 	f := func() { l.Info().Msg("store after closure") } // OK - the only store has ctx
