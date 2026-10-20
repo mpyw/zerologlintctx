@@ -91,6 +91,15 @@ func (c callee) logsDirectly() bool {
 	return typeutil.IsZerologLogPkg(c.fn.Pkg())
 }
 
+// updatesLoggerContext reports whether c is Logger.UpdateContext, which
+// changes the Logger it runs on in place.
+//
+//declscope:shared // store.go reads the context such a call sets
+func (c callee) updatesLoggerContext() bool {
+	recv := c.fn.Signature().Recv()
+	return c.fn.Name() == "UpdateContext" && recv != nil && typeutil.IsLogger(recv.Type())
+}
+
 // isCtxCallee reports whether fn is zerolog.Ctx or log.Ctx, or a Ctx method
 // declared in zerolog.
 //

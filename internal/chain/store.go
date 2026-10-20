@@ -41,51 +41,89 @@ import (
 //	l = l.With().Ctx(ctx).Logger()   // update seen by every read below
 //	l.Info().Msg("msg")              // Info takes &l with real zerolog
 //
+// So does a call to Logger.UpdateContext, which changes the Logger in place.
+// contextUpdaters holds the funcs passed to those that every read sees:
+//
+//	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+//	    return c.Ctx(ctx)            // contextUpdater
+//	})
+//	l.Info().Msg("msg")
+//
+// A pointer parameter gets updates and contextUpdaters only. Its plain
+// stores are not values, since the caller's value is there on any path that
+// skips them.
+//
 //declscope:shared // tracing.go asks this; the rest of the file is its working parts
-func findAllStoredValues(addr ssa.Value) (values, updates []ssa.Value) {
-	plain, updateStores := findStores(addr, make(map[ssa.Value]bool))
-	for _, store := range plain {
-		values = append(values, store.Val)
-	}
-	alloc, ok := addr.(*ssa.Alloc)
-	if !ok {
-		return values, nil
-	}
-	for _, update := range updateStores {
-		if storeUpdateSeenByEveryRead(alloc, update, plain, updateStores) {
-			updates = append(updates, update.Val)
+func findAllStoredValues(addr ssa.Value) storedValues {
+	var sv storedValues
+	plain, updates := findStores(addr, make(map[ssa.Value]bool))
+	_, isLocal := addr.(*ssa.Alloc)
+	_, isParam := addr.(*ssa.Parameter)
+	if !isParam {
+		for _, store := range plain {
+			sv.plain = append(sv.plain, store.Val)
 		}
 	}
-	return values, updates
+	if !isLocal && !isParam {
+		return sv
+	}
+	refs := *addr.Referrers() // An Alloc or a Parameter always has them
+	for _, update := range updates {
+		if storeUpdateSeenByEveryRead(addr, refs, update, plain, updates) {
+			sv.updates = append(sv.updates, update.Val)
+		}
+	}
+	for _, call := range storeContextUpdatesOf(addr, refs) {
+		if fn := storeContextUpdater(call); fn != nil && storeUpdateSeenByEveryRead(addr, refs, call, plain, updates) {
+			sv.contextUpdaters = append(sv.contextUpdaters, fn)
+		}
+	}
+	return sv
 }
 
-// storeUpdateSeenByEveryRead reports whether update, a self-referential store
-// to alloc, runs before every read of alloc, and no plain store can run after
-// it. Loads that only feed an update are not reads: they are how the update
-// takes the value before it.
-func storeUpdateSeenByEveryRead(alloc *ssa.Alloc, update *ssa.Store, plain, updates []*ssa.Store) bool {
-	refs := alloc.Referrers()
-	if refs == nil {
-		return false
-	}
+// storedValues is what findAllStoredValues found written into an address.
+//
+//declscope:shared // tracing.go traces each part
+type storedValues struct {
+	// plain are the values of plain stores. Every one must have context.
+	plain []ssa.Value
+	// updates are the values of self-referential stores that every read sees.
+	// One with context is enough.
+	updates []ssa.Value
+	// contextUpdaters are the funcs passed to Logger.UpdateContext calls that
+	// every read sees. One that returns a Context with context on every path
+	// is enough.
+	contextUpdaters []*ssa.Function
+}
+
+// storeUpdateSeenByEveryRead reports whether update, which changes the value
+// at addr, runs before every read of addr, and no plain store can run after
+// it. refs are the referrers of addr. Loads that only feed a self-referential
+// store are not reads: they are how the store takes the value before it.
+func storeUpdateSeenByEveryRead(
+	addr ssa.Value,
+	refs []ssa.Instruction,
+	update ssa.Instruction,
+	plain, updates []*ssa.Store,
+) bool {
 	feeding := make(map[ssa.Instruction]bool)
 	for _, u := range updates {
 		recordLoad := func(v ssa.Value) bool {
-			if unop, ok := v.(*ssa.UnOp); ok && unop.Op == token.MUL && unop.X == alloc {
+			if unop, ok := v.(*ssa.UnOp); ok && unop.Op == token.MUL && unop.X == addr {
 				feeding[unop] = true
 			}
 			return false
 		}
 		derivesFrom(u.Val, recordLoad, unOpOperand, make(map[ssa.Value]bool))
 	}
-	for _, ref := range *refs {
-		if store, ok := ref.(*ssa.Store); ok && store.Addr == alloc {
+	for _, ref := range refs {
+		if ref == update || feeding[ref] {
+			continue
+		}
+		if store, ok := ref.(*ssa.Store); ok && store.Addr == addr {
 			if slices.Contains(plain, store) && instrReaches(update, store) {
 				return false
 			}
-			continue
-		}
-		if feeding[ref] {
 			continue
 		}
 		if !instrDominates(update, ref) {
@@ -93,6 +131,36 @@ func storeUpdateSeenByEveryRead(alloc *ssa.Alloc, update *ssa.Store, plain, upda
 		}
 	}
 	return true
+}
+
+// storeContextUpdatesOf returns the calls of Logger.UpdateContext on addr,
+// among refs, its referrers.
+func storeContextUpdatesOf(addr ssa.Value, refs []ssa.Instruction) []*ssa.Call {
+	var calls []*ssa.Call
+	for _, ref := range refs {
+		call, ok := ref.(*ssa.Call)
+		if !ok {
+			continue
+		}
+		if c, ok := calleeOf(&call.Call); ok && c.recv == addr && c.updatesLoggerContext() {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
+// storeContextUpdater returns the func that a Logger.UpdateContext call
+// passes, or nil when it is not known statically.
+func storeContextUpdater(call *ssa.Call) *ssa.Function {
+	// The receiver comes first, so the func is the last argument.
+	switch fn := call.Call.Args[len(call.Call.Args)-1].(type) {
+	case *ssa.Function:
+		return fn
+	case *ssa.MakeClosure:
+		f, _ := fn.Fn.(*ssa.Function)
+		return f
+	}
+	return nil
 }
 
 // findStores finds the stores to addr, as plain stores and self-referential

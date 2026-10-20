@@ -208,7 +208,7 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 
 	// Check if this is an IIFE (Immediately Invoked Function Expression)
 	if _, ok := call.Call.Value.(*ssa.MakeClosure); ok {
-		if tr.traceIIFEReturns(callee, t, visited) {
+		if tr.traceReturns(callee, t, visited) {
 			return true
 		}
 	}
@@ -245,6 +245,10 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 		return tr.traceAlloc(val, t, visited)
 	case *ssa.FreeVar:
 		return tr.traceFreeVar(val, t, visited)
+	case *ssa.Parameter:
+		// A pointer parameter can be updated in place; see findAllStoredValues.
+		found, _ := tr.traceStoredValues(val, t, visited)
+		return found
 	}
 
 	// Handle simple wrapper types that just need inner value tracing
@@ -281,20 +285,26 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Val
 // Like the edges of a Phi, every plain store must have context. An update
 // that every read sees (see findAllStoredValues) is enough on its own when it
 // has context: it either sets it itself, or reaches back to plain stores that
-// all have it.
+// all have it. So is a func passed to Logger.UpdateContext whose returned
+// Context has context on every path.
 func (tr *tracer) traceStoredValues(addr ssa.Value, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
-	values, updates := findAllStoredValues(addr)
-	for _, update := range updates {
+	stored := findAllStoredValues(addr)
+	for _, update := range stored.updates {
 		if tr.traceValue(update, t, maps.Clone(visited)) {
 			return true, true
 		}
 	}
-	if len(values) == 0 {
+	for _, fn := range stored.contextUpdaters {
+		if tr.traceReturns(fn, tracerContext, maps.Clone(visited)) {
+			return true, true
+		}
+	}
+	if len(stored.plain) == 0 {
 		return false, false
 	}
-	for _, stored := range values {
+	for _, v := range stored.plain {
 		// Clone visited for independent tracing of each store
-		if !tr.traceValue(stored, t, maps.Clone(visited)) {
+		if !tr.traceValue(v, t, maps.Clone(visited)) {
 			return false, true
 		}
 	}
@@ -342,8 +352,10 @@ func (tr *tracer) traceReceiver(call *ssa.Call, t tracerType, visited map[ssa.Va
 	return false
 }
 
-// traceIIFEReturns traces through an IIFE (Immediately Invoked Function Expression).
-func (tr *tracer) traceIIFEReturns(fn *ssa.Function, t tracerType, visited map[ssa.Value]bool) bool {
+// traceReturns reports whether every value fn returns has context, as for an
+// IIFE (Immediately Invoked Function Expression) or a func passed to
+// Logger.UpdateContext.
+func (tr *tracer) traceReturns(fn *ssa.Function, t tracerType, visited map[ssa.Value]bool) bool {
 	results := fn.Signature.Results()
 	if results == nil || results.Len() == 0 {
 		return false
