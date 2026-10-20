@@ -157,8 +157,36 @@ func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 	if tr.positions == nil {
 		tr.positions = make(instrPositions)
 	}
+	done := make(map[tracePointValue]bool)
 	before := tracePoint{block: at.Block(), index: tr.positions.of(at)}
-	return tr.traceCtxSetInPlace(v, before, make(map[tracePointValue]bool))
+	if tr.traceCtxSetInPlace(v, before, done) {
+		return true
+	}
+	if _, deferred := at.(*ssa.Defer); deferred {
+		return tr.traceCtxSetAtReturns(v, at.Parent(), done)
+	}
+	return false
+}
+
+// traceCtxSetAtReturns reports whether Event.Ctx is called on the event v
+// before each return of fn, which is where a deferred terminator runs:
+//
+//	e := logger.Info()
+//	defer e.Msg("x")        // runs at the return, after Ctx
+//	e.Ctx(ctx)
+func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, fn *ssa.Function, done map[tracePointValue]bool) bool {
+	found := false
+	for _, b := range fn.Blocks {
+		last := len(b.Instrs) - 1
+		if _, ok := b.Instrs[last].(*ssa.Return); !ok || b == fn.Recover {
+			continue // The recover block returns after a panic, which is not looked at
+		}
+		if !tr.traceCtxSetInPlace(v, tracePoint{block: b, index: last}, done) {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // tracePoint is a point in a function: before the instruction at index of
