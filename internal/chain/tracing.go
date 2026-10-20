@@ -463,23 +463,40 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Val
 // the context of the value before it. A path through a Logger.UpdateContext
 // call whose returned Context has context on every path needs no value.
 func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
-	updaterSetsCtx := func(fn *ssa.Function) bool {
-		return tr.traceReturns(fn, tracerContext, maps.Clone(visited))
-	}
 	if tr.positions == nil {
 		tr.positions = make(instrPositions)
 	}
-	stored, ok := storesReaching(addr, read, updaterSetsCtx, tr.positions)
+	stored, ok := storesReaching(addr, read, tr.updaterSetsCtx(visited), tr.positions)
 	if !ok {
 		return false, false
 	}
-	if stored.unknown {
-		return false, true
+	return tr.traceStored(stored, t, visited), true
+}
+
+// updaterSetsCtx reports whether every Context a func passed to
+// Logger.UpdateContext returns has context.
+func (tr *tracer) updaterSetsCtx(visited map[ssa.Value]bool) func(*ssa.Function) bool {
+	return func(fn *ssa.Function) bool {
+		return tr.traceReturns(fn, tracerContext, maps.Clone(visited))
 	}
-	found = stored.covered
+}
+
+// traceStored reports whether what storesReaching found can be at an
+// address has context, on every path, and on some path at all.
+func (tr *tracer) traceStored(stored storeReaching, t tracerType, visited map[ssa.Value]bool) bool {
+	if stored.unknown {
+		return false
+	}
+	found := stored.covered
 	if stored.captured != nil {
 		if !tr.traceFreeVar(stored.captured, t, maps.Clone(visited)) {
-			return false, true
+			return false
+		}
+		found = true
+	}
+	for _, pp := range stored.params {
+		if !tr.traceParamPath(pp, t, maps.Clone(visited)) {
+			return false
 		}
 		found = true
 	}
@@ -495,11 +512,53 @@ func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t trac
 			edgeVisited = maps.Clone(visited)
 		}
 		if !tr.traceValue(v, t, edgeVisited) {
-			return false, true
+			return false
 		}
 		found = true
 	}
-	return found, true
+	return found
+}
+
+// traceParamPath traces the value at pp, in a parameter of a func literal,
+// as each call of the func literal passes it. The value is what is at the
+// same selections from the argument when the call runs:
+//
+//	func(p *zerolog.Logger) {
+//	    p.Info().Msg("x")       // reads *p, which is l below
+//	}(&l)
+func (tr *tracer) traceParamPath(pp storeParamPath, t tracerType, visited map[ssa.Value]bool) bool {
+	fn := pp.param.Parent()
+	calls, ok := traceFuncLiteralCalls(fn)
+	if !ok || len(calls) == 0 {
+		return false
+	}
+	idx := slices.Index(fn.Params, pp.param)
+	for _, call := range calls {
+		if !tr.traceArgumentAt(call.Common().Args[idx], call, pp, t, maps.Clone(visited)) {
+			return false
+		}
+	}
+	return true
+}
+
+// traceArgumentAt traces the value at the selections of pp from arg, which
+// call passes for the parameter of pp.
+func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, t tracerType, visited map[ssa.Value]bool) bool {
+	addr, read := arg, ssa.Instruction(call)
+	switch {
+	case !pp.pointer:
+		// A struct or array passed by value is loaded from where it is
+		load, ok := arg.(*ssa.UnOp)
+		if !ok || load.Op != token.MUL {
+			return false
+		}
+		addr, read = load.X, load
+	case len(pp.path) == 0:
+		return tr.traceReceiver(arg, call, t, visited)
+	}
+	root, path := aggregatePath(addr)
+	stored, ok := storesReachingAt(root, append(path, pp.path...), read, tr.updaterSetsCtx(visited), tr.positions)
+	return ok && tr.traceStored(stored, t, visited)
 }
 
 // traceAddressAt traces addr, an address that read uses, such as the
@@ -536,8 +595,8 @@ func (tr *tracer) traceArguments(param *ssa.Parameter, t tracerType, visited map
 		return false
 	}
 	idx := slices.Index(fn.Params, param)
-	for _, cc := range calls {
-		if !tr.traceValue(cc.Args[idx], t, maps.Clone(visited)) {
+	for _, call := range calls {
+		if !tr.traceValue(call.Common().Args[idx], t, maps.Clone(visited)) {
 			return false
 		}
 	}
@@ -561,7 +620,7 @@ func (tr *tracer) traceArguments(param *ssa.Parameter, t tracerType, visited map
 // variable.
 // Each such variable may only be stored fn, loaded, or captured. Any other
 // use passes fn on, to be called with anything.
-func traceFuncLiteralCalls(fn *ssa.Function) (calls []*ssa.CallCommon, ok bool) {
+func traceFuncLiteralCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
 	parent := fn.Parent()
 	if parent == nil {
 		return nil, false // A declared function can be called from anywhere
@@ -599,7 +658,7 @@ func traceFuncLiteralCalls(fn *ssa.Function) (calls []*ssa.CallCommon, ok bool) 
 			switch {
 			case holdsFn(*op):
 				if call, isCall := instr.(ssa.CallInstruction); isCall && op == &call.Common().Value {
-					calls = append(calls, call.Common())
+					calls = append(calls, call)
 					continue
 				}
 				if store, isStore := instr.(*ssa.Store); isStore && op == &store.Val && vars[store.Addr] {
@@ -695,7 +754,7 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, t tracerType, visited map[ssa.Va
 // first argument, or what a method value is bound to. A pointer receiver that
 // is a variable, or a field or element of one, holds what the stores that
 // reach the call left there.
-func (tr *tracer) traceReceiver(recv ssa.Value, call *ssa.Call, t tracerType, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, t tracerType, visited map[ssa.Value]bool) bool {
 	if found, ok := tr.traceAddressAt(recv, call, t, visited); ok {
 		return found
 	}

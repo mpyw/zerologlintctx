@@ -147,6 +147,50 @@ type storeReaching struct {
 	// the value it holds as the closure starts. Tracing it finds the value
 	// bound where the closure is made.
 	captured *ssa.FreeVar
+	// params are the parameters of a func literal, with the selections from
+	// them, whose values some path carries from the entry of the func literal.
+	// Tracing them finds what the calls of the func literal pass.
+	params []storeParamPath
+}
+
+// storeParamPath is the value at path, selections from a parameter of a func
+// literal: from what the parameter points to when pointer is true, or from
+// the parameter itself, a struct or array, otherwise.
+//
+//declscope:shared // tracing.go traces it in each call of the func literal
+type storeParamPath struct {
+	param   *ssa.Parameter
+	path    []ssa.Value
+	pointer bool
+}
+
+// storeIsFuncLiteralParam reports whether v is a parameter of a func literal.
+func storeIsFuncLiteralParam(v ssa.Value) (*ssa.Parameter, bool) {
+	p, ok := v.(*ssa.Parameter)
+	return p, ok && p.Parent().Parent() != nil
+}
+
+// storesReachingAt finds the values that can be at the address that path
+// selects from root when read runs, as storesReaching does for a read it is
+// given. ok is false when root is not a local variable, a pointer parameter
+// or a captured variable.
+//
+//declscope:shared // tracing.go walks from a call of a func literal
+func storesReachingAt(
+	root ssa.Value,
+	path []ssa.Value,
+	read ssa.Instruction,
+	updaterSetsCtx func(*ssa.Function) bool,
+	positions instrPositions,
+) (r storeReaching, ok bool) {
+	switch root.(type) {
+	case *ssa.Alloc, *ssa.Parameter, *ssa.FreeVar:
+	default:
+		return r, false
+	}
+	w := &storeWalk{root: root, path: path, updaterSetsCtx: updaterSetsCtx, positions: positions, out: &r}
+	w.walkBefore(read)
+	return r, true
 }
 
 // storeWalk walks the control flow backwards from a read, and stops each path
@@ -190,11 +234,16 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 
 // reachEntry records a path that leads back to the entry of the function, or
 // to its recover block. What is at a pointer parameter there is the caller's,
-// and what is at a captured variable is the one the closure was made with. A
-// local variable is declared before any read, so its walk never gets here.
+// which is known only for a func literal, from its calls. What is at a
+// captured variable is the one the closure was made with. A local variable is
+// declared before any read, so its walk never gets here.
 func (w *storeWalk) reachEntry() {
 	if fv, ok := w.root.(*ssa.FreeVar); ok && len(w.path) == 0 {
 		w.out.captured = fv
+		return
+	}
+	if p, ok := storeIsFuncLiteralParam(w.root); ok {
+		w.out.params = append(w.out.params, storeParamPath{param: p, path: slices.Clone(w.path), pointer: true})
 		return
 	}
 	w.out.unknown = true
@@ -274,6 +323,10 @@ func (w *storeWalk) prefixLen(addr ssa.Value) (int, bool) {
 func (w *storeWalk) copied(store *ssa.Store, rest []ssa.Value) {
 	if _, isConst := store.Val.(*ssa.Const); isConst {
 		return // The zero value of the aggregate has nothing to trace
+	}
+	if p, ok := storeIsFuncLiteralParam(store.Val); ok {
+		w.out.params = append(w.out.params, storeParamPath{param: p, path: slices.Clone(rest)})
+		return
 	}
 	load, ok := store.Val.(*ssa.UnOp)
 	if !ok || load.Op != token.MUL {
