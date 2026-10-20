@@ -934,6 +934,46 @@ func evilBlankCtxInClosure(ctx context.Context, logger zerolog.Logger) {
 }
 
 // =============================================================================
+// EVIL: CONTEXT SHADOWED, OR BEHIND A POINTER
+// =============================================================================
+
+// Where the name of the context means something else, the context cannot be
+// passed (#128).
+func evilCtxShadowedByClosureParam(ctx context.Context, logger zerolog.Logger) {
+	func(ctx string) {
+		logger.Info().Str("s", ctx).Msg("shadowed by param") // OK - no usable context
+	}("x")
+}
+
+func evilCtxShadowedByLocal(ctx context.Context, logger zerolog.Logger) {
+	{
+		ctx := 1
+		logger.Info().Int("n", ctx).Msg("shadowed by local") // OK - no usable context
+		logger.Printf("shadowed by local %d", ctx)          // OK - no usable context
+	}
+	logger.Info().Msg("after the shadow") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func evilCtxShadowedLaterInBlock(ctx context.Context, logger zerolog.Logger) {
+	{
+		logger.Info().Msg("before the shadow") // want `zerolog call chain missing .Ctx\(ctx\)`
+		ctx := 1
+		_ = ctx
+	}
+}
+
+// A pointer to a context is passed by its value.
+func evilCtxPointerParam(ctx *context.Context, logger zerolog.Logger) {
+	logger.Info().Msg("pointer ctx") // want `zerolog call chain missing .Ctx\(\*ctx\)`
+}
+
+var evilGlobalClosureShadowed = func(ctx context.Context) {
+	func(ctx int) {
+		log.Info().Int("n", ctx).Msg("global closure shadowed") // OK - no usable context
+	}(1)
+}
+
+// =============================================================================
 // EVIL: CLOSURES IN PACKAGE-LEVEL VARIABLES
 // =============================================================================
 

@@ -27,8 +27,12 @@ package chain
 import (
 	"fmt"
 	"go/token"
+	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
+
+	"github.com/mpyw/zerologlintctx/internal/typeutil"
 )
 
 // The messages of the two findings. Each takes the context name.
@@ -49,6 +53,7 @@ type Checker struct {
 	report   func(pos token.Pos, msg string) // Receives each finding
 	reported map[token.Pos]bool              // Deduplication: same position reported once
 	tracer   tracer                          // Traces each terminator's receiver
+	scope    *types.Scope                    // The scope of the package of the function checked
 }
 
 // NewChecker creates a new checker for analyzing a function that has ctxName
@@ -66,6 +71,7 @@ func NewChecker(ctxName string, report func(pos token.Pos, msg string)) *Checker
 // the "(" of its call. The position of a go or defer statement itself is its
 // keyword, which a trailing ignore on the line of the "(" would not reach.
 func (c *Checker) CheckFunction(fn *ssa.Function) {
+	c.scope = fn.Pkg.Pkg.Scope()
 	for instr := range instrsIn(fn) {
 		if call, ok := instr.(ssa.CallInstruction); ok {
 			c.checkCall(call)
@@ -96,11 +102,31 @@ func (c *Checker) checkCall(call ssa.CallInstruction) {
 }
 
 // reportOnce passes a finding at pos to the report func, unless one was
-// already passed there. format takes the context name.
+// already passed there, or the context cannot be named there. format takes
+// the context name.
 func (c *Checker) reportOnce(pos token.Pos, format string) {
-	if c.reported[pos] {
+	if c.reported[pos] || !c.ctxInScopeAt(pos) {
 		return
 	}
 	c.reported[pos] = true
 	c.report(pos, fmt.Sprintf(format, c.ctxName))
+}
+
+// ctxInScopeAt reports whether the context name refers to a context at pos.
+// A closure takes the name from the function it is declared in, where a
+// parameter or a variable of its own may shadow it:
+//
+//	func(ctx context.Context) {
+//	    func(ctx string) {
+//	        log.Info().Msg("x") // ctx is not the context here
+//	    }("x")
+//	}
+func (c *Checker) ctxInScopeAt(pos token.Pos) bool {
+	inner := c.scope.Innermost(pos)
+	if inner == nil {
+		return true // Not in a file of the package, which a call always is
+	}
+	_, obj := inner.LookupParent(strings.TrimPrefix(c.ctxName, "*"), pos)
+	v, ok := obj.(*types.Var)
+	return ok && typeutil.IsContextType(v.Type())
 }

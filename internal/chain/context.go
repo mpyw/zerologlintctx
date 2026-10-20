@@ -4,6 +4,8 @@
 package chain
 
 import (
+	"go/types"
+
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
 
@@ -89,7 +91,8 @@ func contextInitializerClosures(pkg *ssa.Package) []*ssa.Function {
 
 // contextParamName finds the name of the first usable context.Context
 // parameter in fn's signature, or "" when it has none. A parameter that is
-// unnamed or named _ is not usable.
+// unnamed or named _ is not usable. The name of a *context.Context parameter
+// is given as "*name", the expression that yields the context.
 func contextParamName(fn *ssa.Function) string {
 	if fn.Signature == nil {
 		return ""
@@ -99,9 +102,14 @@ func contextParamName(fn *ssa.Function) string {
 		return ""
 	}
 	for param := range params.Variables() {
-		if name := param.Name(); name != "" && name != "_" && typeutil.IsContextType(param.Type()) {
-			return name
+		name := param.Name()
+		if name == "" || name == "_" || !typeutil.IsContextType(param.Type()) {
+			continue
 		}
+		if _, isPtr := param.Type().Underlying().(*types.Pointer); isPtr {
+			return "*" + name
+		}
+		return name
 	}
 	return ""
 }
