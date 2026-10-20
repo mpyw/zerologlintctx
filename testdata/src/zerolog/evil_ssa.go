@@ -176,6 +176,79 @@ func goodFuncLiteralCalledFromNestedClosures(ctx context.Context, logger zerolog
 	}()
 }
 
+// A pointer parameter, or a struct parameter, reads what the argument holds
+// when the call runs (#126).
+
+type iifeLoggerHolder struct{ l zerolog.Logger }
+
+func goodIIFELoggerPointerParam(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	func(p *zerolog.Logger) {
+		p.Info().Msg("iife logger pointer param") // OK - l has ctx
+	}(&l)
+}
+
+func goodIIFELoggerPointerParamFromCtx(ctx context.Context) {
+	func(p *zerolog.Logger) {
+		p.Info().Msg("iife logger pointer param from ctx") // OK - zerolog.Ctx(ctx)
+	}(zerolog.Ctx(ctx))
+}
+
+func goodIIFEStructPointerParam(ctx context.Context, logger zerolog.Logger) {
+	h := iifeLoggerHolder{l: logger.With().Ctx(ctx).Logger()}
+	func(h *iifeLoggerHolder) {
+		h.l.Info().Msg("iife struct pointer param") // OK - h.l has ctx
+	}(&h)
+}
+
+func goodIIFEStructParam(ctx context.Context, logger zerolog.Logger) {
+	func(h iifeLoggerHolder) {
+		h.l.Info().Msg("iife struct param") // OK - h.l has ctx
+	}(iifeLoggerHolder{l: logger.With().Ctx(ctx).Logger()})
+}
+
+func badIIFELoggerPointerParam(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	func(p *zerolog.Logger) {
+		p.Info().Msg("iife logger pointer param") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(&l)
+}
+
+func badIIFEStructParam(ctx context.Context, logger zerolog.Logger) {
+	func(h iifeLoggerHolder) {
+		h.l.Info().Msg("iife struct param") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(iifeLoggerHolder{l: logger})
+}
+
+func badIIFEStructParamNotLoaded(ctx context.Context, logger zerolog.Logger, h iifeLoggerHolder) {
+	func(h iifeLoggerHolder) {
+		h.l.Info().Msg("iife struct param not loaded") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(h)
+}
+
+func badIIFEStructPointerParamFromCall(ctx context.Context, newHolder func() *iifeLoggerHolder) {
+	func(h *iifeLoggerHolder) {
+		h.l.Info().Msg("iife struct pointer param from call") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(newHolder())
+}
+
+func badIIFELoggerPointerParamOverwritten(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	func(p *zerolog.Logger) {
+		*p = logger
+		p.Info().Msg("iife logger pointer param overwritten") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(&l)
+}
+
+func badFuncLiteralPointerParamPassedOn(ctx context.Context, logger zerolog.Logger, run func(func(*zerolog.Logger))) {
+	f := func(p *zerolog.Logger) {
+		p.Info().Msg("pointer param passed on") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	l := logger.With().Ctx(ctx).Logger()
+	f(&l)
+	run(f)
+}
+
 func badIIFEEventParam(ctx context.Context, logger zerolog.Logger) {
 	func(e *zerolog.Event) {
 		e.Msg("iife param") // want `zerolog call chain missing .Ctx\(ctx\)`

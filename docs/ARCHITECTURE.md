@@ -196,6 +196,8 @@ leads back to the Phi is.
 | `Logger.UpdateContext(fn)` on it, when every Context `fn` returns has context | Context, as `return c.Ctx(ctx)` gives |
 | The declaration of a local variable | Its zero value, which has nothing to trace |
 | The entry of the function, for a pointer parameter | The caller's value, which is not known, so it is reported |
+| The entry of a func literal only called where it is written, for a pointer parameter | What is at the same field of each argument when its call runs |
+| A copy of a struct or array parameter of such a func literal | What is at the same field of each argument when it is loaded |
 | The entry of a closure, for a variable it captures | The value bound where the closure is made |
 
 This holds for a local variable, a pointer parameter, a captured variable, and
