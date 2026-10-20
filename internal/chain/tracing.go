@@ -255,8 +255,10 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 		return tr.traceFreeVar(val, t, visited)
 	case *ssa.Parameter:
 		// A pointer parameter can be updated in place; see storesReaching.
-		found, _ := tr.traceAddressAt(val, nil, t, visited)
-		return found
+		if found, _ := tr.traceAddressAt(val, nil, t, visited); found {
+			return true
+		}
+		return tr.traceArguments(val, t, visited)
 	case *ssa.FieldAddr, *ssa.IndexAddr:
 		// The address of a field or element is itself the receiver of a
 		// pointer method, such as Logger.Info on s.log.
@@ -348,6 +350,9 @@ func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t trac
 // for every read of addr. ok is false when addr is not one whose stores
 // storesReaching can find.
 func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
+	if typeutil.IsEvent(addr.Type()) {
+		return false, false // A *zerolog.Event is the value itself, not a variable it is read from
+	}
 	switch a := addr.(type) {
 	case *ssa.Alloc, *ssa.FieldAddr, *ssa.IndexAddr, *ssa.FreeVar:
 	case *ssa.Parameter:
@@ -358,6 +363,55 @@ func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, t tracerT
 		return false, false
 	}
 	return tr.traceStoredValues(addr, read, t, visited)
+}
+
+// traceArguments traces the arguments passed for param, when its function is
+// a func literal that is only ever called where it is written, as an IIFE
+// is. Every call must pass an argument with context.
+//
+//	func(e *zerolog.Event) {
+//	    e.Msg("x")              // e is the argument below
+//	}(logger.Info().Ctx(ctx))
+func (tr *tracer) traceArguments(param *ssa.Parameter, t tracerType, visited map[ssa.Value]bool) bool {
+	fn := param.Parent()
+	parent := fn.Parent()
+	if parent == nil {
+		return false // A declared function can be called from anywhere
+	}
+	idx := slices.Index(fn.Params, param)
+	var calls []*ssa.CallCommon
+	for instr := range instrsIn(parent) {
+		if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == fn {
+			continue // Where the closure is made
+		}
+		call, isCall := instr.(ssa.CallInstruction)
+		for _, op := range instr.Operands(nil) {
+			if !traceIsFuncValue(*op, fn) {
+				continue
+			}
+			if !isCall || op != &call.Common().Value {
+				return false // The func is passed on, and may be called where it cannot be seen
+			}
+			calls = append(calls, call.Common())
+		}
+	}
+	if len(calls) == 0 {
+		return false
+	}
+	for _, cc := range calls {
+		if !tr.traceValue(cc.Args[idx], t, maps.Clone(visited)) {
+			return false
+		}
+	}
+	return true
+}
+
+// traceIsFuncValue reports whether v is fn, or a closure of it.
+func traceIsFuncValue(v ssa.Value, fn *ssa.Function) bool {
+	if mc, ok := v.(*ssa.MakeClosure); ok {
+		return mc.Fn == fn
+	}
+	return v == fn
 }
 
 // traceFreeVar traces a FreeVar back to the value bound in MakeClosure.
