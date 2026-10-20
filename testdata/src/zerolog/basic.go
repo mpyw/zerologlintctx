@@ -195,6 +195,23 @@ func goodDeferredMsgCtxAfterDefer(ctx context.Context, log zerolog.Logger) {
 	e.Ctx(ctx)
 }
 
+func goodDeferredMsgAfterEarlyReturn(ctx context.Context, log zerolog.Logger, cond bool) {
+	if cond {
+		return
+	}
+	e := log.Info()
+	defer e.Msg("deferred after an early return") // OK - .Ctx() runs before the only return after it (#134)
+	e.Ctx(ctx)
+}
+
+func goodDeferredMsgInBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	if cond {
+		e := log.Info()
+		defer e.Msg("deferred in a branch") // OK - .Ctx() runs before the return after it (#134)
+		e.Ctx(ctx)
+	}
+}
+
 func badDeferredMsgCtxBeforeOneReturn(ctx context.Context, log zerolog.Logger, cond bool) {
 	e := log.Info()
 	defer e.Msg("deferred, ctx before one return") // want `zerolog call chain missing .Ctx\(ctx\)`
@@ -208,6 +225,54 @@ func badDeferredMsgNeverReturns(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
 	defer e.Msg("deferred, never returns") // want `zerolog call chain missing .Ctx\(ctx\)`
 	for {
+	}
+}
+
+func goodEventCtxResultUnusedOnEachBranchOfOneEvent(ctx context.Context, other context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	if cond {
+		e.Ctx(ctx)
+	} else {
+		e.Ctx(other)
+	}
+	e.Msg("ctx on each branch of one event") // OK - .Ctx() runs on every path (#139)
+}
+
+func badEventParamCtxOnOneBranch(ctx context.Context, e *zerolog.Event, cond bool) {
+	if cond {
+		e.Ctx(ctx)
+	}
+	e.Msg("param, ctx on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventParamCtxResultUnused(ctx context.Context, e *zerolog.Event) {
+	e.Ctx(ctx)
+	e.Msg("param, ctx result unused") // OK - .Ctx() set the context of e
+}
+
+func badEventCtxResultUnusedInLoopOnly(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	for i := 0; i < n; i++ {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in loop only") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badDeferredMsgCtxOnOneBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	defer e.Str("k", "v").Msg("deferred, ctx on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+	if cond {
+		e.Ctx(ctx)
+	}
+}
+
+func goodDeferredChainCtxOnEachBranch(ctx context.Context, other context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	defer e.Str("k", "v").Msg("deferred chain, ctx on each branch") // OK - .Ctx() runs on every path to the return
+	if cond {
+		e.Ctx(ctx)
+	} else {
+		e.Ctx(other)
 	}
 }
 

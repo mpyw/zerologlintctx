@@ -162,31 +162,68 @@ func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 	if tr.traceCtxSetInPlace(v, before, done) {
 		return true
 	}
-	if _, deferred := at.(*ssa.Defer); deferred {
-		return tr.traceCtxSetAtReturns(v, at.Parent(), done)
+	if d, deferred := at.(*ssa.Defer); deferred {
+		return tr.traceCtxSetAtReturns(v, d)
 	}
 	return false
 }
 
-// traceCtxSetAtReturns reports whether Event.Ctx is called on the event v
-// before each return of fn, which is where a deferred terminator runs:
+// traceCtxSetAtReturns reports whether, on every path from d, a deferred
+// terminator on the event v, to a return, Event.Ctx is called on the event.
+// The deferred call runs at the return:
 //
 //	e := logger.Info()
 //	defer e.Msg("x")        // runs at the return, after Ctx
 //	e.Ctx(ctx)
-func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, fn *ssa.Function, done map[tracePointValue]bool) bool {
-	found := false
-	for _, b := range fn.Blocks {
-		last := len(b.Instrs) - 1
-		if _, ok := b.Instrs[last].(*ssa.Return); !ok || b == fn.Recover {
-			continue // The recover block returns after a panic, which is not looked at
+//
+// A Ctx call on a value that the chain of v is built from counts too, since
+// it is the same event. The recover block, reached after a panic, is not
+// looked at, as it has no path from d.
+func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
+	calls := make(map[ssa.Instruction]bool)
+	for w := v; w != nil; w = traceEventReceiver(w) {
+		tr.traceCtxCalls(w, d.Parent(), calls, make(map[ssa.Value]bool))
+	}
+	if len(calls) == 0 {
+		return false
+	}
+	type step struct {
+		block *ssa.BasicBlock
+		from  int // Index of the first instruction of block to look at
+	}
+	queue := []step{{d.Block(), tr.positions.of(d) + 1}}
+	seen := make(map[*ssa.BasicBlock]bool)
+	for len(queue) > 0 {
+		s := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if slices.ContainsFunc(s.block.Instrs[s.from:], func(instr ssa.Instruction) bool { return calls[instr] }) {
+			continue // Ctx runs on this path
 		}
-		if !tr.traceCtxSetInPlace(v, tracePoint{block: b, index: last}, done) {
+		if _, ok := s.block.Instrs[len(s.block.Instrs)-1].(*ssa.Return); ok {
 			return false
 		}
-		found = true
+		for _, succ := range s.block.Succs {
+			if !seen[succ] {
+				seen[succ] = true
+				queue = append(queue, step{succ, 0})
+			}
+		}
 	}
-	return found
+	return true
+}
+
+// traceEventReceiver returns the event that v, a call of an event method,
+// runs on, or nil for any other value.
+func traceEventReceiver(v ssa.Value) ssa.Value {
+	call, ok := v.(*ssa.Call)
+	if !ok {
+		return nil
+	}
+	c, ok := calleeOf(&call.Call)
+	if !ok || c.recv == nil || !tracerEvent.isTracedType(c.recvType()) {
+		return nil
+	}
+	return c.recv
 }
 
 // tracePoint is a point in a function: before the instruction at index of
@@ -225,15 +262,12 @@ func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before tracePoint, done map[tr
 		return found
 	}
 	done[key] = true
-	found := tr.traceCtxCalledBefore(v, before, make(map[ssa.Value]bool))
+	found := tr.traceCtxCalledBefore(v, before)
 	if !found {
-		switch val := v.(type) {
-		case *ssa.Call:
-			c, ok := calleeOf(&val.Call)
-			found = ok && c.recv != nil && tracerEvent.isTracedType(c.recvType()) &&
-				tr.traceCtxSetInPlace(c.recv, before, done)
-		case *ssa.Phi:
-			found = tr.traceCtxSetOnEdges(val, done)
+		if recv := traceEventReceiver(v); recv != nil {
+			found = tr.traceCtxSetInPlace(recv, before, done)
+		} else if phi, ok := v.(*ssa.Phi); ok {
+			found = tr.traceCtxSetOnEdges(phi, done)
 		}
 	}
 	done[key] = found
@@ -257,57 +291,83 @@ func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool
 	return found
 }
 
-// traceCtxCalledBefore reports whether Event.Ctx is called on v, directly or
-// through a method value, at a point that every path to before passes first.
-// A call on a value that a method of v returns is a call on v too, since it
-// is the same event.
-func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint, seen map[ssa.Value]bool) bool {
+// traceCtxCalledBefore reports whether, on every path from v to before,
+// Event.Ctx is called on the event v, directly or through a method value. A
+// path that leads back to the entry of the function without passing v does
+// not have v, and needs no call, unless v is a parameter or a free variable,
+// which the entry gives.
+func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
+	fn := before.block.Parent()
+	calls := make(map[ssa.Instruction]bool)
+	tr.traceCtxCalls(v, fn, calls, make(map[ssa.Value]bool))
+	if len(calls) == 0 {
+		return false
+	}
+	def, made := v.(ssa.Instruction) // A parameter or a free variable is not made, but given at the entry
+	type step struct {
+		block *ssa.BasicBlock
+		to    int // Index after the last instruction of block to look at
+	}
+	queue := []step{{before.block, before.index}}
+	seen := make(map[*ssa.BasicBlock]bool)
+	for len(queue) > 0 {
+		s := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		stopped := false
+		for i := s.to - 1; i >= 0 && !stopped; i-- {
+			instr := s.block.Instrs[i]
+			if calls[instr] {
+				stopped = true // Ctx runs on this path
+			} else if made && instr == def {
+				return false // v is made on this path, and Ctx does not run after
+			}
+		}
+		if stopped {
+			continue
+		}
+		if len(s.block.Preds) == 0 && !made {
+			return false
+		}
+		for _, pred := range s.block.Preds {
+			if !seen[pred] {
+				seen[pred] = true
+				queue = append(queue, step{pred, len(pred.Instrs)})
+			}
+		}
+	}
+	return true
+}
+
+// traceCtxCalls adds to calls the Event.Ctx calls in fn on the event v,
+// directly or through a method value, or on a value that a method of v
+// returns, which is the same event.
+func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Instruction]bool, seen map[ssa.Value]bool) {
 	refs := v.Referrers()
 	if seen[v] || refs == nil {
-		return false
+		return
 	}
 	seen[v] = true
 	for _, ref := range *refs {
-		call, ok := ref.(*ssa.Call)
-		if !ok {
-			// A method value bound to v, called later
-			if mc, ok := ref.(*ssa.MakeClosure); ok && tr.traceCtxCalledByAny(mc, v, before, seen) {
-				return true
+		uses := []ssa.Instruction{ref}
+		if mc, ok := ref.(*ssa.MakeClosure); ok {
+			uses = *mc.Referrers() // A method value bound to v, called later
+		}
+		for _, use := range uses {
+			call, ok := use.(*ssa.Call)
+			if !ok || call.Parent() != fn {
+				continue
 			}
-			continue
-		}
-		if tr.traceCtxCallOn(call, v, before, seen) {
-			return true
-		}
-	}
-	return false
-}
-
-// traceCtxCalledByAny reports whether a call of mc, a method value bound to v,
-// is one that traceCtxCallOn accepts.
-func (tr *tracer) traceCtxCalledByAny(mc *ssa.MakeClosure, v ssa.Value, before tracePoint, seen map[ssa.Value]bool) bool {
-	for _, use := range *mc.Referrers() {
-		if call, ok := use.(*ssa.Call); ok && tr.traceCtxCallOn(call, v, before, seen) {
-			return true
+			c, ok := calleeOf(&call.Call)
+			if !ok || c.recv != v || !tracerEvent.isTracedType(c.recvType()) {
+				continue
+			}
+			if c.isCtx() {
+				calls[call] = true
+			} else if tracerEvent.isReturnedBy(c.signature()) {
+				tr.traceCtxCalls(call, fn, calls, seen)
+			}
 		}
 	}
-	return false
-}
-
-// traceCtxCallOn reports whether call, a method call on the event v, is
-// Event.Ctx run before before, or returns v for a later Ctx call to run on.
-func (tr *tracer) traceCtxCallOn(call *ssa.Call, v ssa.Value, before tracePoint, seen map[ssa.Value]bool) bool {
-	c, ok := calleeOf(&call.Call)
-	if !ok || c.recv != v || !tracerEvent.isTracedType(c.recvType()) {
-		return false
-	}
-	if c.isCtx() && call.Parent() == before.block.Parent() {
-		if call.Block() == before.block {
-			return tr.positions.of(call) < before.index
-		}
-		return call.Block().Dominates(before.block)
-	}
-	return tracerEvent.isReturnedBy(c.signature()) && tr.traceCtxCalledBefore(call, before, seen)
 }
 
 // traceValue traces an SSA value backwards to find if context was set.
