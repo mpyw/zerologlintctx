@@ -105,9 +105,10 @@ func storesReachingClosure(
 // walkEscape walks to esc, an instruction that passes the address on, such as
 // a closure that captures it. What it passes the address on to may read it at
 // any point after, so what reaches esc, and every store after it, may be what
-// it reads. A closure that is only deferred reads it at the returns after it.
+// it reads. A closure that is only deferred reads it at the returns after it,
+// unless the variable is declared in a loop.
 func (w *storeWalk) walkEscape(esc ssa.Instruction) {
-	if rets, deferred := storeDeferredReturns(esc, w.positions); deferred {
+	if rets, deferred := storeDeferredReturns(esc, w.positions); deferred && !w.declaredInLoop() {
 		for _, ret := range rets {
 			w.walkBefore(ret)
 		}
@@ -115,6 +116,15 @@ func (w *storeWalk) walkEscape(esc ssa.Instruction) {
 	}
 	w.walkBefore(esc)
 	w.addStoresAfter(esc)
+}
+
+// declaredInLoop reports whether the root of the walk is a local variable
+// declared in a loop. Each iteration has a variable of its own, and a store
+// on a later one, which a walk back from a return meets first, is to another
+// variable than the one a closure deferred earlier captures.
+func (w *storeWalk) declaredInLoop() bool {
+	alloc, ok := w.root.(*ssa.Alloc)
+	return ok && w.positions.reaches(alloc, alloc)
 }
 
 // storeDeferredReturns reports whether esc is a closure whose only uses are

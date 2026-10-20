@@ -2045,6 +2045,23 @@ func goodDeferredClosureInLoop(ctx context.Context, logger zerolog.Logger, n int
 	}
 }
 
+// A variable declared in a loop is another one on each iteration, so a store
+// on a later one is not to the variable a closure deferred earlier captures
+// (#156).
+func badDeferredClosureCtxOnLaterIteration(ctx context.Context, logger zerolog.Logger) {
+	for i := 0; ; i++ {
+		l := logger
+		if i == 0 {
+			defer func() {
+				l.Info().Msg("deferred closure, ctx on a later iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+			}()
+			continue
+		}
+		l = logger.With().Ctx(ctx).Logger()
+		return
+	}
+}
+
 func badDeferredClosureInBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
 	if cond {
 		l := logger
