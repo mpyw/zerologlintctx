@@ -83,20 +83,43 @@ func storesReaching(
 	for _, rd := range reads {
 		w.walkBefore(rd)
 	}
-	// What an escape passes addr on to may read it at any point after, so
-	// what reaches the escape, and every store after it, may be what it reads.
-	// A closure that is only deferred reads it at the returns after it.
 	for _, esc := range escapes {
-		if rets, deferred := storeDeferredReturns(esc, positions); deferred {
-			for _, ret := range rets {
-				w.walkBefore(ret)
-			}
-			continue
-		}
-		w.walkBefore(esc)
-		w.addStoresAfter(esc)
+		w.walkEscape(esc)
 	}
 	return r, true
+}
+
+// storesReachingClosure finds the values that can be at v when the closure mc
+// makes reads it, as storesReaching does for an escape. v is a variable that
+// mc captures: a local variable, or a variable that the function making mc
+// captures in turn.
+//
+//declscope:shared // tracing.go traces what a closure reads of what it captures
+func storesReachingClosure(
+	v ssa.Value,
+	mc *ssa.MakeClosure,
+	updaterSetsCtx func(*ssa.Function) bool,
+	positions instrPositions,
+) storeReaching {
+	var r storeReaching
+	w := &storeWalk{root: v, updaterSetsCtx: updaterSetsCtx, positions: positions, out: &r}
+	w.walkEscape(mc)
+	return r
+}
+
+// walkEscape walks to esc, an instruction that passes the address on, such as
+// a closure that captures it. What it passes the address on to may read it at
+// any point after, so what reaches esc, and every store after it, may be what
+// it reads. A closure that is only deferred reads it at the returns after it.
+func (w *storeWalk) walkEscape(esc ssa.Instruction) {
+	if rets, deferred := storeDeferredReturns(esc, w.positions); deferred {
+		for _, ret := range rets {
+			w.walkBefore(ret)
+		}
+		return
+	}
+	w.walkBefore(esc)
+	w.addStoresAfter(esc)
 }
 
 // storeDeferredReturns reports whether esc is a closure whose only uses are
