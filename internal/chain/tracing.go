@@ -56,24 +56,23 @@ func (t tracerType) isReturnedBy(sig *types.Signature) bool {
 	return false
 }
 
-// isCtxSetBy reports whether a call to callee, with receiver recv, gives the
-// value t traces its context:
+// isCtxSetBy reports whether a call to c gives the value t traces its
+// context:
 //   - Event tracer: Event.Ctx(ctx), Context.Ctx(ctx), zerolog.Ctx(ctx)
 //   - Logger tracer: zerolog.Ctx(ctx)
 //   - Context tracer: Context.Ctx(ctx)
-func (t tracerType) isCtxSetBy(callee *ssa.Function, recv *types.Var) bool {
-	isCtxMethod := callee.Name() == typeutil.CtxMethod && recv != nil
-	switch t {
-	case tracerEvent:
-		onEventOrContext := isCtxMethod &&
-			(tracerEvent.isTracedType(recv.Type()) || tracerContext.isTracedType(recv.Type()))
-		return onEventOrContext || isCtxCallee(callee)
-	case tracerLogger:
-		return isCtxCallee(callee)
-	case tracerContext:
-		return isCtxMethod && tracerContext.isTracedType(recv.Type())
+//
+// The Event and Logger tracers take any Ctx of zerolog, since a value they
+// trace only reaches one of the above.
+func (t tracerType) isCtxSetBy(c callee) bool {
+	if !c.isCtx() {
+		return false
 	}
-	return false
+	if t == tracerContext {
+		recv := c.recvType()
+		return recv != nil && tracerContext.isTracedType(recv)
+	}
+	return true
 }
 
 // =============================================================================
@@ -103,14 +102,15 @@ var tracerHandoffs = map[tracerType][]tracerHandoff{
 	tracerContext: {traceLoggerOfContext},
 }
 
-// handoffAt returns the tracer to go on with from the receiver of call, when
-// call is a handoff that t follows.
-func (t tracerType) handoffAt(call *ssa.Call, callee *ssa.Function, recv *types.Var) (tracerType, bool) {
-	if recv == nil || len(call.Call.Args) == 0 {
+// handoffAt returns the tracer to go on with from the receiver of a call to
+// c, when the call is a handoff that t follows.
+func (t tracerType) handoffAt(c callee) (tracerType, bool) {
+	recv := c.recvType()
+	if recv == nil {
 		return 0, false
 	}
 	for _, h := range tracerHandoffs[t] {
-		if h.from.isTracedType(recv.Type()) && h.to.isReturnedBy(callee.Signature) {
+		if h.from.isTracedType(recv) && h.to.isReturnedBy(c.signature()) {
 			return h.from, true
 		}
 	}
@@ -206,30 +206,33 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 		return tr.traceCommon(v, t, visited)
 	}
 
-	callee := call.Call.StaticCallee()
-	if callee == nil {
-		return tr.traceReceiver(call, t, visited)
-	}
-
-	// Check if this is an IIFE (Immediately Invoked Function Expression)
-	if _, ok := call.Call.Value.(*ssa.MakeClosure); ok {
-		if tr.traceReturns(callee, t, visited) {
-			return true
+	c, declared := calleeOf(&call.Call)
+	if !declared {
+		sfn := call.Call.StaticCallee()
+		if sfn == nil {
+			// Dynamic dispatch: the method is not known
+			if len(call.Call.Args) == 0 {
+				return false
+			}
+			return tr.traceReceiver(call.Call.Args[0], call, t, visited)
 		}
+		// An IIFE (Immediately Invoked Function Expression)
+		if _, ok := call.Call.Value.(*ssa.MakeClosure); ok {
+			return tr.traceReturns(sfn, t, visited)
+		}
+		return false
 	}
 
-	recv := call.Call.Signature().Recv()
-
-	if t.isCtxSetBy(callee, recv) {
+	if t.isCtxSetBy(c) {
 		return true
 	}
-	if next, ok := t.handoffAt(call, callee, recv); ok {
-		return tr.traceReceiver(call, next, visited)
+	if next, ok := t.handoffAt(c); ok {
+		return tr.traceReceiver(c.recv, call, next, visited)
 	}
 
 	// Continue tracing through receiver if type matches
-	if recv != nil && t.isTracedType(recv.Type()) {
-		return tr.traceReceiver(call, t, visited)
+	if recv := c.recvType(); recv != nil && t.isTracedType(recv) {
+		return tr.traceReceiver(c.recv, call, t, visited)
 	}
 
 	return false
@@ -390,14 +393,11 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, t tracerType, visited map[ssa.Va
 	return false
 }
 
-// traceReceiver traces the receiver (first argument) of a method call. A
-// pointer receiver that is a variable, or a field or element of one, holds
-// what the stores that reach the call left there.
-func (tr *tracer) traceReceiver(call *ssa.Call, t tracerType, visited map[ssa.Value]bool) bool {
-	if len(call.Call.Args) == 0 {
-		return false
-	}
-	recv := call.Call.Args[0]
+// traceReceiver traces recv, the receiver of call, a method call. It is the
+// first argument, or what a method value is bound to. A pointer receiver that
+// is a variable, or a field or element of one, holds what the stores that
+// reach the call left there.
+func (tr *tracer) traceReceiver(recv ssa.Value, call *ssa.Call, t tracerType, visited map[ssa.Value]bool) bool {
 	if found, ok := tr.traceAddressAt(recv, call, t, visited); ok {
 		return found
 	}

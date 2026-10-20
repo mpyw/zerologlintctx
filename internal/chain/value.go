@@ -27,6 +27,8 @@ func unwrapInner(v ssa.Value) ssa.Value {
 		return val.Tuple
 	case *ssa.MakeInterface:
 		return val.X
+	case *ssa.ChangeType:
+		return val.X
 	case *ssa.TypeAssert:
 		return val.X
 	case *ssa.FieldAddr:

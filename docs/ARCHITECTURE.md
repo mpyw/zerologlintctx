@@ -51,6 +51,13 @@ method can take:
 | `m := e.Msg; m("x")` | `(*Event).Msg$bound(e)`, then a call to it | `Bindings[0]` |
 | `f := (*Event).Msg; f(e, "x")` | `(*Event).Msg$thunk(e, "x")` | `Args[0]` |
 
+Tracing resolves each call in the chain the same way, so `info := l.Info;
+info()` is traced back to `l`.
+
+A conversion between types with the same underlying type, such as
+`zerolog.Logger(d)` for `type definedLogger zerolog.Logger`, keeps the value,
+and tracing goes on through it.
+
 ### Type-Based Analysis
 
 The analyzer uses **return type checking** instead of method name hardcoding for most detection:
