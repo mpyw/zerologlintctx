@@ -68,24 +68,26 @@ func NewChecker(ctxName string, report func(pos token.Pos, msg string)) *Checker
 func (c *Checker) CheckFunction(fn *ssa.Function) {
 	for instr := range instrsIn(fn) {
 		if call, ok := instr.(ssa.CallInstruction); ok {
-			cc := call.Common()
-			c.checkCall(cc, cc.Pos())
+			c.checkCall(call)
 		}
 	}
 }
 
-// checkCall checks one call, run at pos:
+// checkCall checks one call, a plain call, a go statement or a defer
+// statement:
 //   - A terminator (Msg, Msgf, MsgFunc, Send) is reported unless its Event
 //     chain has context set
 //   - Direct logging (Logger.Print*, log.Print*) is always reported
-func (c *Checker) checkCall(cc *ssa.CallCommon, pos token.Pos) {
+func (c *Checker) checkCall(call ssa.CallInstruction) {
+	cc := call.Common()
+	pos := cc.Pos()
 	callee, ok := calleeOf(cc)
 	if !ok {
 		return
 	}
 	switch {
 	case callee.endsEventChain():
-		if !c.tracer.eventHasCtx(callee.recv) {
+		if !c.tracer.eventHasCtx(callee.recv, call) {
 			c.reportOnce(pos, checkerMissingCtx)
 		}
 	case callee.logsDirectly():

@@ -131,6 +131,17 @@ Each tracer type knows the calls that set its context (`isCtxSetBy`):
 > `ctx` to the events of that logger. The analyzer still accepts it: the code
 > took its logger from the context, which is a deliberate use of it.
 
+`Event.Ctx` sets the context on the event it runs on, and returns that same
+event. So an event whose chain has no `Ctx` call is still accepted when one
+runs on it before the terminator on every path, with its result unused or not
+(`traceCtxSetInPlace`):
+
+```go
+e := logger.Info()
+e.Ctx(ctx)
+e.Msg("x") // OK
+```
+
 A call that turns one zerolog type into another is a handoff. Tracing goes on
 from the call's receiver, with the receiver's tracer. Each handoff is declared
 once, and `tracerHandoffs` lists which ones each tracer follows:

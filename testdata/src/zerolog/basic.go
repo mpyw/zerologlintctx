@@ -139,6 +139,71 @@ func goodEventCtxInChain(ctx context.Context, log zerolog.Logger) {
 	e.Ctx(ctx).Str("key", "value").Msg("ctx in chain") // OK
 }
 
+// Event.Ctx sets the context on the event it runs on, so a call whose result
+// is not used still counts (#113).
+
+func goodEventCtxResultUnused(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	e.Ctx(ctx)
+	e.Msg("ctx result unused") // OK - .Ctx() set the context of e
+}
+
+func goodEventCtxResultUnusedLaterInChain(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	e2 := e.Str("key", "value")
+	e2.Ctx(ctx)
+	e.Int("n", 1).Msg("ctx on a later value of the chain") // OK - e2 is e
+}
+
+func goodEventCtxResultUnusedViaMethodValue(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	setCtx := e.Ctx
+	setCtx(ctx)
+	e.Msg("ctx via method value") // OK - .Ctx() set the context of e
+}
+
+func goodEventCtxResultUnusedOnBothBranches(ctx context.Context, log zerolog.Logger, cond bool) {
+	var e *zerolog.Event
+	if cond {
+		e = log.Info()
+		e.Ctx(ctx)
+	} else {
+		e = log.Warn()
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx on both branches") // OK - each event has its context set
+}
+
+func goodEventCtxResultUnusedAfterOtherUse(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	func(*zerolog.Event) {}(e)
+	e.Ctx(ctx)
+	e.Msg("ctx after another use") // OK - .Ctx() set the context of e
+}
+
+func badNilEvent(ctx context.Context) {
+	var e *zerolog.Event
+	e.Msg("nil event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxResultUnusedOnOneBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	if cond {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxResultUnusedOnOtherPath(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	if cond {
+		e.Msg("before ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		return
+	}
+	e.Ctx(ctx)
+	e.Msg("after ctx") // OK - .Ctx() runs first on this path
+}
+
 // ===== zerolog.Ctx() PATTERNS =====
 // These test cases verify that zerolog.Ctx(ctx) is recognized as context-aware.
 

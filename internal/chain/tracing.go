@@ -146,11 +146,140 @@ type tracedValue struct {
 	t tracerType
 }
 
-// eventHasCtx traces an Event value to check if .Ctx() was called.
+// eventHasCtx traces an Event value, the receiver of the terminator at, to
+// check if .Ctx() was called.
 //
 //declscope:shared // checker.go asks this of each terminator's receiver
-func (tr *tracer) eventHasCtx(v ssa.Value) bool {
-	return tr.traceValue(v, tracerEvent, make(map[ssa.Value]bool))
+func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
+	if tr.traceValue(v, tracerEvent, make(map[ssa.Value]bool)) {
+		return true
+	}
+	if tr.positions == nil {
+		tr.positions = make(instrPositions)
+	}
+	before := tracePoint{block: at.Block(), index: tr.positions.of(at)}
+	return tr.traceCtxSetInPlace(v, before, make(map[tracePointValue]bool))
+}
+
+// tracePoint is a point in a function: before the instruction at index of
+// block, or at its end when index is the number of its instructions.
+type tracePoint struct {
+	block *ssa.BasicBlock
+	index int
+}
+
+// tracePointValue is an event asked about at a point.
+type tracePointValue struct {
+	v     ssa.Value
+	point tracePoint
+}
+
+// traceCtxSetInPlace reports whether Event.Ctx is called on the event v
+// before point, on every path, with its result unused or not. Event.Ctx sets
+// the context on the event it runs on, and returns that same event:
+//
+//	e := logger.Info()
+//	e.Ctx(ctx)              // sets the context of e
+//	e.Str("k", "v").Msg("x")
+//
+// Each method of the event returns the event it runs on, so a Ctx call on any
+// value of the chain counts. For a Phi, each edge must have one before the
+// end of the block it comes from.
+//
+// done holds the result for each value already asked about. A value still
+// being worked out is taken to have context: it is reached again only through
+// an edge of a Phi that leads back to it, which carries the same event. done is
+// worked out for each terminator, and not kept, since a call before one
+// terminator may come after another.
+func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before tracePoint, done map[tracePointValue]bool) bool {
+	key := tracePointValue{v: v, point: before}
+	if found, ok := done[key]; ok {
+		return found
+	}
+	done[key] = true
+	found := tr.traceCtxCalledBefore(v, before, make(map[ssa.Value]bool))
+	if !found {
+		switch val := v.(type) {
+		case *ssa.Call:
+			c, ok := calleeOf(&val.Call)
+			found = ok && c.recv != nil && tracerEvent.isTracedType(c.recvType()) &&
+				tr.traceCtxSetInPlace(c.recv, before, done)
+		case *ssa.Phi:
+			found = tr.traceCtxSetOnEdges(val, done)
+		}
+	}
+	done[key] = found
+	return found
+}
+
+// traceCtxSetOnEdges reports whether each edge of phi, apart from nil, has
+// Event.Ctx called on it before the end of the block it comes from.
+func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool) bool {
+	found := false
+	for i, edge := range phi.Edges {
+		if isNilConst(edge) {
+			continue
+		}
+		pred := phi.Block().Preds[i]
+		if !tr.traceCtxSetInPlace(edge, tracePoint{block: pred, index: len(pred.Instrs)}, done) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// traceCtxCalledBefore reports whether Event.Ctx is called on v, directly or
+// through a method value, at a point that every path to before passes first.
+// A call on a value that a method of v returns is a call on v too, since it
+// is the same event.
+func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint, seen map[ssa.Value]bool) bool {
+	refs := v.Referrers()
+	if seen[v] || refs == nil {
+		return false
+	}
+	seen[v] = true
+	for _, ref := range *refs {
+		call, ok := ref.(*ssa.Call)
+		if !ok {
+			// A method value bound to v, called later
+			if mc, ok := ref.(*ssa.MakeClosure); ok && tr.traceCtxCalledByAny(mc, v, before, seen) {
+				return true
+			}
+			continue
+		}
+		if tr.traceCtxCallOn(call, v, before, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// traceCtxCalledByAny reports whether a call of mc, a method value bound to v,
+// is one that traceCtxCallOn accepts.
+func (tr *tracer) traceCtxCalledByAny(mc *ssa.MakeClosure, v ssa.Value, before tracePoint, seen map[ssa.Value]bool) bool {
+	for _, use := range *mc.Referrers() {
+		if call, ok := use.(*ssa.Call); ok && tr.traceCtxCallOn(call, v, before, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// traceCtxCallOn reports whether call, a method call on the event v, is
+// Event.Ctx run before before, or returns v for a later Ctx call to run on.
+func (tr *tracer) traceCtxCallOn(call *ssa.Call, v ssa.Value, before tracePoint, seen map[ssa.Value]bool) bool {
+	c, ok := calleeOf(&call.Call)
+	if !ok || c.recv != v || !tracerEvent.isTracedType(c.recvType()) {
+		return false
+	}
+	if c.isCtx() && call.Parent() == before.block.Parent() {
+		if call.Block() == before.block {
+			return tr.positions.of(call) < before.index
+		}
+		return call.Block().Dominates(before.block)
+	}
+	return tracerEvent.isReturnedBy(c.signature()) && tr.traceCtxCalledBefore(call, before, seen)
 }
 
 // traceValue traces an SSA value backwards to find if context was set.
