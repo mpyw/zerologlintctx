@@ -47,7 +47,7 @@ func run(pass *analysis.Pass) (any, error) {
 
 	ignoresByFile, problems := scanFiles(pass)
 
-	for fn, ctxName := range chain.ContextNames(ssaInfo.SrcFuncs) {
+	for fn, ctxName := range chain.ContextNames(ssaInfo) {
 		ignores, ok := ignoresByFile[unadjustedFilename(pass.Fset, fn.Pos())]
 		if !ok {
 			continue // Not in a checked file, or no position at all
