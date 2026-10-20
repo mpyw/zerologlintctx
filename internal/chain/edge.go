@@ -1,6 +1,6 @@
 // edge.go answers whether one edge of a Phi leads back to the Phi itself.
 
-package ssa
+package chain
 
 import (
 	"maps"

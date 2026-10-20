@@ -1,7 +1,7 @@
 // match.go decides whether two SSA values name the same address. It is the
 // bottom of this package and calls nothing above it.
 
-package ssa
+package chain
 
 import (
 	"go/token"

@@ -47,18 +47,33 @@ const directiveTool = "zerologlintctx"
 // IgnoreMap tracks line numbers that have ignore comments.
 type IgnoreMap map[int]*ignoreEntry
 
-// BuildIgnoreMap scans a file for ignore comments and returns a map.
-func BuildIgnoreMap(fset *token.FileSet, file *ast.File) IgnoreMap {
-	m := make(IgnoreMap)
+// Problem is a comment addressed to zerologlintctx that does nothing.
+type Problem struct {
+	Pos     token.Pos
+	Message string
+}
+
+// Scan reads every comment of file once. It returns the ignore directives,
+// keyed by line, and the comments that are addressed to zerologlintctx but do
+// nothing: malformed directives, unknown directives, and ignore directives
+// with text that is not a reason.
+func Scan(fset *token.FileSet, file *ast.File) (IgnoreMap, []Problem) {
+	ignores := make(IgnoreMap)
+	var problems []Problem
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if isIgnoreComment(c.Text) {
+			isIgnore, msg := classify(c.Text)
+			switch {
+			case isIgnore:
+				// Unadjusted, so a //line directive cannot move the ignore away from its call.
 				line := fset.PositionFor(c.Pos(), false).Line
-				m[line] = &ignoreEntry{pos: c.Pos(), used: false}
+				ignores[line] = &ignoreEntry{pos: c.Pos(), used: false}
+			case msg != "":
+				problems = append(problems, Problem{Pos: c.Pos(), Message: msg})
 			}
 		}
 	}
-	return m
+	return ignores, problems
 }
 
 // ignoreEntry tracks an ignore directive and whether it was used.
@@ -67,12 +82,29 @@ type ignoreEntry struct {
 	used bool      // Whether this ignore was actually used to suppress a warning
 }
 
-// isIgnoreComment checks if a comment is an ignore directive.
-// Only the canonical form "//zerologlintctx:ignore" counts, with no space
-// after "//". A reason may follow after "//" or " - "; other text may not.
-func isIgnoreComment(text string) bool {
+// classify reads text, one comment. isIgnore reports whether it is an ignore
+// directive. Only the canonical form "//zerologlintctx:ignore" counts, with no
+// space after "//". A reason may follow after "//" or " - "; other text may
+// not.
+//
+// Otherwise problem says why text, a comment addressed to zerologlintctx,
+// does nothing, or is "" when the comment is not addressed at all. A comment
+// is addressed when its body, after "//" or "/*", starts with
+// "zerologlintctx:" once leading whitespace is skipped. Prose that mentions
+// zerologlintctx elsewhere in a comment is not addressed.
+func classify(text string) (isIgnore bool, problem string) {
 	d, ok := parse(text)
-	return ok && d.Name == "ignore" && isReason(d.Args)
+	switch {
+	case !ok && isAddressed(text):
+		return false, "malformed zerologlintctx directive: write it as //zerologlintctx:name"
+	case !ok:
+		return false, ""
+	case d.Name != "ignore":
+		return false, "unknown directive zerologlintctx:" + d.Name
+	case !isReason(d.Args):
+		return false, "zerologlintctx:ignore takes no argument; write a reason after //"
+	}
+	return true, ""
 }
 
 // isReason reports whether args, the text after an ignore directive, is empty
@@ -100,48 +132,6 @@ func parse(text string) (ast.Directive, bool) {
 		return ast.Directive{}, false
 	}
 	return d, true
-}
-
-// Problem is a comment addressed to zerologlintctx that does nothing.
-type Problem struct {
-	Pos     token.Pos
-	Message string
-}
-
-// FindProblems returns the comments that are addressed to zerologlintctx but
-// do nothing: malformed directives, unknown directives, and ignore directives
-// with text that is not a reason.
-func FindProblems(file *ast.File) []Problem {
-	var found []Problem
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			if msg := problem(c.Text); msg != "" {
-				found = append(found, Problem{Pos: c.Pos(), Message: msg})
-			}
-		}
-	}
-	return found
-}
-
-// problem returns why text, a comment addressed to zerologlintctx, does
-// nothing, or "" when it is a working directive or not addressed at all.
-//
-// A comment is addressed when its body, after "//" or "/*", starts with
-// "zerologlintctx:" once leading whitespace is skipped. Prose that mentions
-// zerologlintctx elsewhere in a comment is not addressed.
-func problem(text string) string {
-	d, ok := parse(text)
-	switch {
-	case !ok && isAddressed(text):
-		return "malformed zerologlintctx directive: write it as //zerologlintctx:name"
-	case !ok:
-		return ""
-	case d.Name != "ignore":
-		return "unknown directive zerologlintctx:" + d.Name
-	case !isReason(d.Args):
-		return "zerologlintctx:ignore takes no argument; write a reason after //"
-	}
-	return ""
 }
 
 // isAddressed reports whether text starts with "zerologlintctx:" after the

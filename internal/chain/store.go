@@ -2,7 +2,7 @@
 // entry; it leans on aggregate.go to follow copies and on match.go to decide
 // whether two addresses are the same.
 
-package ssa
+package chain
 
 import (
 	"golang.org/x/tools/go/ssa"

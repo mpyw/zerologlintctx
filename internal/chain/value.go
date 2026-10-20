@@ -2,14 +2,14 @@
 // a value back to where it was stored, walking an aggregate, comparing two
 // addresses. None of it knows about zerolog, or about tracing.
 //
-// It joins the core namespace because it is what internal/ssa is named for.
-// checker.go and tracing.go are the units built on top, and keep namespaces of
-// their own.
+// It joins the core namespace because every other file of internal/chain
+// stands on it. checker.go and tracing.go are the units built on top, and keep
+// namespaces of their own.
 //
 //declscope:core
 //declscope:shared
 
-package ssa
+package chain
 
 import (
 	"iter"

@@ -1,4 +1,4 @@
-package ssa
+package chain
 
 import (
 	"go/token"
@@ -164,19 +164,19 @@ func (c *Checker) traceContextForEvent(
 	}
 
 	// zerolog.Ctx(ctx) - returns Logger with context
-	if typeutil.IsCtxFunc(callee) {
+	if isCtxCallee(callee) {
 		return traceResult{found: true}
 	}
 
 	// Logger methods that return Event - delegate to logger tracer
-	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsEvent(callee) {
+	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsEvent(callee.Signature) {
 		if len(call.Call.Args) > 0 {
 			return traceResult{to: tracerLogger, val: call.Call.Args[0]}
 		}
 	}
 
 	// Context methods that return Logger - delegate to context tracer
-	if recv != nil && typeutil.IsContext(recv.Type()) && typeutil.ReturnsLogger(callee) {
+	if recv != nil && typeutil.IsContext(recv.Type()) && typeutil.ReturnsLogger(callee.Signature) {
 		if len(call.Call.Args) > 0 {
 			return traceResult{to: tracerContext, val: call.Call.Args[0]}
 		}
@@ -192,19 +192,19 @@ func (c *Checker) traceContextForLogger(
 	recv *types.Var,
 ) traceResult {
 	// zerolog.Ctx(ctx) - returns Logger with context
-	if typeutil.IsCtxFunc(callee) {
+	if isCtxCallee(callee) {
 		return traceResult{found: true}
 	}
 
 	// Context methods that return Logger - delegate to context tracer
-	if recv != nil && typeutil.IsContext(recv.Type()) && typeutil.ReturnsLogger(callee) {
+	if recv != nil && typeutil.IsContext(recv.Type()) && typeutil.ReturnsLogger(callee.Signature) {
 		if len(call.Call.Args) > 0 {
 			return traceResult{to: tracerContext, val: call.Call.Args[0]}
 		}
 	}
 
 	// Logger.With() returns Context - continue tracing parent Logger
-	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsContext(callee) {
+	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsContext(callee.Signature) {
 		if len(call.Call.Args) > 0 {
 			return traceResult{to: tracerLogger, val: call.Call.Args[0]}
 		}
@@ -225,7 +225,7 @@ func (c *Checker) traceContextForContext(
 	}
 
 	// Logger.With() returns Context - delegate to logger tracer
-	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsContext(callee) {
+	if recv != nil && typeutil.IsLogger(recv.Type()) && typeutil.ReturnsContext(callee.Signature) {
 		if len(call.Call.Args) > 0 {
 			return traceResult{to: tracerLogger, val: call.Call.Args[0]}
 		}

@@ -1,4 +1,4 @@
-// Package ssa provides SSA-based analysis for zerolog context propagation.
+// Package chain provides SSA-based analysis for zerolog context propagation.
 //
 // # Architecture
 //
@@ -22,15 +22,14 @@
 //
 // The checker identifies terminator calls (Msg, Send, etc.) and traces
 // backwards through the SSA value chain to verify .Ctx(ctx) was called.
-package ssa
+package chain
 
 import (
+	"fmt"
 	"go/token"
 
-	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/ssa"
 
-	"github.com/mpyw/zerologlintctx/internal/directive"
 	"github.com/mpyw/zerologlintctx/internal/typeutil"
 )
 
@@ -42,19 +41,18 @@ import (
 //
 // For each terminator, it traces backwards to verify .Ctx(ctx) was called.
 type Checker struct {
-	pass      *analysis.Pass      // For reporting diagnostics
-	ctxName   string              // Context variable name (for error messages)
-	ignoreMap directive.IgnoreMap // Line-level ignore directives
-	reported  map[token.Pos]bool  // Deduplication: same position reported once
+	ctxName  string                          // Context variable name (for error messages)
+	report   func(pos token.Pos, msg string) // Receives each finding
+	reported map[token.Pos]bool              // Deduplication: same position reported once
 }
 
-// NewChecker creates a new checker for analyzing a function.
-func NewChecker(pass *analysis.Pass, ctxName string, ignoreMap directive.IgnoreMap) *Checker {
+// NewChecker creates a new checker for analyzing a function that has ctxName
+// in scope. It passes each finding to report, at most once per position.
+func NewChecker(ctxName string, report func(pos token.Pos, msg string)) *Checker {
 	return &Checker{
-		pass:      pass,
-		ctxName:   ctxName,
-		ignoreMap: ignoreMap,
-		reported:  make(map[token.Pos]bool),
+		ctxName:  ctxName,
+		report:   report,
+		reported: make(map[token.Pos]bool),
 	}
 }
 
@@ -88,7 +86,7 @@ func (c *Checker) checkTerminatorCall(cc *ssa.CallCommon, pos token.Pos) {
 
 	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
 	recv := cc.Signature().Recv()
-	if recv == nil || !typeutil.IsEvent(recv.Type()) || !typeutil.ReturnsVoid(callee) {
+	if recv == nil || !typeutil.IsEvent(recv.Type()) || !typeutil.ReturnsVoid(callee.Signature) {
 		return
 	}
 
@@ -97,7 +95,7 @@ func (c *Checker) checkTerminatorCall(cc *ssa.CallCommon, pos token.Pos) {
 		return
 	}
 
-	c.report(pos, "zerolog call chain missing .Ctx(%s)")
+	c.reportOnce(pos, "zerolog call chain missing .Ctx(%s)")
 }
 
 // checkBoundMethodTerminator checks if a bound method call (method value),
@@ -116,7 +114,7 @@ func (c *Checker) checkTerminatorCall(cc *ssa.CallCommon, pos token.Pos) {
 // We need to trace Bindings[0] (the receiver) to find if .Ctx() was called.
 func (c *Checker) checkBoundMethodTerminator(mc *ssa.MakeClosure, callee *ssa.Function, pos token.Pos) {
 	// Check if it returns void (terminators return void)
-	if !typeutil.ReturnsVoid(callee) {
+	if !typeutil.ReturnsVoid(callee.Signature) {
 		return
 	}
 
@@ -134,7 +132,7 @@ func (c *Checker) checkBoundMethodTerminator(mc *ssa.MakeClosure, callee *ssa.Fu
 		return
 	}
 
-	c.report(pos, "zerolog call chain missing .Ctx(%s)")
+	c.reportOnce(pos, "zerolog call chain missing .Ctx(%s)")
 }
 
 // checkDirectLoggingCall checks for direct logging calls that bypass the Event chain.
@@ -144,34 +142,20 @@ func (c *Checker) checkDirectLoggingCall(call *ssa.Call) {
 		return
 	}
 
-	recv := call.Call.Signature().Recv()
-
-	// Check for Logger.Print/Printf (method on Logger that returns void)
-	if typeutil.IsDirectLoggingMethod(callee, recv) {
-		c.report(call.Pos(), "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)")
-		return
-	}
-
-	// Check for log.Print/log.Printf (package-level function that returns void)
-	if typeutil.IsDirectLoggingFunc(callee) {
-		c.report(call.Pos(), "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)")
-		return
+	// Logger.Print* or log.Print*
+	if isDirectLoggingCallee(callee, call.Call.Signature().Recv()) {
+		c.reportOnce(call.Pos(), "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)")
 	}
 }
 
-func (c *Checker) report(pos token.Pos, format string) {
+// reportOnce passes a finding at pos to the report func, unless one was
+// already passed there. format takes the context name.
+func (c *Checker) reportOnce(pos token.Pos, format string) {
 	if c.reported[pos] {
 		return
 	}
 	c.reported[pos] = true
-
-	// Unadjusted, so a //line directive cannot move the call away from its ignore.
-	line := c.pass.Fset.PositionFor(pos, false).Line
-	if c.ignoreMap != nil && c.ignoreMap.ShouldIgnore(line) {
-		return
-	}
-
-	c.pass.Reportf(pos, format, c.ctxName)
+	c.report(pos, fmt.Sprintf(format, c.ctxName))
 }
 
 // eventChainHasCtx traces an Event value to check if .Ctx() was called.

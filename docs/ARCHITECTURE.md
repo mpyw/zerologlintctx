@@ -11,16 +11,17 @@ zerologlintctx/
 ├── cmd/zerologlintctx/        # CLI entry point (singlechecker)
 ├── plugin/                    # golangci-lint module plugin
 ├── internal/                  # Core analysis logic
-│   ├── analyzer.go            # Entry point, function context discovery
+│   ├── chain/                 # SSA-based chain analysis
+│   │   ├── checker.go         # Checker struct, SSA inspection
+│   │   ├── context.go         # Which functions have a context in scope
+│   │   ├── callee.go          # Classifies a callee by name and package
+│   │   └── tracing.go         # Value tracing and context checking
 │   ├── directive/             # Comment directive handling
 │   │   └── ignore.go          # //zerologlintctx:ignore parsing, directive problems
-│   ├── ssa/                   # SSA-based analysis
-│   │   ├── checker.go         # Checker struct, SSA inspection
-│   │   └── tracing.go         # Value tracing and context checking
 │   └── typeutil/              # Type checking utilities
-│       └── zerolog.go         # Zerolog type predicates
+│       └── zerolog.go         # Zerolog type and signature predicates
 ├── testdata/src/              # Test fixtures and library stubs
-├── analyzer.go                # Public analyzer definition
+├── analyzer.go                # Public analyzer, directive reporting
 └── analyzer_test.go           # Integration tests
 ```
 
@@ -73,7 +74,7 @@ This is necessary because `UpdateContext` also returns void but is not a logging
 ## SSA Tracing
 
 The tracing system follows SSA values backwards to find if context was set.
-All tracing logic is implemented in `internal/ssa/tracing.go`.
+All tracing logic is implemented in `internal/chain/tracing.go`.
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌────────────────┐
@@ -110,7 +111,7 @@ Each tracer type knows its context sources:
 
 ### Common SSA Patterns
 
-`traceCommon` in `internal/ssa/tracing.go` handles shared patterns:
+`traceCommon` in `internal/chain/tracing.go` handles shared patterns:
 
 - **Phi nodes** - Conditional assignments (all branches must have context)
 - **UnOp** - Pointer dereferences

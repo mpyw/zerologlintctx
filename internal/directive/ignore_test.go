@@ -2,7 +2,7 @@ package directive
 
 import "testing"
 
-func TestIsIgnoreComment(t *testing.T) {
+func TestClassifyIgnore(t *testing.T) {
 	tests := []struct {
 		text string
 		want bool
@@ -35,14 +35,14 @@ func TestIsIgnoreComment(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
-			if got := isIgnoreComment(tt.text); got != tt.want {
-				t.Errorf("isIgnoreComment(%q) = %v, want %v", tt.text, got, tt.want)
+			if got, _ := classify(tt.text); got != tt.want {
+				t.Errorf("classify(%q) isIgnore = %v, want %v", tt.text, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestProblem(t *testing.T) {
+func TestClassifyProblem(t *testing.T) {
 	const (
 		malformed = "malformed zerologlintctx directive: write it as //zerologlintctx:name"
 		argument  = "zerologlintctx:ignore takes no argument; write a reason after //"
@@ -78,8 +78,8 @@ func TestProblem(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
-			if got := problem(tt.text); got != tt.want {
-				t.Errorf("problem(%q) = %q, want %q", tt.text, got, tt.want)
+			if _, got := classify(tt.text); got != tt.want {
+				t.Errorf("classify(%q) problem = %q, want %q", tt.text, got, tt.want)
 			}
 		})
 	}

@@ -1,7 +1,7 @@
 // aggregate.go walks a struct or array: the path from an address back to its
 // root, and the copies a root was made from.
 
-package ssa
+package chain
 
 import (
 	"go/token"
