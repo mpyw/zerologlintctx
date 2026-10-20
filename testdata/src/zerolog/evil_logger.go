@@ -467,28 +467,36 @@ func goodUpdateContext(ctx context.Context, logger *zerolog.Logger) {
 // UPDATECONTEXT (changes the Logger in place)
 // =============================================================================
 
-// UpdateContext has a pointer receiver, so events from the Logger after it
-// carry what it set (#82).
-func goodUpdateContextSetsCtx(ctx context.Context, l zerolog.Logger) {
+// UpdateContext keeps only the fields its func writes. What Context.Ctx sets
+// in the func is dropped, so the Logger has no context after it (#152).
+func badUpdateContextCtxDropped(ctx context.Context, l zerolog.Logger) {
 	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
 		return c.Ctx(ctx)
 	})
-	l.Info().Msg("after update") // OK - ctx set via UpdateContext
+	l.Info().Msg("after update") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-func goodUpdateContextSetsCtxOnPointer(ctx context.Context, l *zerolog.Logger) {
+func badUpdateContextCtxDroppedOnPointer(ctx context.Context, l *zerolog.Logger) {
 	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
 		return c.Str("k", "v").Ctx(ctx)
 	})
-	l.Info().Msg("after update on pointer") // OK - ctx set via UpdateContext
+	l.Info().Msg("after update on pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-func goodUpdateContextThenWith(ctx context.Context, l zerolog.Logger) {
+func badUpdateContextCtxDroppedThenWith(ctx context.Context, l zerolog.Logger) {
 	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
 		return c.Ctx(ctx)
 	})
 	derived := l.With().Str("k", "v").Logger()
-	derived.Info().Msg("derived after update") // OK - ctx set via UpdateContext
+	derived.Info().Msg("derived after update") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodUpdateContextKeepsCtx(ctx context.Context, l zerolog.Logger) {
+	l = l.With().Ctx(ctx).Logger()
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Str("k", "v")
+	})
+	l.Info().Msg("ctx before update") // OK - UpdateContext keeps the ctx the Logger had
 }
 
 func badUpdateContextWithoutCtx(ctx context.Context, l zerolog.Logger) {
@@ -625,11 +633,11 @@ func (s *fieldLoggerHolder) goodFieldUpdatedWithCtx(ctx context.Context) {
 	s.log.Info().Msg("field updated") // OK
 }
 
-func (s *fieldLoggerHolder) goodFieldUpdateContext(ctx context.Context) {
+func (s *fieldLoggerHolder) badFieldUpdateContextCtxDropped(ctx context.Context) {
 	s.log.UpdateContext(func(c zerolog.Context) zerolog.Context {
 		return c.Ctx(ctx)
 	})
-	s.log.Info().Msg("field UpdateContext") // OK
+	s.log.Info().Msg("field UpdateContext") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func goodLocalFieldUpdatedWithCtx(ctx context.Context, l zerolog.Logger) {
@@ -762,9 +770,7 @@ func badEitherFieldOneWithoutCtx(ctx context.Context, l zerolog.Logger, cond boo
 
 func goodEitherPointerParamUpdated(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
 	*l1 = l1.With().Ctx(ctx).Logger()
-	l2.UpdateContext(func(c zerolog.Context) zerolog.Context {
-		return c.Ctx(ctx)
-	})
+	*l2 = l2.With().Ctx(ctx).Logger()
 	l1.Info().Msg("after update") // OK
 	p := l1
 	if cond {

@@ -33,13 +33,10 @@ import (
 //	l = l.With().Ctx(ctx).Logger()     // the only store that reaches the read
 //	l.Info().Msg("msg")                // Info takes &l with real zerolog
 //
-// A call to Logger.UpdateContext changes the Logger in place. A path through
-// one whose func updaterSetsCtx accepts has context, and stops there:
-//
-//	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
-//	    return c.Ctx(ctx)
-//	})
-//	l.Info().Msg("msg")
+// A call to Logger.UpdateContext changes the fields of the Logger in place,
+// but not its context: zerolog keeps only the fields the func writes, and
+// drops what Context.Ctx sets. So it neither stops a path nor counts as a
+// read.
 //
 // This holds for an address whose root is a local variable, a pointer
 // parameter or a variable a closure captures: its field, its constant
@@ -60,7 +57,6 @@ import (
 func storesReaching(
 	addr ssa.Value,
 	read ssa.Instruction,
-	updaterSetsCtx func(*ssa.Function) bool,
 	positions instrPositions,
 ) (r storeReaching, ok bool) {
 	root, path := aggregatePath(addr)
@@ -74,7 +70,7 @@ func storesReaching(
 		return r, len(plain) > 0
 	}
 
-	w := &storeWalk{root: root, path: path, updaterSetsCtx: updaterSetsCtx, positions: positions, out: &r}
+	w := &storeWalk{root: root, path: path, positions: positions, out: &r}
 	if read != nil {
 		w.walkBefore(read)
 		return r, true
@@ -98,11 +94,10 @@ func storesReaching(
 func storesReachingClosure(
 	v ssa.Value,
 	mc *ssa.MakeClosure,
-	updaterSetsCtx func(*ssa.Function) bool,
 	positions instrPositions,
 ) storeReaching {
 	var r storeReaching
-	w := &storeWalk{root: v, updaterSetsCtx: updaterSetsCtx, positions: positions, out: &r}
+	w := &storeWalk{root: v, positions: positions, out: &r}
 	w.walkEscape(mc)
 	return r
 }
@@ -161,9 +156,6 @@ func storeDeferredReturns(esc ssa.Instruction, positions instrPositions) (rets [
 type storeReaching struct {
 	// values are the values stored. Every one must have context.
 	values []ssa.Value
-	// covered reports that some path reaches the read through a
-	// Logger.UpdateContext call whose func sets context.
-	covered bool
 	// unknown reports that some path carries a value the function cannot
 	// tell: one the caller passed through a pointer parameter, or one an
 	// aggregate was copied whole from where no store can be seen.
@@ -205,7 +197,6 @@ func storesReachingAt(
 	root ssa.Value,
 	path []ssa.Value,
 	read ssa.Instruction,
-	updaterSetsCtx func(*ssa.Function) bool,
 	positions instrPositions,
 ) (r storeReaching, ok bool) {
 	switch root.(type) {
@@ -213,7 +204,7 @@ func storesReachingAt(
 	default:
 		return r, false
 	}
-	w := &storeWalk{root: root, path: path, updaterSetsCtx: updaterSetsCtx, positions: positions, out: &r}
+	w := &storeWalk{root: root, path: path, positions: positions, out: &r}
 	w.walkBefore(read)
 	return r, true
 }
@@ -221,11 +212,10 @@ func storesReachingAt(
 // storeWalk walks the control flow backwards from a read, and stops each path
 // at the first store to the address it looks for.
 type storeWalk struct {
-	root           ssa.Value                // The variable or pointer parameter the address is in
-	path           []ssa.Value              // The selections from root to the address, outermost first
-	updaterSetsCtx func(*ssa.Function) bool // Whether a func passed to Logger.UpdateContext sets context
-	positions      instrPositions           // Where each instruction is in its block
-	out            *storeReaching
+	root      ssa.Value      // The variable or pointer parameter the address is in
+	path      []ssa.Value    // The selections from root to the address, outermost first
+	positions instrPositions // Where each instruction is in its block
+	out       *storeReaching
 	// copies holds the loads that copied walks have started from, with the
 	// path they look for, shared by every walk that copied starts.
 	copies map[storeCopy]bool
@@ -309,8 +299,7 @@ func (w *storeWalk) stopsInBlock(b *ssa.BasicBlock, from int) bool {
 }
 
 // stopsAt reports whether instr ends a path: a store to the address, or to an
-// aggregate that holds it, a Logger.UpdateContext call that sets context, or
-// the declaration of the local variable.
+// aggregate that holds it, or the declaration of the local variable.
 func (w *storeWalk) stopsAt(instr ssa.Instruction) bool {
 	switch in := instr.(type) {
 	case *ssa.Alloc:
@@ -326,18 +315,6 @@ func (w *storeWalk) stopsAt(instr ssa.Instruction) bool {
 			w.copied(in, w.path[n:])
 		}
 		return true
-	case *ssa.Call:
-		c, ok := calleeOf(&in.Call)
-		if !ok || !c.updatesLoggerContext() {
-			return false
-		}
-		if n, ok := w.prefixLen(c.recv); !ok || n != len(w.path) {
-			return false
-		}
-		if fn := storeContextUpdater(in); fn != nil && w.updaterSetsCtx(fn) {
-			w.out.covered = true
-			return true
-		}
 	}
 	return false
 }
@@ -389,12 +366,11 @@ func (w *storeWalk) copied(store *ssa.Store, rest []ssa.Value) {
 		return
 	}
 	src := &storeWalk{
-		root:           root,
-		path:           append(slices.Clone(path), rest...),
-		updaterSetsCtx: w.updaterSetsCtx,
-		positions:      w.positions,
-		out:            w.out,
-		copies:         w.copies,
+		root:      root,
+		path:      append(slices.Clone(path), rest...),
+		positions: w.positions,
+		out:       w.out,
+		copies:    w.copies,
 	}
 	// An aggregate copied back and forth in a loop leads back to a copy
 	// already followed, which adds nothing new.
@@ -534,20 +510,6 @@ func storeSelection(step ssa.Value) (field int, index ssa.Value) {
 		return 0, s.Index
 	}
 	return 0, step.(*ssa.Index).Index
-}
-
-// storeContextUpdater returns the func that a Logger.UpdateContext call
-// passes, or nil when it is not known statically.
-func storeContextUpdater(call *ssa.Call) *ssa.Function {
-	// The receiver comes first, so the func is the last argument.
-	switch fn := call.Call.Args[len(call.Call.Args)-1].(type) {
-	case *ssa.Function:
-		return fn
-	case *ssa.MakeClosure:
-		f, _ := fn.Fn.(*ssa.Function)
-		return f
-	}
-	return nil
 }
 
 // findStores finds the plain stores to addr, carrying the set of addresses
