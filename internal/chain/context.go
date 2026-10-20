@@ -4,14 +4,20 @@
 package chain
 
 import (
+	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
 
 	"github.com/mpyw/zerologlintctx/internal/typeutil"
 )
 
-// ContextNames maps each function of funcs that has a context.Context in
-// scope to the name of that context. A closure without a context parameter of
-// its own inherits the name from the function it is declared in.
+// ContextNames maps each source function of the package that has a
+// context.Context in scope to the name of that context. A closure without a
+// usable context parameter of its own inherits the name from the function it
+// is declared in. A parameter named _ cannot be used, so it counts as none.
+//
+// The source functions are those of buildssa, plus the closures in
+// package-level variable initializers, which belong to the package's
+// synthetic init function and are not among them.
 //
 // It works in two passes:
 //
@@ -25,7 +31,8 @@ import (
 //	        log.Info().Msg("async")            // Should use .Ctx(ctx)
 //	    }()
 //	}
-func ContextNames(funcs []*ssa.Function) map[*ssa.Function]string {
+func ContextNames(info *buildssa.SSA) map[*ssa.Function]string {
+	funcs := append(contextInitializerClosures(info.Pkg), info.SrcFuncs...)
 	names := make(map[*ssa.Function]string)
 
 	// First pass: find direct context parameters
@@ -57,8 +64,32 @@ func ContextNames(funcs []*ssa.Function) map[*ssa.Function]string {
 	return names
 }
 
-// contextParamName finds the name of the context.Context parameter in fn's
-// signature, or "" when it has none.
+// contextInitializerClosures returns the closures, at any depth, of the
+// package's synthetic init function, which runs the package-level variable
+// initializers.
+func contextInitializerClosures(pkg *ssa.Package) []*ssa.Function {
+	if pkg == nil {
+		return nil
+	}
+	init := pkg.Func("init")
+	if init == nil {
+		return nil
+	}
+	var closures []*ssa.Function
+	var addAnons func(fn *ssa.Function)
+	addAnons = func(fn *ssa.Function) {
+		for _, anon := range fn.AnonFuncs {
+			closures = append(closures, anon)
+			addAnons(anon)
+		}
+	}
+	addAnons(init)
+	return closures
+}
+
+// contextParamName finds the name of the first usable context.Context
+// parameter in fn's signature, or "" when it has none. A parameter that is
+// unnamed or named _ is not usable.
 func contextParamName(fn *ssa.Function) string {
 	if fn.Signature == nil {
 		return ""
@@ -68,8 +99,8 @@ func contextParamName(fn *ssa.Function) string {
 		return ""
 	}
 	for param := range params.Variables() {
-		if typeutil.IsContextType(param.Type()) {
-			return param.Name()
+		if name := param.Name(); name != "" && name != "_" && typeutil.IsContextType(param.Type()) {
+			return name
 		}
 	}
 	return ""

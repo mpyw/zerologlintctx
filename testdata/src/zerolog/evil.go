@@ -906,3 +906,59 @@ func evilMultipleCtxParamsNested(ctx1 context.Context, ctx2 context.Context, log
 		logger.Info().Msg("nested multiple") // want `zerolog call chain missing .Ctx\(ctx1\)`
 	}()
 }
+
+// =============================================================================
+// EVIL: CONTEXT PARAMETER NAMED _
+// =============================================================================
+
+// A context named _ cannot be passed on, so it counts as no context, as an
+// unnamed one does (#80).
+func evilBlankCtxParam(_ context.Context, logger zerolog.Logger) {
+	logger.Info().Msg("blank ctx") // OK - no usable context
+}
+
+func evilUnnamedCtxParam(context.Context, zerolog.Logger) {
+	log.Info().Msg("unnamed ctx") // OK - no usable context
+}
+
+// A blank context after a named one does not hide it.
+func evilBlankThenNamedCtxParam(_ context.Context, ctx context.Context, logger zerolog.Logger) {
+	logger.Info().Msg("named after blank") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A closure whose own context is named _ asks for the outer one.
+func evilBlankCtxInClosure(ctx context.Context, logger zerolog.Logger) {
+	func(_ context.Context) {
+		logger.Info().Msg("blank ctx in closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(ctx)
+}
+
+// =============================================================================
+// EVIL: CLOSURES IN PACKAGE-LEVEL VARIABLES
+// =============================================================================
+
+// A closure in a package-level variable belongs to the package's init, and is
+// checked as one inside a function is (#81).
+var evilGlobalClosure = func(ctx context.Context) {
+	log.Info().Msg("global closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+var evilGlobalClosureWithCtx = func(ctx context.Context) {
+	log.Info().Ctx(ctx).Msg("global closure with ctx") // OK
+}
+
+var evilGlobalClosureWithoutCtx = func() {
+	log.Info().Msg("global closure without ctx") // OK - no context in scope
+}
+
+var evilGlobalNestedClosure = func(ctx context.Context) func() {
+	return func() {
+		log.Info().Msg("nested in global closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+var evilGlobalClosures = map[string]func(context.Context){
+	"a": func(ctx context.Context) {
+		log.Info().Msg("closure in global map") // want `zerolog call chain missing .Ctx\(ctx\)`
+	},
+}
