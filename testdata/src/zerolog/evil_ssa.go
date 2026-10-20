@@ -1928,6 +1928,17 @@ func goodGoClosureEventAfterEarlierUse(ctx context.Context, logger zerolog.Logge
 	}()
 }
 
+func goodLoggerPointerPickedOnBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	a := logger.With().Ctx(ctx).Logger()
+	b := logger.With().Ctx(ctx).Str("k", "v").Logger()
+	_ = a.With()
+	p := &a
+	if cond {
+		p = &b
+	}
+	p.Info().Msg("logger pointer picked on a branch") // OK - both loggers have ctx
+}
+
 func badClosureStoreAfterIsMade(ctx context.Context, logger zerolog.Logger) {
 	l := logger.With().Ctx(ctx).Logger()
 	f := func() {
