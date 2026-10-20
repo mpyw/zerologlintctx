@@ -554,8 +554,6 @@ func (tr *tracer) traceParamPath(pp storeParamPath, t tracerType, visited map[ss
 func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, t tracerType, visited map[ssa.Value]bool) bool {
 	addr, read := arg, ssa.Instruction(call)
 	switch {
-	case arg == pp.param && !pp.pointer:
-		return true // A struct or array passed on as it came, by a recursive call
 	case !pp.pointer:
 		// A struct or array passed by value is loaded from where it is
 		load, ok := arg.(*ssa.UnOp)
