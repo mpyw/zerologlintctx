@@ -1584,6 +1584,22 @@ func goodEventThroughMethodValueInLoop(ctx context.Context, logger zerolog.Logge
 	e.Msg("through method value in loop") // OK - the method keeps the event
 }
 
+func goodEventThroughFuncValueInLoop(ctx context.Context, logger zerolog.Logger, xs []int, wrap func(*zerolog.Event) *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	for range xs {
+		e = wrap(e)
+	}
+	e.Msg("through func value in loop") // OK - a call not known statically is taken to keep its first argument
+}
+
+func badEventReplacedByIIFEInLoop(ctx context.Context, logger zerolog.Logger, xs []int) {
+	e := logger.Info().Ctx(ctx)
+	for range xs {
+		e = func() *zerolog.Event { return logger.Warn() }()
+	}
+	e.Msg("replaced by iife in loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func replaceEvent(*zerolog.Event) *zerolog.Event { return log.Info() }
 
 func replaceLogger(zerolog.Logger) zerolog.Logger { return zerolog.Nop() }
