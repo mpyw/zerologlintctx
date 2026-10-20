@@ -720,6 +720,42 @@ func badEventInLoop(ctx context.Context, logger zerolog.Logger) {
 	}
 }
 
+// A branch in a loop merges in a Phi that leads back to the loop's own, and
+// only its edge that leads back is skipped (#151).
+
+func badEventReplacedOnBranchInLoop(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for i := 0; i < 2; i++ {
+		if cond {
+			e = logger.Warn()
+		}
+	}
+	e.Msg("replaced on a branch in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventUpdatedOnBranchInLoop(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for i := 0; i < 2; i++ {
+		if cond {
+			e = e.Int("i", i)
+		}
+	}
+	e.Msg("updated on a branch in a loop") // OK - every update keeps ctx
+}
+
+func goodEventReplacedWithCtxOnBranchInLoop(ctx context.Context, logger zerolog.Logger, a, b bool) {
+	e := logger.Info().Ctx(ctx)
+	for i := 0; i < 2; i++ {
+		if a {
+			e = logger.Warn().Ctx(ctx)
+		}
+		if b {
+			e = e.Int("i", i)
+		}
+	}
+	e.Msg("replaced with ctx on a branch in a loop") // OK - every value has ctx
+}
+
 func goodEventInLoopWithCtx(ctx context.Context, logger zerolog.Logger) {
 	for i := 0; i < 3; i++ {
 		e := logger.Info().Ctx(ctx).Int("i", i)

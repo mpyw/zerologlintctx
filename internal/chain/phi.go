@@ -16,32 +16,55 @@ import (
 //
 //declscope:shared // tracing.go hands each Phi to it
 func (tr *tracer) tracePhi(phi *ssa.Phi, t tracerType, visited map[ssa.Value]bool) bool {
-	if len(phi.Edges) == 0 {
-		return false
-	}
+	valid, ok := tr.tracePhiEdges(phi, phi, t, visited, make(map[*ssa.Phi]bool))
+	return ok && valid
+}
 
-	hasValidEdge := false
+// tracePhiEdges traces the edges of phi, which is origin or a Phi that an
+// edge of origin leads back through. ok is false when an edge has no context,
+// and valid reports that some edge was traced.
+//
+// An edge that leads back to origin is an update in a loop, and is skipped.
+// When it is a Phi itself, only its own edges that lead back are, and the
+// others are traced: a branch in the loop merges there.
+//
+//	e := logger.Info().Ctx(ctx)
+//	for i := 0; i < n; i++ {    // origin = Phi(Ctx, P1)
+//	    if cond {
+//	        e = logger.Warn()    // P1 = Phi(origin, Warn): Warn is traced
+//	    }
+//	}
+func (tr *tracer) tracePhiEdges(
+	phi, origin *ssa.Phi,
+	t tracerType,
+	visited map[ssa.Value]bool,
+	seen map[*ssa.Phi]bool,
+) (valid, ok bool) {
 	for _, edge := range phi.Edges {
-		// Skip edges that would cycle back to this Phi
-		if phiEdgeLeadsBack(edge, phi, visited) {
-			continue
-		}
-
-		// Skip nil constant edges
 		if isNilConst(edge) {
 			continue
 		}
-
-		hasValidEdge = true
+		if phiEdgeLeadsBack(edge, origin, visited) {
+			inner, isPhi := edge.(*ssa.Phi)
+			if !isPhi || inner == origin || seen[inner] {
+				continue
+			}
+			seen[inner] = true
+			innerValid, innerOK := tr.tracePhiEdges(inner, origin, t, visited, seen)
+			if !innerOK {
+				return false, false
+			}
+			valid = valid || innerValid
+			continue
+		}
 
 		// Clone visited for independent tracing of each branch
-		edgeVisited := maps.Clone(visited)
-		if !tr.traceValue(edge, t, edgeVisited) {
-			return false
+		if !tr.traceValue(edge, t, maps.Clone(visited)) {
+			return false, false
 		}
+		valid = true
 	}
-
-	return hasValidEdge
+	return valid, true
 }
 
 // phiEdgeLeadsBack checks if tracing edge would eventually lead back to phi.
