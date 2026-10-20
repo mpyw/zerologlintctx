@@ -430,6 +430,62 @@ func badRecursiveFuncLiteralPointerParamOverwritten(ctx context.Context, logger 
 	walk(&l, n)
 }
 
+// A deferred func literal reads what a pointer argument points to at the
+// returns after the defer, and a go one at any point after (#155).
+
+func badDeferredFuncLiteralPointerParamChangedAfter(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	defer func(p *zerolog.Logger) {
+		p.Info().Msg("deferred, pointer changed after") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(&l)
+	l = logger
+}
+
+func goodDeferredFuncLiteralPointerParamSetAfter(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	defer func(p *zerolog.Logger) {
+		p.Info().Msg("deferred, pointer set after") // OK - l has ctx at the return
+	}(&l)
+	l = logger.With().Ctx(ctx).Logger()
+}
+
+func badDeferredFuncLiteralFieldChangedAfter(ctx context.Context, logger zerolog.Logger) {
+	h := iifeLoggerHolder{l: logger.With().Ctx(ctx).Logger()}
+	defer func(h *iifeLoggerHolder) {
+		h.l.Info().Msg("deferred, field changed after") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(&h)
+	h.l = logger
+}
+
+func badGoFuncLiteralPointerParamChangedAfter(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	go func(p *zerolog.Logger) {
+		p.Info().Msg("go, pointer changed after") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(&l)
+	l = logger
+}
+
+func goodGoFuncLiteralPointerParam(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	go func(p *zerolog.Logger) {
+		p.Info().Msg("go, pointer") // OK - l has ctx, before and after
+	}(&l)
+}
+
+func badDeferredFuncLiteralPointerParamInLoop(ctx context.Context, logger zerolog.Logger) {
+	for i := 0; ; i++ {
+		l := logger
+		if i == 0 {
+			defer func(p *zerolog.Logger) {
+				p.Info().Msg("deferred in a loop, ctx on a later iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+			}(&l)
+			continue
+		}
+		l = logger.With().Ctx(ctx).Logger()
+		return
+	}
+}
+
 func badIIFELoggerPointerParam(ctx context.Context, logger zerolog.Logger) {
 	l := logger
 	func(p *zerolog.Logger) {
