@@ -186,6 +186,31 @@ func badNilEvent(ctx context.Context) {
 	e.Msg("nil event") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A deferred terminator runs at each return, so a Ctx call after the defer
+// statement counts when it runs before every return (#122).
+
+func goodDeferredMsgCtxAfterDefer(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	defer e.Msg("deferred, ctx after defer") // OK - .Ctx() runs before the return
+	e.Ctx(ctx)
+}
+
+func badDeferredMsgCtxBeforeOneReturn(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	defer e.Msg("deferred, ctx before one return") // want `zerolog call chain missing .Ctx\(ctx\)`
+	if cond {
+		return
+	}
+	e.Ctx(ctx)
+}
+
+func badDeferredMsgNeverReturns(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	defer e.Msg("deferred, never returns") // want `zerolog call chain missing .Ctx\(ctx\)`
+	for {
+	}
+}
+
 func badEventCtxResultUnusedOnOneBranch(ctx context.Context, log zerolog.Logger, cond bool) {
 	e := log.Info()
 	if cond {
