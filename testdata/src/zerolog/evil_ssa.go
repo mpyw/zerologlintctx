@@ -1351,6 +1351,86 @@ func goodSelfReferentialStoresAroundCtx(ctx context.Context, logger zerolog.Logg
 	p.Info().Msg("updates around ctx") // OK - ctx set via With().Ctx(ctx)
 }
 
+// Only the stores that reach a read count (#102). An update on every path
+// is enough, and a store that a later one overwrites does not reach the read.
+func goodUpdateOnBothBranches(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger
+	if cond {
+		l = l.With().Ctx(ctx).Logger()
+	} else {
+		l = l.With().Ctx(ctx).Str("a", "b").Logger()
+	}
+	l.Info().Msg("updated on both branches") // OK - ctx set on every path
+}
+
+func goodUpdateOnEveryCase(ctx context.Context, logger zerolog.Logger, n int) {
+	l := logger
+	switch n {
+	case 1:
+		l = l.With().Ctx(ctx).Logger()
+	case 2:
+		l = logger.With().Ctx(ctx).Logger()
+	default:
+		l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+			return c.Ctx(ctx)
+		})
+	}
+	l.Info().Msg("updated on every case") // OK - ctx set on every path
+}
+
+func goodOverwrittenStore(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	l = logger.With().Ctx(ctx).Logger()
+	l.Info().Msg("first store overwritten") // OK - only the second store reaches
+}
+
+func goodUpdateInLoopKeepsCtx(ctx context.Context, logger zerolog.Logger, xs []int) {
+	l := logger.With().Ctx(ctx).Logger()
+	for range xs {
+		l = l.With().Int("i", 1).Logger()
+		l.Info().Msg("in loop") // OK - ctx set before the loop
+	}
+	l.Info().Msg("after loop") // OK - ctx set before the loop
+}
+
+func goodStoreAfterClosureIsMade(ctx context.Context, logger zerolog.Logger) {
+	var l zerolog.Logger
+	f := func() { l.Info().Msg("store after closure") } // OK - the only store has ctx
+	l = logger.With().Ctx(ctx).Logger()
+	f()
+}
+
+func badUpdateOnOneCase(ctx context.Context, logger zerolog.Logger, n int) {
+	l := logger
+	switch n {
+	case 1:
+		l = l.With().Ctx(ctx).Logger()
+	case 2:
+		l = l.With().Str("a", "b").Logger()
+	}
+	l.Info().Msg("not every case") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badReadBeforeUpdateInLoop(ctx context.Context, logger zerolog.Logger, xs []int) {
+	l := logger
+	for range xs {
+		l.Info().Msg("first iteration has none") // want `zerolog call chain missing .Ctx\(ctx\)`
+		l = l.With().Ctx(ctx).Logger()
+	}
+}
+
+func badPointerParamUpdatedInBranch(ctx context.Context, l *zerolog.Logger, cond bool) {
+	if cond {
+		*l = l.With().Ctx(ctx).Logger()
+	}
+	l.Info().Msg("caller's value on the other path") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodPointerParamStoredWithCtx(ctx context.Context, l *zerolog.Logger, base zerolog.Logger) {
+	*l = base.With().Ctx(ctx).Logger()
+	l.Info().Msg("stored over the caller's value") // OK - the store reaches every read
+}
+
 // ===== MANY BRANCHES THAT REASSIGN THE EVENT =====
 
 // Each branch adds a Phi whose edges both lead to the previous one. Tracing

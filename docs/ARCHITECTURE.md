@@ -94,8 +94,7 @@ The `tracer` type in `internal/chain/tracing.go` does it. Phi nodes are in
 `phi.go`, and the stores behind a load are found by `store.go`.
 
 One tracer serves a whole function. It keeps each value it found to have
-context, and the stores it found at each address, so neither is worked out
-again for the next call that reaches it.
+context, so it is not worked out again for the next call that reaches it.
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌────────────────┐
@@ -144,25 +143,48 @@ once, and `tracerHandoffs` lists which ones each tracer follows:
 - **Alloc** - Local variable allocation (traces stored values)
 - **FreeVar** - Closure captured variables
 - **FieldAddr/Field** - Struct field access
-- **Store tracking** - Values stored at addresses
+- **Store tracking** - The stores that reach each read of an address
 
-#### Updates
+#### Stores That Reach a Read
+
+A variable whose address is taken is read from memory. Real zerolog takes that
+address for every `Logger.Info()` call, since the method has a pointer
+receiver, so `l.Info()` reads `l` through `&l`.
+
+`storesReaching` in `store.go` walks the control flow back from the read, and
+stops each path at the first store to the address. Only the stores where a
+path stops can be what the read sees, and every one must have context:
+
+| Code before `l.Info()` | Stores that reach it | Reported |
+|------------------------|----------------------|----------|
+| `l := base` then `l = l.With().Ctx(ctx).Logger()` | The second | No |
+| The second on one branch of an `if` only | Both | Yes |
+| The second on both branches of an `if` | Both updates | No |
 
 A store whose value loads from the same address, such as
-`l = l.With().Ctx(ctx).Logger()` once `l` has its address taken, is an update.
-Real zerolog takes that address for every `Logger.Info()` call, since the
-method has a pointer receiver. An update is not traced as a value of its own,
-since it is built from the other stores.
+`l = l.With().Str("k", "v").Logger()`, is an update. It is traced like any
+other value: its load is a read, with stores of its own that reach it. An
+update in a loop reaches itself, and is skipped there, as a Phi edge that
+leads back to the Phi is.
 
-An update can still set the context itself. It is accepted on its own when it
-runs before every read of the local variable and no plain store can run after
-it. An update on one branch only does not count.
+| Where a path stops | What it carries |
+|--------------------|-----------------|
+| A store to the address | The value stored |
+| A store of the whole struct or array that holds it | What reaches the same field of the aggregate copied in |
+| `Logger.UpdateContext(fn)` on it, when every Context `fn` returns has context | Context, as `return c.Ctx(ctx)` gives |
+| The declaration of a local variable | Its zero value, which has nothing to trace |
+| The entry of the function, for a pointer parameter | The caller's value, which is not known, so it is reported |
+| The entry of a closure, for a variable it captures | The value bound where the closure is made |
 
-`Logger.UpdateContext(fn)` is an update too: it changes the Logger in place.
-It is accepted under the same rule when every Context that `fn` returns has
-context, as `return c.Ctx(ctx)` does. A pointer parameter takes updates of
-both kinds, but not its plain stores, since the caller's value is there on any
-path that skips them.
+This holds for a local variable, a pointer parameter, a captured variable, and
+a field or constant element of one, wherever the read runs. A field of a
+global, or of a struct reached through a pointer the function loads, can be
+changed elsewhere. For those, every store in the function must have context.
+
+When the read is not known, such as for an address that a Phi picks, every
+read of the address counts. An instruction that passes the address on, such
+as a closure that captures it, may read it later, so every store after it
+counts too.
 
 #### Address Matching
 
@@ -185,10 +207,12 @@ t5 = *t1
 t6 = &t0.event     // the address we want the value of
 ```
 
-When no store matches an address directly, `findStoresThroughAggregateCopy`
-splits it into a root plus a chain of selections, follows the copy back to the
-temporary, and replays the same chain there. Both shapes are handled, since
-whether the compiler emits the temporary depends on the x/tools version.
+An address is split into a root plus a chain of selections. When the walk
+back from a read meets a store of the whole root, `storeWalk.copied` follows
+the copy back to the temporary, and walks on from the load of it with the same
+chain. `findStoresThroughAggregateCopy` does the same for an address whose
+stores are not walked. Both shapes are handled, since whether the compiler
+emits the temporary depends on the x/tools version.
 
 ## Terminator Detection
 

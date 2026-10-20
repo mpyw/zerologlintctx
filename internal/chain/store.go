@@ -1,6 +1,6 @@
-// store.go finds what was written into an address. findAllStoredValues is the
-// entry; it leans on aggregate.go to follow copies and on match.go to decide
-// whether two addresses are the same.
+// store.go finds what can be at an address when it is read. storesReaching is
+// the entry; it leans on aggregate.go to follow copies and on match.go to
+// decide whether two addresses are the same.
 
 package chain
 
@@ -11,142 +11,346 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// findAllStoredValues finds all values that were stored at the given address.
-// Multiple stores can occur in different control flow paths (e.g., if/else branches).
-// All stored values must be checked for context to handle cases like:
+// storesReaching finds the values that can be at addr when read runs: the
+// stores to addr from which some path leads to read with no other store to
+// addr between. A nil read stands for every read of addr. Multiple stores can
+// reach a read on different control flow paths, and every one must be checked
+// for context:
 //
-//	e := logger.Info().Ctx(ctx)
-//	ptr := &e
+//	l := base                          // reaches the read on the else path
 //	if cond {
-//	    *ptr = logger.Warn()  // no ctx in this branch!
+//	    l = l.With().Ctx(ctx).Logger() // reaches it on the then path
 //	}
-//	(*ptr).Msg("msg")  // should report: one branch lacks ctx
+//	l.Info().Msg("msg")                // should report: one path lacks ctx
 //
-// Self-referential stores, whose value loads from the same address, are
-// updates: each transforms the value already there. They are skipped as
-// values, since they are built from the other stores and would cause infinite
-// recursion during tracing:
+// A store that an update overwrites does not reach the reads after it. Each
+// update is a value of its own, which loads the value before it, so tracing it
+// goes on from the stores that reach that load:
 //
-//	e := logger.Info().Ctx(ctx)
-//	ptr := &e
-//	for i := 0; i < 3; i++ {
-//	    *ptr = (*ptr).Str("k", "v")  // update: skipped as a value
-//	}
-//	(*ptr).Msg("msg")  // only traces initial store, finds ctx
+//	l := base
+//	l = l.With().Ctx(ctx).Logger()     // the only store that reaches the read
+//	l.Info().Msg("msg")                // Info takes &l with real zerolog
 //
-// An update may set the context itself, though. updates holds those that
-// every read of a local variable sees, which tracing may take on their own:
-//
-//	l := logger
-//	l = l.With().Ctx(ctx).Logger()   // update seen by every read below
-//	l.Info().Msg("msg")              // Info takes &l with real zerolog
-//
-// So does a call to Logger.UpdateContext, which changes the Logger in place.
-// contextUpdaters holds the funcs passed to those that every read sees:
+// A call to Logger.UpdateContext changes the Logger in place. A path through
+// one whose func updaterSetsCtx accepts has context, and stops there:
 //
 //	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
-//	    return c.Ctx(ctx)            // contextUpdater
+//	    return c.Ctx(ctx)
 //	})
 //	l.Info().Msg("msg")
 //
-// A pointer parameter gets updates and contextUpdaters only. Its plain
-// stores are not values, since the caller's value is there on any path that
-// skips them.
+// This holds for an address whose root is a local variable, a pointer
+// parameter or a variable a closure captures: its field, its constant
+// element, or itself. The stores that reach a read are known there, from the
+// function alone. A path that leads back to the declaration of a local
+// variable carries its zero value, which has no value to trace. One that
+// leads back to the entry of the function carries the value the caller
+// passed, which is unknown, or the value of the captured variable when the
+// closure runs, which is in captured.
 //
-//declscope:shared // tracing.go asks this; the rest of the file is its working parts
-func findAllStoredValues(addr ssa.Value) storedValues {
-	var sv storedValues
-	plain, updates := findStores(addr, make(map[ssa.Value]bool))
-	_, isLocal := addr.(*ssa.Alloc)
-	_, isParam := addr.(*ssa.Parameter)
-	if !isParam {
+// For any other address, such as a global, ok is true when the function
+// stores to it, and holds every value it stores there, wherever it runs.
+//
+// positions finds where each instruction is in its block, and may be kept
+// across calls.
+//
+//declscope:shared // tracing.go traces what reaches each read
+func storesReaching(
+	addr ssa.Value,
+	read ssa.Instruction,
+	updaterSetsCtx func(*ssa.Function) bool,
+	positions instrPositions,
+) (r storeReaching, ok bool) {
+	root, path := aggregatePath(addr)
+	switch root.(type) {
+	case *ssa.Alloc, *ssa.Parameter, *ssa.FreeVar:
+	default:
+		plain := findStores(addr, make(map[ssa.Value]bool))
 		for _, store := range plain {
-			sv.plain = append(sv.plain, store.Val)
+			r.values = append(r.values, store.Val)
 		}
+		return r, len(plain) > 0
 	}
-	if !isLocal && !isParam {
-		return sv
+
+	w := &storeWalk{root: root, path: path, updaterSetsCtx: updaterSetsCtx, positions: positions, out: &r}
+	if read != nil {
+		w.walkBefore(read)
+		return r, true
 	}
-	refs := *addr.Referrers() // An Alloc or a Parameter always has them
-	for _, update := range updates {
-		if storeUpdateSeenByEveryRead(addr, refs, update, plain, updates) {
-			sv.updates = append(sv.updates, update.Val)
-		}
+	reads, escapes := storeReadsOf(addr, root, path)
+	for _, rd := range reads {
+		w.walkBefore(rd)
 	}
-	for _, call := range storeContextUpdatesOf(addr, refs) {
-		if fn := storeContextUpdater(call); fn != nil && storeUpdateSeenByEveryRead(addr, refs, call, plain, updates) {
-			sv.contextUpdaters = append(sv.contextUpdaters, fn)
-		}
+	// What an escape passes addr on to may read it at any point after, so
+	// what reaches the escape, and every store after it, may be what it reads.
+	for _, esc := range escapes {
+		w.walkBefore(esc)
+		w.addStoresAfter(esc)
 	}
-	return sv
+	return r, true
 }
 
-// storedValues is what findAllStoredValues found written into an address.
+// storeReaching is what storesReaching found can be at an address when it is
+// read.
 //
 //declscope:shared // tracing.go traces each part
-type storedValues struct {
-	// plain are the values of plain stores. Every one must have context.
-	plain []ssa.Value
-	// updates are the values of self-referential stores that every read sees.
-	// One with context is enough.
-	updates []ssa.Value
-	// contextUpdaters are the funcs passed to Logger.UpdateContext calls that
-	// every read sees. One that returns a Context with context on every path
-	// is enough.
-	contextUpdaters []*ssa.Function
+type storeReaching struct {
+	// values are the values stored. Every one must have context.
+	values []ssa.Value
+	// covered reports that some path reaches the read through a
+	// Logger.UpdateContext call whose func sets context.
+	covered bool
+	// unknown reports that some path carries a value the function cannot
+	// tell: one the caller passed through a pointer parameter, or one an
+	// aggregate was copied whole from where no store can be seen.
+	unknown bool
+	// captured is the variable a closure captures, when some path carries
+	// the value it holds as the closure starts. Tracing it finds the value
+	// bound where the closure is made.
+	captured *ssa.FreeVar
 }
 
-// storeUpdateSeenByEveryRead reports whether update, which changes the value
-// at addr, runs before every read of addr, and no plain store can run after
-// it. refs are the referrers of addr. Loads that only feed a self-referential
-// store are not reads: they are how the store takes the value before it.
-func storeUpdateSeenByEveryRead(
-	addr ssa.Value,
-	refs []ssa.Instruction,
-	update ssa.Instruction,
-	plain, updates []*ssa.Store,
-) bool {
-	feeding := make(map[ssa.Instruction]bool)
-	for _, u := range updates {
-		recordLoad := func(v ssa.Value) bool {
-			if unop, ok := v.(*ssa.UnOp); ok && unop.Op == token.MUL && unop.X == addr {
-				feeding[unop] = true
+// storeWalk walks the control flow backwards from a read, and stops each path
+// at the first store to the address it looks for.
+type storeWalk struct {
+	root           ssa.Value                // The variable or pointer parameter the address is in
+	path           []ssa.Value              // The selections from root to the address, outermost first
+	updaterSetsCtx func(*ssa.Function) bool // Whether a func passed to Logger.UpdateContext sets context
+	positions      instrPositions           // Where each instruction is in its block
+	out            *storeReaching
+}
+
+// walkBefore walks every path that leads to instr, from the instruction
+// before it.
+func (w *storeWalk) walkBefore(instr ssa.Instruction) {
+	type step struct {
+		block *ssa.BasicBlock
+		from  int // Index of the last instruction of block to look at
+	}
+	b := instr.Block()
+	queue := []step{{b, w.positions.of(instr) - 1}}
+	seen := make(map[*ssa.BasicBlock]bool)
+	for len(queue) > 0 {
+		s := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if w.stopsInBlock(s.block, s.from) {
+			continue
+		}
+		if len(s.block.Preds) == 0 {
+			w.reachEntry()
+			continue
+		}
+		for _, pred := range s.block.Preds {
+			if !seen[pred] {
+				seen[pred] = true
+				queue = append(queue, step{pred, len(pred.Instrs) - 1})
 			}
+		}
+	}
+}
+
+// reachEntry records a path that leads back to the entry of the function, or
+// to its recover block. What is at a pointer parameter there is the caller's,
+// and what is at a captured variable is the one the closure was made with. A
+// local variable is declared before any read, so its walk never gets here.
+func (w *storeWalk) reachEntry() {
+	if fv, ok := w.root.(*ssa.FreeVar); ok && len(w.path) == 0 {
+		w.out.captured = fv
+		return
+	}
+	w.out.unknown = true
+}
+
+// stopsInBlock looks at the instructions of b from index from back to its
+// first, and reports whether one of them ends the path.
+func (w *storeWalk) stopsInBlock(b *ssa.BasicBlock, from int) bool {
+	for i := from; i >= 0; i-- {
+		if w.stopsAt(b.Instrs[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// stopsAt reports whether instr ends a path: a store to the address, or to an
+// aggregate that holds it, a Logger.UpdateContext call that sets context, or
+// the declaration of the local variable.
+func (w *storeWalk) stopsAt(instr ssa.Instruction) bool {
+	switch in := instr.(type) {
+	case *ssa.Alloc:
+		return in == w.root // Its zero value has nothing to trace
+	case *ssa.Store:
+		n, ok := w.prefixLen(in.Addr)
+		if !ok {
 			return false
 		}
-		derivesFrom(u.Val, recordLoad, unOpOperand, make(map[ssa.Value]bool))
+		if n == len(w.path) {
+			w.out.values = append(w.out.values, in.Val)
+		} else {
+			w.copied(in, w.path[n:])
+		}
+		return true
+	case *ssa.Call:
+		c, ok := calleeOf(&in.Call)
+		if !ok || !c.updatesLoggerContext() {
+			return false
+		}
+		if n, ok := w.prefixLen(c.recv); !ok || n != len(w.path) {
+			return false
+		}
+		if fn := storeContextUpdater(in); fn != nil && w.updaterSetsCtx(fn) {
+			w.out.covered = true
+			return true
+		}
 	}
-	for _, ref := range refs {
-		if ref == update || feeding[ref] {
+	return false
+}
+
+// prefixLen reports whether addr is the root or a selection from it that the
+// path of the walk starts with, and how many selections it takes.
+func (w *storeWalk) prefixLen(addr ssa.Value) (int, bool) {
+	root, path := aggregatePath(addr)
+	if root != w.root || len(path) > len(w.path) {
+		return 0, false
+	}
+	for i, step := range path {
+		if !storeSelectsSame(step, w.path[i]) {
+			return 0, false
+		}
+	}
+	return len(path), true
+}
+
+// copied follows a store of a whole aggregate that holds the address, at rest
+// further along it. The value stored loads from another aggregate, such as
+// the temporary a composite literal is built in, so what reaches the address
+// is what reaches rest in that one when it is loaded:
+//
+//	t1 = local eventHolder (complit)
+//	t2 = &t1.event
+//	*t2 = v                // reaches the load of t1 below
+//	t5 = *t1
+//	*t0 = t5               // the store of a whole aggregate
+//	t6 = &t0.event         // the address asked about
+func (w *storeWalk) copied(store *ssa.Store, rest []ssa.Value) {
+	if _, isConst := store.Val.(*ssa.Const); isConst {
+		return // The zero value of the aggregate has nothing to trace
+	}
+	load, ok := store.Val.(*ssa.UnOp)
+	if !ok || load.Op != token.MUL {
+		w.out.unknown = true
+		return
+	}
+	root, path := aggregatePath(load.X)
+	switch root.(type) {
+	case *ssa.Alloc, *ssa.Parameter:
+	default:
+		w.out.unknown = true
+		return
+	}
+	src := &storeWalk{
+		root:           root,
+		path:           append(slices.Clone(path), rest...),
+		updaterSetsCtx: w.updaterSetsCtx,
+		positions:      w.positions,
+		out:            w.out,
+	}
+	src.walkBefore(load)
+}
+
+// addStoresAfter adds the values stored to the address by the stores that
+// can run after instr.
+func (w *storeWalk) addStoresAfter(instr ssa.Instruction) {
+	for other := range instrsIn(instr.Parent()) {
+		store, ok := other.(*ssa.Store)
+		if !ok || !w.positions.reaches(instr, store) {
 			continue
 		}
-		if store, ok := ref.(*ssa.Store); ok && store.Addr == addr {
-			if slices.Contains(plain, store) && instrReaches(update, store) {
+		if n, ok := w.prefixLen(store.Addr); ok {
+			if n == len(w.path) {
+				w.out.values = append(w.out.values, store.Val)
+			} else {
+				w.out.unknown = true
+			}
+		}
+	}
+}
+
+// storeReadsOf returns the instructions that read addr, whose root and path
+// are given, or an address that matches it: the loads of it, apart from those
+// that only feed a store to it, and the calls it is passed to, apart from the
+// Logger.UpdateContext calls on it. A store whose value loads from addr is an
+// update, and such a load is how it takes the value before it.
+//
+// escapes are the other instructions that use addr, apart from the stores to
+// it. Each passes addr on, as a closure that captures it or a variable it is
+// stored to does, to be read later.
+func storeReadsOf(addr, root ssa.Value, path []ssa.Value) (reads, escapes []ssa.Instruction) {
+	matches := func(v ssa.Value) bool {
+		r, p := aggregatePath(v)
+		return r == root && len(p) == len(path) && storePathsMatch(p, path)
+	}
+	var refs []ssa.Instruction
+	if addr == root {
+		refs = append(refs, *addr.Referrers()...) // A local variable or a parameter always has them
+	}
+	feeding := make(map[ssa.Instruction]bool)
+	for instr := range instrsIn(parentFunc(addr)) {
+		if v, isValue := instr.(ssa.Value); isValue && v != root && matches(v) {
+			refs = append(refs, *v.Referrers()...)
+		}
+		if store, ok := instr.(*ssa.Store); ok && matches(store.Addr) {
+			recordLoad := func(v ssa.Value) bool {
+				if unop, ok := v.(*ssa.UnOp); ok && unop.Op == token.MUL && matches(unop.X) {
+					feeding[unop] = true
+				}
 				return false
 			}
-			continue
+			derivesFrom(store.Val, recordLoad, unOpOperand, make(map[ssa.Value]bool))
 		}
-		if !instrDominates(update, ref) {
+	}
+	for _, ref := range refs {
+		switch r := ref.(type) {
+		case *ssa.Store:
+			if !matches(r.Addr) {
+				escapes = append(escapes, r) // addr itself is stored
+			}
+		case *ssa.UnOp:
+			if !feeding[r] {
+				reads = append(reads, r)
+			}
+		case *ssa.Call:
+			if c, ok := calleeOf(&r.Call); !ok || !c.updatesLoggerContext() || !matches(c.recv) {
+				reads = append(reads, r)
+			}
+		default:
+			escapes = append(escapes, ref)
+		}
+	}
+	return reads, escapes
+}
+
+// storePathsMatch reports whether two paths of the same length select the same
+// fields and constant elements.
+func storePathsMatch(a, b []ssa.Value) bool {
+	for i := range a {
+		if !storeSelectsSame(a[i], b[i]) {
 			return false
 		}
 	}
 	return true
 }
 
-// storeContextUpdatesOf returns the calls of Logger.UpdateContext on addr,
-// among refs, its referrers.
-func storeContextUpdatesOf(addr ssa.Value, refs []ssa.Instruction) []*ssa.Call {
-	var calls []*ssa.Call
-	for _, ref := range refs {
-		call, ok := ref.(*ssa.Call)
-		if !ok {
-			continue
-		}
-		if c, ok := calleeOf(&call.Call); ok && c.recv == addr && c.updatesLoggerContext() {
-			calls = append(calls, call)
-		}
+// storeSelectsSame reports whether two selections pick the same field, or the
+// same constant element, each from its own aggregate.
+func storeSelectsSame(a, b ssa.Value) bool {
+	if x, ok := a.(*ssa.FieldAddr); ok {
+		y, ok := b.(*ssa.FieldAddr)
+		return ok && x.Field == y.Field
 	}
-	return calls
+	x := a.(*ssa.IndexAddr) // aggregatePath makes no other selection
+	y, ok := b.(*ssa.IndexAddr)
+	return ok && constIndexesMatch(x.Index, y.Index)
 }
 
 // storeContextUpdater returns the func that a Logger.UpdateContext call
@@ -163,58 +367,37 @@ func storeContextUpdater(call *ssa.Call) *ssa.Function {
 	return nil
 }
 
-// findStores finds the stores to addr, as plain stores and self-referential
-// updates, carrying the set of addresses already resolved so that following
-// aggregate copies terminates.
-func findStores(addr ssa.Value, visited map[ssa.Value]bool) (plain, updates []*ssa.Store) {
+// findStores finds the plain stores to addr, carrying the set of addresses
+// already resolved so that following aggregate copies terminates. A store
+// whose value loads from addr is an update, which is built from the plain
+// stores, and is left out.
+func findStores(addr ssa.Value, visited map[ssa.Value]bool) []*ssa.Store {
 	if visited[addr] {
-		return nil, nil
+		return nil
 	}
 	visited[addr] = true
 
 	fn := parentFunc(addr)
 	if fn == nil {
-		return nil, nil
+		return nil
 	}
 
+	var plain []*ssa.Store
 	for instr := range instrsIn(fn) {
 		store, ok := instr.(*ssa.Store)
-		if !ok || !addressesMatch(store.Addr, addr) {
-			continue
+		if ok && addressesMatch(store.Addr, addr) && !valueLoadsFromMatchingAddress(store.Val, addr) {
+			plain = append(plain, store)
 		}
-		if valueLoadsFromMatchingAddress(store.Val, addr) {
-			updates = append(updates, store)
-			continue
-		}
-		plain = append(plain, store)
 	}
 	if len(plain) > 0 {
-		return plain, updates
+		return plain
 	}
 
-	return findStoresThroughAggregateCopy(fn, addr, visited), updates
+	return findStoresThroughAggregateCopy(fn, addr, visited)
 }
 
 // findStoresThroughAggregateCopy resolves stores hidden behind a whole-aggregate
-// copy. A composite literal is built in a temporary that is then copied into the
-// destination in one go, so the per-element stores never mention the destination:
-//
-//	h := eventHolder{event: logger.Info().Ctx(ctx)}
-//	h.event.Msg("msg")
-//
-// becomes
-//
-//	t0 = local eventHolder (h)
-//	t1 = local eventHolder (complit)
-//	t2 = &t1.event
-//	*t2 = t4                 // field initialized on the temporary
-//	t5 = *t1
-//	*t0 = t5                 // whole struct copied into h
-//	t6 = &t0.event           // ← the address we are asked about
-//
-// Searching for stores to t6 finds nothing, so follow the copy back to the
-// temporary and resolve the same selection path there instead. The path is
-// resolved element by element, so embedded structs nest arbitrarily deep.
+// copy, as storeWalk.copied does for a local variable.
 func findStoresThroughAggregateCopy(fn *ssa.Function, addr ssa.Value, visited map[ssa.Value]bool) []*ssa.Store {
 	root, path := aggregatePath(addr)
 	if len(path) == 0 {
@@ -224,8 +407,7 @@ func findStoresThroughAggregateCopy(fn *ssa.Function, addr ssa.Value, visited ma
 	var plain []*ssa.Store
 	for src := range copySourcesOfAggregate(fn, root) {
 		for _, equivalent := range resolveAggregatePath(fn, src, path) {
-			found, _ := findStores(equivalent, visited)
-			plain = append(plain, found...)
+			plain = append(plain, findStores(equivalent, visited)...)
 		}
 	}
 	return plain
