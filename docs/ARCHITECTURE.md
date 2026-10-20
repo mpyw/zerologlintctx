@@ -154,6 +154,12 @@ An update can still set the context itself. It is accepted on its own when it
 runs before every read of the local variable and no plain store can run after
 it. An update on one branch only does not count.
 
+`Logger.UpdateContext(fn)` is an update too: it changes the Logger in place.
+It is accepted under the same rule when every Context that `fn` returns has
+context, as `return c.Ctx(ctx)` does. A pointer parameter takes updates of
+both kinds, but not its plain stores, since the caller's value is there on any
+path that skips them.
+
 #### Address Matching
 
 Addresses are compared structurally, not by identity: SSA emits a fresh

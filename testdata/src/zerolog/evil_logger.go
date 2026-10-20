@@ -462,3 +462,76 @@ func goodUpdateContext(ctx context.Context, logger *zerolog.Logger) {
 		return c.Str("key", "value")
 	}) // OK - configuration, not logging
 }
+
+// =============================================================================
+// UPDATECONTEXT (changes the Logger in place)
+// =============================================================================
+
+// UpdateContext has a pointer receiver, so events from the Logger after it
+// carry what it set (#82).
+func goodUpdateContextSetsCtx(ctx context.Context, l zerolog.Logger) {
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Ctx(ctx)
+	})
+	l.Info().Msg("after update") // OK - ctx set via UpdateContext
+}
+
+func goodUpdateContextSetsCtxOnPointer(ctx context.Context, l *zerolog.Logger) {
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Str("k", "v").Ctx(ctx)
+	})
+	l.Info().Msg("after update on pointer") // OK - ctx set via UpdateContext
+}
+
+func goodUpdateContextThenWith(ctx context.Context, l zerolog.Logger) {
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Ctx(ctx)
+	})
+	derived := l.With().Str("k", "v").Logger()
+	derived.Info().Msg("derived after update") // OK - ctx set via UpdateContext
+}
+
+func badUpdateContextWithoutCtx(ctx context.Context, l zerolog.Logger) {
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Str("k", "v")
+	})
+	l.Info().Msg("after update without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLogBeforeUpdateContext(ctx context.Context, l zerolog.Logger) {
+	l.Info().Msg("before update") // want `zerolog call chain missing .Ctx\(ctx\)`
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Ctx(ctx)
+	})
+}
+
+func badUpdateContextInBranch(ctx context.Context, l zerolog.Logger, cond bool) {
+	if cond {
+		l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+			return c.Ctx(ctx)
+		})
+	}
+	l.Info().Msg("update on one path") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badUpdateContextOnOneReturn(ctx context.Context, l zerolog.Logger, cond bool) {
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		if cond {
+			return c
+		}
+		return c.Ctx(ctx)
+	})
+	l.Info().Msg("ctx on one return") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badUpdateContextThenReplaced(ctx context.Context, l zerolog.Logger, other zerolog.Logger) {
+	l.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Ctx(ctx)
+	})
+	l = other
+	l.Info().Msg("replaced after update") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerParamWithoutUpdate(ctx context.Context, l *zerolog.Logger) {
+	l.Info().Msg("pointer param") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

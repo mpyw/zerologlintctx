@@ -131,10 +131,14 @@ func isNilConst(v ssa.Value) bool {
 	return ok && c.Value == nil
 }
 
-// parentFunc returns the function an SSA value belongs to.
+// parentFunc returns the function an SSA value belongs to, for an
+// instruction or a parameter.
 func parentFunc(v ssa.Value) *ssa.Function {
-	if instr, ok := v.(ssa.Instruction); ok {
-		return instr.Parent()
+	switch v := v.(type) {
+	case ssa.Instruction:
+		return v.Parent()
+	case *ssa.Parameter:
+		return v.Parent()
 	}
 	return nil
 }
