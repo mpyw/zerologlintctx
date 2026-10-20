@@ -58,8 +58,9 @@ func (tr *tracer) tracePhiEdges(
 			continue
 		}
 
-		// Clone visited for independent tracing of each branch
-		if !tr.traceValue(edge, t, maps.Clone(visited)) {
+		// Clone visited for independent tracing of each branch, unless the
+		// edge was found to have context before
+		if !tr.foundBefore(edge, t) && !tr.traceValue(edge, t, maps.Clone(visited)) {
 			return false, false
 		}
 		valid = true

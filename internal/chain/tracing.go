@@ -140,6 +140,13 @@ type tracer struct {
 	positions instrPositions
 }
 
+// newTracer creates a tracer with nothing found yet.
+//
+//declscope:shared // checker.go creates one per package
+func newTracer() *tracer {
+	return &tracer{hasCtx: make(map[tracedValue]bool), positions: make(instrPositions)}
+}
+
 // tracedValue is a value traced by one tracer type.
 type tracedValue struct {
 	v ssa.Value
@@ -153,9 +160,6 @@ type tracedValue struct {
 func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 	if tr.traceValue(v, tracerEvent, make(map[ssa.Value]bool)) {
 		return true
-	}
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
 	}
 	done := make(map[tracePointValue]bool)
 	before := tracePoint{block: at.Block(), index: tr.positions.of(at)}
@@ -381,6 +385,14 @@ func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Ins
 	}
 }
 
+// foundBefore reports whether v was found to have context before, as t traces
+// it, so that a caller can skip the copy of visited it would trace v with.
+//
+//declscope:shared // phi.go skips the copy for an edge found before
+func (tr *tracer) foundBefore(v ssa.Value, t tracerType) bool {
+	return tr.hasCtx[tracedValue{v: v, t: t}]
+}
+
 // traceValue traces an SSA value backwards to find if context was set.
 //
 // Tracing flow:
@@ -419,9 +431,6 @@ func (tr *tracer) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bo
 
 	if !tr.traceUncached(v, t, visited) {
 		return false
-	}
-	if tr.hasCtx == nil {
-		tr.hasCtx = make(map[tracedValue]bool)
 	}
 	tr.hasCtx[key] = true
 	return true
@@ -537,9 +546,6 @@ func (tr *tracer) traceSelectedValue(v ssa.Value, t tracerType, visited map[ssa.
 	}
 	slices.Reverse(selections)
 	root, path := aggregatePath(load.X)
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
-	}
 	stored, ok := storesReachingAt(root, append(path, selections...), load, tr.positions)
 	if !ok {
 		return false, false
@@ -577,9 +583,6 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Val
 // is already being traced is skipped: it is an update in a loop, which keeps
 // the context of the value before it.
 func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
-	}
 	stored, ok := storesReaching(addr, read, tr.positions)
 	if !ok {
 		return false, false
@@ -609,6 +612,10 @@ func (tr *tracer) traceStored(stored storeReaching, t tracerType, visited map[ss
 	for _, v := range stored.values {
 		if visited[v] || isNilConst(v) {
 			continue // A nil event logs nothing, as for an edge of a Phi
+		}
+		if tr.foundBefore(v, t) {
+			found = true // With no need to copy visited for it
+			continue
 		}
 		// Each store is traced on its own copy of visited, unless it is the
 		// only one: copying on every step of a long chain of updates would
@@ -1031,9 +1038,6 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []ssa.Value, t tracerType, 
 //	l = l.With().Ctx(ctx).Logger()
 //	defer func() { l.Info().Msg("end") }()
 func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
-	}
 	stored := storesReachingClosure(mc.Bindings[idx], path, mc, tr.positions)
 	return tr.traceStored(stored, t, visited)
 }

@@ -447,9 +447,10 @@ func storePathKey(path []ssa.Value) string {
 // addStoresAfter adds the values stored to the address by the stores that
 // can run after instr.
 func (w *storeWalk) addStoresAfter(instr ssa.Instruction) {
+	after := w.positions.after(instr)
 	for other := range instrsIn(instr.Parent()) {
 		store, ok := other.(*ssa.Store)
-		if !ok || !w.positions.reaches(instr, store) {
+		if !ok || !after(store) {
 			continue
 		}
 		if n, ok := w.prefixLen(store.Addr); ok {

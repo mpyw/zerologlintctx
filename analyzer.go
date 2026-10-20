@@ -47,17 +47,18 @@ func run(pass *analysis.Pass) (any, error) {
 
 	ignoresByFile, problems := scanFiles(pass)
 
+	checker := chain.NewChecker()
 	for fn, ctxName := range chain.ContextNames(ssaInfo) {
 		ignores, ok := ignoresByFile[unadjustedFilename(pass.Fset, fn.Pos())]
 		if !ok {
 			continue // Not in a checked file, or no position at all
 		}
-		chain.NewChecker(ctxName, func(pos token.Pos, msg string) {
+		checker.CheckFunction(fn, ctxName, func(pos token.Pos, msg string) {
 			if ignores.ShouldIgnore(pos) {
 				return
 			}
 			pass.Report(analysis.Diagnostic{Pos: pos, Message: msg})
-		}).CheckFunction(fn)
+		})
 	}
 
 	for _, ignores := range ignoresByFile {
