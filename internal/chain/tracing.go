@@ -219,10 +219,7 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 		// A func literal, called on the spot as an IIFE (Immediately Invoked
 		// Function Expression) or through a variable. One that captures
 		// nothing is called as the function itself, not as a closure.
-		if sfn.Parent() != nil {
-			return tr.traceReturns(sfn, t, visited)
-		}
-		return false
+		return sfn.Parent() != nil && tr.traceReturns(sfn, t, visited)
 	}
 
 	if t.isCtxSetBy(c) {
