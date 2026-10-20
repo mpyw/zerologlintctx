@@ -468,6 +468,10 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 // traceCommon handles common SSA value types (Phi, UnOp, FreeVar, etc.).
 func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	switch val := v.(type) {
+	case *ssa.Field, *ssa.Index:
+		if found, ok := tr.traceSelectedValue(v, t, visited); ok {
+			return found
+		}
 	case *ssa.Extract:
 		if call, ok := val.Tuple.(*ssa.Call); ok {
 			if sfn := call.Call.StaticCallee(); sfn != nil && sfn.Parent() != nil {
@@ -503,6 +507,43 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 	}
 
 	return false
+}
+
+// traceSelectedValue traces v, a field of a struct value or an element of an
+// array value, selected from one loaded whole from an address. What is at v is
+// what the stores that reach the load left at the same selection there:
+//
+//	t8 = *t4                // the whole struct, loaded
+//	t9 = t8.Logger          // v, read by value
+//
+// ok is false when the value it selects from is not loaded from an address
+// whose stores storesReachingAt can find.
+func (tr *tracer) traceSelectedValue(v ssa.Value, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
+	var selections []ssa.Value
+	for {
+		inner := unwrapInner(v)
+		switch v.(type) {
+		case *ssa.Field, *ssa.Index:
+			selections = append(selections, v)
+			v = inner
+			continue
+		}
+		break
+	}
+	load, isLoad := v.(*ssa.UnOp)
+	if !isLoad || load.Op != token.MUL {
+		return false, false
+	}
+	slices.Reverse(selections)
+	root, path := aggregatePath(load.X)
+	if tr.positions == nil {
+		tr.positions = make(instrPositions)
+	}
+	stored, ok := storesReachingAt(root, append(path, selections...), load, tr.updaterSetsCtx(visited), tr.positions)
+	if !ok {
+		return false, false
+	}
+	return tr.traceStored(stored, t, visited), true
 }
 
 // =============================================================================

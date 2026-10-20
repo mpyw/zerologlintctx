@@ -15,7 +15,7 @@
 //   - Slice/map access: An event read back from a slice or map is not traced
 //   - Channel send/receive: Can't trace through channels
 //   - sync.Pool: Can't trace through Get/Put
-//   - Embedded struct: `h.Msg()` where h embeds *Event
+//   - Array element with a variable index, as a range over an array reads it
 //   - Closure-modified capture: Closure writes to outer var
 //   - IIFE unreachable return: SSA doesn't eliminate unreachable code in IIFE
 package zerolog
@@ -1279,11 +1279,60 @@ func badEmbeddedStruct(ctx context.Context, logger zerolog.Logger) {
 	h.Msg("embedded") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-// LIMITATION (false positive): Embedded struct field promotion.
-// Can't trace through promoted method calls even though ctx is present.
-func limitationEmbeddedStructWithCtx(ctx context.Context, logger zerolog.Logger) {
+// A promoted method reads the embedded field by value, from the struct loaded
+// whole (#138).
+func goodEmbeddedStructWithCtx(ctx context.Context, logger zerolog.Logger) {
 	h := embeddedHolder{Event: logger.Info().Ctx(ctx)}
-	h.Msg("embedded with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	h.Msg("embedded with ctx") // OK - the embedded event has ctx
+}
+
+type embeddedLoggerPointer struct {
+	*zerolog.Logger
+}
+
+func goodEmbeddedLoggerPointer(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	w := embeddedLoggerPointer{&l}
+	w.Info().Msg("embedded logger pointer") // OK - the embedded logger has ctx
+	info := w.Info
+	info().Msg("embedded logger pointer method value") // OK - the embedded logger has ctx
+}
+
+func goodRangeOverArrayOfLoggers(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	arr := [2]zerolog.Logger{l, l}
+	first := arr[0]
+	first.Info().Msg("element of an array") // OK - the element has ctx
+}
+
+func badEmbeddedLoggerPointer(ctx context.Context, logger zerolog.Logger) {
+	w := embeddedLoggerPointer{&logger}
+	w.Info().Msg("embedded logger pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badElementOfArray(ctx context.Context, logger zerolog.Logger) {
+	arr := [2]zerolog.Logger{logger.With().Ctx(ctx).Logger(), logger}
+	second := arr[1]
+	second.Info().Msg("element of an array") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+var globalEmbeddedHolder embeddedHolder
+
+func badEmbeddedFieldOfGlobal(ctx context.Context) {
+	globalEmbeddedHolder.Msg("embedded field of a global") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEmbeddedFieldOfCallResult(ctx context.Context, newHolder func() embeddedHolder) {
+	newHolder().Msg("embedded field of a call result") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): An element of an array read with a variable
+// index is not matched to the stores of each element.
+func limitationRangeOverArrayWithCtx(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	for _, x := range [2]zerolog.Logger{l, l} {
+		x.Info().Msg("range over array") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
 }
 
 // ===== POINTER RECEIVER ON STRUCT =====
