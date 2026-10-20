@@ -798,3 +798,79 @@ func badGlobalHoldersCopiedBothWays(ctx context.Context) {
 	globalEventHolderB.event.Msg("b") // want `zerolog call chain missing .Ctx\(ctx\)`
 	globalEventHolderA.event.Msg("a") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// =============================================================================
+// METHOD VALUES AND METHOD EXPRESSIONS IN THE CHAIN
+// =============================================================================
+
+// The receiver of a method value is what it is bound to, and that of a
+// method expression is its first argument (#101).
+
+func goodInfoMethodValue(ctx context.Context, base zerolog.Logger) {
+	l := base.With().Ctx(ctx).Logger()
+	info := l.Info
+	info().Msg("method value") // OK
+}
+
+func goodInfoMethodExpression(ctx context.Context, base zerolog.Logger) {
+	info := (*zerolog.Logger).Info
+	l := base.With().Ctx(ctx).Logger()
+	info(&l).Msg("method expression") // OK
+}
+
+func goodWithMethodValue(ctx context.Context, base zerolog.Logger) {
+	with := base.With
+	l := with().Ctx(ctx).Logger()
+	l.Info().Msg("With method value") // OK
+}
+
+func goodEventMethodValue(ctx context.Context, base zerolog.Logger) {
+	str := base.Info().Ctx(ctx).Str
+	str("k", "v").Msg("Str method value") // OK
+}
+
+func badInfoMethodValue(ctx context.Context, base zerolog.Logger) {
+	info := base.Info
+	info().Msg("method value") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badInfoMethodExpression(ctx context.Context, base zerolog.Logger) {
+	info := (*zerolog.Logger).Info
+	info(&base).Msg("method expression") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventMethodValue(ctx context.Context, base zerolog.Logger) {
+	str := base.Info().Str
+	str("k", "v").Msg("Str method value") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// =============================================================================
+// CONVERSIONS THROUGH A DEFINED TYPE
+// =============================================================================
+
+// A conversion between types with the same underlying type keeps the value
+// (#104).
+
+type definedLogger zerolog.Logger
+
+func goodLoggerThroughDefinedType(ctx context.Context, base zerolog.Logger) {
+	d := definedLogger(base.With().Ctx(ctx).Logger())
+	l := zerolog.Logger(d)
+	l.Info().Msg("through defined type") // OK
+}
+
+func badLoggerThroughDefinedType(ctx context.Context, base zerolog.Logger) {
+	d := definedLogger(base)
+	l := zerolog.Logger(d)
+	l.Info().Msg("through defined type") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A func value is not known statically, so its first argument is traced as
+// if it were the receiver.
+func goodEventThroughFuncValue(ctx context.Context, base zerolog.Logger, decorate func(*zerolog.Event) *zerolog.Event) {
+	decorate(base.Info().Ctx(ctx)).Msg("func value") // OK
+}
+
+func badEventThroughFuncValue(ctx context.Context, base zerolog.Logger, decorate func(*zerolog.Event) *zerolog.Event) {
+	decorate(base.Info()).Msg("func value") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

@@ -100,13 +100,28 @@ func (c callee) updatesLoggerContext() bool {
 	return c.fn.Name() == "UpdateContext" && recv != nil && typeutil.IsLogger(recv.Type())
 }
 
-// isCtxCallee reports whether fn is zerolog.Ctx or log.Ctx, or a Ctx method
+// isCtx reports whether c is zerolog.Ctx or log.Ctx, or a Ctx method
 // declared in zerolog.
 //
 //declscope:shared // tracing.go treats such a call as a context source
-func isCtxCallee(fn *ssa.Function) bool {
-	if fn.Name() != typeutil.CtxMethod || fn.Pkg == nil {
-		return false
+func (c callee) isCtx() bool {
+	return c.fn.Name() == typeutil.CtxMethod && typeutil.IsZerologPkg(c.fn.Pkg())
+}
+
+// recvType returns the type of the receiver c is declared with, or nil for a
+// function.
+//
+//declscope:shared // tracing.go picks the tracer to go on with by it
+func (c callee) recvType() types.Type {
+	if recv := c.fn.Signature().Recv(); recv != nil {
+		return recv.Type()
 	}
-	return typeutil.IsZerologPkg(fn.Pkg.Pkg)
+	return nil
+}
+
+// signature returns the signature c is declared with.
+//
+//declscope:shared // tracing.go reads what a handoff returns from it
+func (c callee) signature() *types.Signature {
+	return c.fn.Signature()
 }
