@@ -132,6 +132,13 @@ type tracer struct {
 	//
 	//declscope:private
 	hasCtx map[tracedValue]bool
+	// stored remembers what findAllStoredValues found at each address. The
+	// stores of a function do not change, and finding them scans the whole
+	// function, so each terminator of a function with many would scan it
+	// again for every address it reaches.
+	//
+	//declscope:private
+	stored map[ssa.Value]storedValues
 }
 
 // tracedValue is a value traced by one tracer type.
@@ -288,7 +295,7 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Val
 // all have it. So is a func passed to Logger.UpdateContext whose returned
 // Context has context on every path.
 func (tr *tracer) traceStoredValues(addr ssa.Value, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
-	stored := findAllStoredValues(addr)
+	stored := tr.storedValuesAt(addr)
 	for _, update := range stored.updates {
 		if tr.traceValue(update, t, maps.Clone(visited)) {
 			return true, true
@@ -309,6 +316,19 @@ func (tr *tracer) traceStoredValues(addr ssa.Value, t tracerType, visited map[ss
 		}
 	}
 	return true, true
+}
+
+// storedValuesAt returns findAllStoredValues(addr), found once per address.
+func (tr *tracer) storedValuesAt(addr ssa.Value) storedValues {
+	if sv, ok := tr.stored[addr]; ok {
+		return sv
+	}
+	if tr.stored == nil {
+		tr.stored = make(map[ssa.Value]storedValues)
+	}
+	sv := findAllStoredValues(addr)
+	tr.stored[addr] = sv
+	return sv
 }
 
 // traceFreeVar traces a FreeVar back to the value bound in MakeClosure.
