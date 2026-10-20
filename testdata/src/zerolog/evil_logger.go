@@ -306,9 +306,10 @@ func badMultipleLoggers(ctx context.Context, l1, l2 zerolog.Logger) {
 }
 
 func badMixedLoggers(ctx context.Context, logger zerolog.Logger) {
-	logger.Info().Msg("param logger")        // want `zerolog call chain missing .Ctx\(ctx\)`
-	log.Info().Msg("global logger")          // want `zerolog call chain missing .Ctx\(ctx\)`
-	zerolog.New(os.Stdout).Info().Msg("new") // want `zerolog call chain missing .Ctx\(ctx\)`
+	logger.Info().Msg("param logger") // want `zerolog call chain missing .Ctx\(ctx\)`
+	log.Info().Msg("global logger")   // want `zerolog call chain missing .Ctx\(ctx\)`
+	newLogger := zerolog.New(os.Stdout)
+	newLogger.Info().Msg("new") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func goodMixedLoggersWithCtx(ctx context.Context, logger zerolog.Logger) {

@@ -1,6 +1,8 @@
-// value.go is the SSA plumbing the rest of the package is built on: following
-// a value back to where it was stored, walking an aggregate, comparing two
-// addresses. None of it knows about zerolog, or about tracing.
+// value.go is the SSA plumbing the rest of the package is built on: unwrapping
+// a value, walking back to what a value derives from, ordering instructions in
+// the control flow, and iterating instructions. None of it knows about
+// zerolog, or about tracing. Stores, aggregates and address comparison are in
+// store.go, aggregate.go and match.go.
 //
 // It joins the core namespace because every other file of internal/chain
 // stands on it. checker.go and tracing.go are the units built on top, and keep

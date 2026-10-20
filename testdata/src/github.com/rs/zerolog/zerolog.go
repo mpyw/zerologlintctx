@@ -50,22 +50,22 @@ func Nop() Logger {
 	return Logger{}
 }
 
-// Logger methods
-func (l Logger) Info() *Event                 { return &Event{} }
-func (l Logger) Debug() *Event                { return &Event{} }
-func (l Logger) Warn() *Event                 { return &Event{} }
-func (l Logger) Error() *Event                { return &Event{} }
-func (l Logger) Fatal() *Event                { return &Event{} }
-func (l Logger) Panic() *Event                { return &Event{} }
-func (l Logger) Trace() *Event                { return &Event{} }
-func (l Logger) Log() *Event                  { return &Event{} }
-func (l Logger) Err(err error) *Event         { return &Event{} }
-func (l Logger) WithLevel(level Level) *Event { return &Event{} }
-func (l Logger) With() Context                { return Context{} }
-func (l Logger) Level(lvl Level) Logger       { return l }
-func (l Logger) Sample(s Sampler) Logger      { return l }
-func (l Logger) Hook(h Hook) Logger           { return l }
-func (l Logger) Output(w io.Writer) Logger    { return l }
+// Logger methods, with the receivers zerolog gives them
+func (l *Logger) Info() *Event                 { return &Event{} }
+func (l *Logger) Debug() *Event                { return &Event{} }
+func (l *Logger) Warn() *Event                 { return &Event{} }
+func (l *Logger) Error() *Event                { return &Event{} }
+func (l *Logger) Fatal() *Event                { return &Event{} }
+func (l *Logger) Panic() *Event                { return &Event{} }
+func (l *Logger) Trace() *Event                { return &Event{} }
+func (l *Logger) Log() *Event                  { return &Event{} }
+func (l *Logger) Err(err error) *Event         { return &Event{} }
+func (l *Logger) WithLevel(level Level) *Event { return &Event{} }
+func (l Logger) With() Context                 { return Context{} }
+func (l Logger) Level(lvl Level) Logger        { return l }
+func (l Logger) Sample(s Sampler) Logger       { return l }
+func (l Logger) Hook(hooks ...Hook) Logger     { return l }
+func (l Logger) Output(w io.Writer) Logger     { return l }
 
 // Direct logging methods (bypass Event chain)
 func (l *Logger) Print(v ...any)                 {}

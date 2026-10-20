@@ -86,8 +86,8 @@ testdata/src/zerolog/
 
 ## Key Design Decisions
 
-1. **Type-safe analysis**: Uses return types (`returnsEvent`, `returnsLogger`, etc.) instead of method name hardcoding
-2. **SSA tracing**: Strategy Pattern with three tracers (Event, Logger, Context)
+1. **Type-safe analysis**: Uses return types (`typeutil.ReturnsEvent`, `ReturnsLogger`, etc.) instead of method name hardcoding
+2. **SSA tracing**: One `tracer` with three tracer types (Event, Logger, Context), and a table of the handoffs between them
 3. **Zero false positives**: Prefer missing issues over false alarms
 
 ## Known Limitations
@@ -95,6 +95,7 @@ testdata/src/zerolog/
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE is supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
+- **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 
 These are documented in test cases with `// LIMITATION` comments.
 
