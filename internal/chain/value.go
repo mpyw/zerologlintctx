@@ -88,17 +88,24 @@ func unOpOperand(v ssa.Value) ssa.Value {
 	return nil
 }
 
-// instrDominates reports whether a runs before b on every path to b.
-func instrDominates(a, b ssa.Instruction) bool {
-	if a.Block() != b.Block() {
-		return a.Block().Dominates(b.Block())
+// instrPositions remembers the position of each instruction in its block.
+// A block is indexed once, the first time one of its instructions is asked.
+type instrPositions map[ssa.Instruction]int
+
+// of returns the position of instr in its block.
+func (p instrPositions) of(instr ssa.Instruction) int {
+	if i, ok := p[instr]; ok {
+		return i
 	}
-	return instrIndex(a) < instrIndex(b)
+	for i, in := range instr.Block().Instrs {
+		p[in] = i
+	}
+	return p[instr]
 }
 
-// instrReaches reports whether b can run after a.
-func instrReaches(a, b ssa.Instruction) bool {
-	if a.Block() == b.Block() && instrIndex(a) < instrIndex(b) {
+// reaches reports whether b can run after a.
+func (p instrPositions) reaches(a, b ssa.Instruction) bool {
+	if a.Block() == b.Block() && p.of(a) < p.of(b) {
 		return true
 	}
 	seen := make(map[*ssa.BasicBlock]bool)
@@ -116,13 +123,6 @@ func instrReaches(a, b ssa.Instruction) bool {
 		queue = append(queue, block.Succs...)
 	}
 	return false
-}
-
-// instrIndex returns the position of instr in its block.
-//
-//declscope:private
-func instrIndex(instr ssa.Instruction) int {
-	return slices.Index(instr.Block().Instrs, instr)
 }
 
 // isNilConst checks if a value is a nil constant.

@@ -550,3 +550,251 @@ func badUpdateContextWithFuncValue(ctx context.Context, l zerolog.Logger, update
 	l.UpdateContext(update)
 	l.Info().Msg("func value") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// =============================================================================
+// LOGGER IN A FIELD OR ELEMENT
+// =============================================================================
+
+// Logger.Info has a pointer receiver, so its receiver is the address of the
+// field or element itself, not a load from it (#97).
+
+type fieldLoggerHolder struct {
+	log zerolog.Logger
+}
+
+type embeddedLoggerHolder struct {
+	zerolog.Logger
+}
+
+func goodLoggerInFieldLiteral(ctx context.Context, l zerolog.Logger) {
+	s := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	s.log.Info().Msg("field literal") // OK
+}
+
+func goodLoggerInPointerFieldLiteral(ctx context.Context, l zerolog.Logger) {
+	s := &fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	s.log.Info().Msg("pointer field literal") // OK
+}
+
+func goodLoggerAssignedToField(ctx context.Context, l zerolog.Logger) {
+	var s fieldLoggerHolder
+	s.log = l.With().Ctx(ctx).Logger()
+	s.log.Info().Msg("assigned field") // OK
+}
+
+func goodLoggerInArrayElement(ctx context.Context, l zerolog.Logger) {
+	var arr [1]zerolog.Logger
+	arr[0] = l.With().Ctx(ctx).Logger()
+	arr[0].Info().Msg("array element") // OK
+}
+
+func goodLoggerInEmbeddedField(ctx context.Context, l zerolog.Logger) {
+	e := embeddedLoggerHolder{l.With().Ctx(ctx).Logger()}
+	e.Info().Msg("embedded field") // OK
+}
+
+func badLoggerInFieldLiteral(ctx context.Context, l zerolog.Logger) {
+	s := fieldLoggerHolder{log: l}
+	s.log.Info().Msg("field literal") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerAssignedToFieldInBranch(ctx context.Context, l zerolog.Logger, cond bool) {
+	s := fieldLoggerHolder{log: l}
+	if cond {
+		s.log = l.With().Ctx(ctx).Logger()
+	}
+	s.log.Info().Msg("one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerInArrayElement(ctx context.Context, l zerolog.Logger) {
+	var arr [2]zerolog.Logger
+	arr[0] = l.With().Ctx(ctx).Logger()
+	arr[1] = l
+	arr[1].Info().Msg("other element") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerInEmbeddedField(ctx context.Context, l zerolog.Logger) {
+	e := embeddedLoggerHolder{l}
+	e.Info().Msg("embedded field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A field takes updates too, as a local variable does (#98).
+
+func (s *fieldLoggerHolder) goodFieldUpdatedWithCtx(ctx context.Context) {
+	s.log = s.log.With().Ctx(ctx).Logger()
+	s.log.Info().Msg("field updated") // OK
+}
+
+func (s *fieldLoggerHolder) goodFieldUpdateContext(ctx context.Context) {
+	s.log.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Ctx(ctx)
+	})
+	s.log.Info().Msg("field UpdateContext") // OK
+}
+
+func goodLocalFieldUpdatedWithCtx(ctx context.Context, l zerolog.Logger) {
+	s := fieldLoggerHolder{log: l}
+	s.log = s.log.With().Ctx(ctx).Logger()
+	s.log.Info().Msg("local field updated") // OK
+}
+
+func (s *fieldLoggerHolder) badFieldUpdatedWithoutCtx(ctx context.Context) {
+	s.log = s.log.With().Str("k", "v").Logger()
+	s.log.Info().Msg("field updated") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func (s *fieldLoggerHolder) badFieldReadBeforeUpdate(ctx context.Context) {
+	s.log.Info().Msg("before update") // want `zerolog call chain missing .Ctx\(ctx\)`
+	s.log = s.log.With().Ctx(ctx).Logger()
+}
+
+func (s *fieldLoggerHolder) badFieldUpdatedInBranch(ctx context.Context, cond bool) {
+	if cond {
+		s.log = s.log.With().Ctx(ctx).Logger()
+	}
+	s.log.Info().Msg("one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+var globalLoggerHolder fieldLoggerHolder
+
+// The field of a global can change anywhere, so its updates do not count.
+func badGlobalFieldUpdated(ctx context.Context) {
+	globalLoggerHolder.log = globalLoggerHolder.log.With().Ctx(ctx).Logger()
+	globalLoggerHolder.log.Info().Msg("global field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A closure that stores to a variable it captures, and then reads it, reads
+// what it stored, as a load of a captured event does.
+func goodClosureStoresCapturedLogger(ctx context.Context, l zerolog.Logger) {
+	var captured zerolog.Logger
+	func() {
+		captured = l.With().Ctx(ctx).Logger()
+		captured.Info().Msg("stored in closure") // OK
+	}()
+	_ = captured
+}
+
+// A store in the closure on another path does not reach the read, which
+// sees the value the closure was made with.
+func goodClosureStoreOnOtherPath(ctx context.Context, l zerolog.Logger, cond bool) {
+	captured := l.With().Ctx(ctx).Logger()
+	func() {
+		if cond {
+			captured = l
+			return
+		}
+		captured.Info().Msg("value the closure was made with") // OK
+	}()
+}
+
+func badClosureStoreWithoutCtx(ctx context.Context, l zerolog.Logger, cond bool) {
+	captured := l.With().Ctx(ctx).Logger()
+	func() {
+		if cond {
+			captured = l
+		}
+		captured.Info().Msg("stored on one path") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func newFieldLoggerHolderPtr() *fieldLoggerHolder {
+	return &fieldLoggerHolder{}
+}
+
+// The holder a call returns may be shared, but the stores in this function
+// are what it holds when nothing else is known.
+func goodFieldOfReturnedHolderStoredWithCtx(ctx context.Context, l zerolog.Logger) {
+	s := newFieldLoggerHolderPtr()
+	s.log = l.With().Ctx(ctx).Logger()
+	s.log.Info().Msg("field of returned holder") // OK
+}
+
+func goodReturnedHolderStoredWithCtx(ctx context.Context, l zerolog.Logger) {
+	s := newFieldLoggerHolderPtr()
+	*s = fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	s.log.Info().Msg("returned holder") // OK
+}
+
+func newFieldLoggerHolder(l zerolog.Logger) fieldLoggerHolder {
+	return fieldLoggerHolder{log: l}
+}
+
+func badFieldOfZeroedHolder(ctx context.Context, l zerolog.Logger) {
+	s := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	s = fieldLoggerHolder{}
+	s.log.Info().Msg("zeroed") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFieldOfHolderFromCall(ctx context.Context, l zerolog.Logger) {
+	s := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	s = newFieldLoggerHolder(l)
+	s.log.Info().Msg("from call") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFieldOfHolderCopiedFromGlobal(ctx context.Context) {
+	s := globalLoggerHolder
+	s.log.Info().Msg("copied from global") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+type twoLoggerHolder struct {
+	a, b zerolog.Logger
+}
+
+// The field a Phi picks is not known, so each field takes every store that
+// reaches any read of it.
+func goodEitherFieldWithCtx(ctx context.Context, l zerolog.Logger, cond bool) {
+	s := twoLoggerHolder{a: l.With().Ctx(ctx).Logger(), b: l.With().Ctx(ctx).Logger()}
+	p := &s.a
+	if cond {
+		p = &s.b
+	}
+	p.Info().Msg("either field") // OK
+}
+
+func badEitherFieldOneWithoutCtx(ctx context.Context, l zerolog.Logger, cond bool) {
+	s := twoLoggerHolder{a: l.With().Ctx(ctx).Logger(), b: l}
+	p := &s.a
+	if cond {
+		p = &s.b
+	}
+	p.Info().Msg("either field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEitherPointerParamUpdated(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	l2.UpdateContext(func(c zerolog.Context) zerolog.Context {
+		return c.Ctx(ctx)
+	})
+	l1.Info().Msg("after update") // OK
+	p := l1
+	if cond {
+		p = l2
+	}
+	p.Info().Msg("either pointer") // OK
+}
+
+func badFieldPointerCapturedThenReplaced(ctx context.Context, l zerolog.Logger) {
+	s := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	p := &s.log
+	f := func() { p.Info().Msg("captured field") } // want `zerolog call chain missing .Ctx\(ctx\)`
+	s = newFieldLoggerHolder(l)
+	f()
+}
+
+var (
+	globalEvent        *zerolog.Event
+	globalEventHolderA eventHolder
+	globalEventHolderB eventHolder
+)
+
+func badGlobalEvent(ctx context.Context) {
+	globalEvent.Msg("global event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Copies between two globals lead back to each other, and end there.
+func badGlobalHoldersCopiedBothWays(ctx context.Context) {
+	globalEventHolderA = globalEventHolderB
+	globalEventHolderB = globalEventHolderA
+	globalEventHolderB.event.Msg("b") // want `zerolog call chain missing .Ctx\(ctx\)`
+	globalEventHolderA.event.Msg("a") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

@@ -132,13 +132,11 @@ type tracer struct {
 	//
 	//declscope:private
 	hasCtx map[tracedValue]bool
-	// stored remembers what findAllStoredValues found at each address. The
-	// stores of a function do not change, and finding them scans the whole
-	// function, so each terminator of a function with many would scan it
-	// again for every address it reaches.
+	// positions finds where each instruction is in its block, for
+	// storesReaching, which walks back from a read once per trace of it.
 	//
 	//declscope:private
-	stored map[ssa.Value]storedValues
+	positions instrPositions
 }
 
 // tracedValue is a value traced by one tracer type.
@@ -226,7 +224,7 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 		return true
 	}
 	if next, ok := t.handoffAt(call, callee, recv); ok {
-		return tr.traceValue(call.Call.Args[0], next, visited)
+		return tr.traceReceiver(call, next, visited)
 	}
 
 	// Continue tracing through receiver if type matches
@@ -253,9 +251,15 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 	case *ssa.FreeVar:
 		return tr.traceFreeVar(val, t, visited)
 	case *ssa.Parameter:
-		// A pointer parameter can be updated in place; see findAllStoredValues.
-		found, _ := tr.traceStoredValues(val, t, visited)
+		// A pointer parameter can be updated in place; see storesReaching.
+		found, _ := tr.traceAddressAt(val, nil, t, visited)
 		return found
+	case *ssa.FieldAddr, *ssa.IndexAddr:
+		// The address of a field or element is itself the receiver of a
+		// pointer method, such as Logger.Info on s.log.
+		if found, _ := tr.traceStoredValues(val, nil, t, visited); found {
+			return true
+		}
 	}
 
 	// Handle simple wrapper types that just need inner value tracing
@@ -271,64 +275,86 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 // =============================================================================
 
 // traceUnOp handles SSA unary operations, especially pointer dereferences.
+// A load reads what the stores that reach it left at its address.
 func (tr *tracer) traceUnOp(unop *ssa.UnOp, t tracerType, visited map[ssa.Value]bool) bool {
 	if unop.Op == token.MUL {
-		if found, ok := tr.traceStoredValues(unop.X, t, visited); ok {
+		if found, ok := tr.traceStoredValues(unop.X, unop, t, visited); ok {
 			return found
 		}
 	}
 	return tr.traceValue(unop.X, t, visited)
 }
 
-// traceAlloc handles SSA Alloc nodes (local variable allocation).
+// traceAlloc handles SSA Alloc nodes (local variable allocation), reached
+// where the read that uses it is not known, such as an edge of a Phi.
 func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Value]bool) bool {
-	found, _ := tr.traceStoredValues(alloc, t, visited)
+	found, _ := tr.traceStoredValues(alloc, nil, t, visited)
 	return found
 }
 
-// traceStoredValues traces the values stored at addr. ok is false when no
-// plain store was found and no update has context.
+// traceStoredValues traces the values that can be at addr when read runs,
+// or at any read of addr when read is nil. ok is false when storesReaching
+// knows nothing of addr.
 //
-// Like the edges of a Phi, every plain store must have context. An update
-// that every read sees (see findAllStoredValues) is enough on its own when it
-// has context: it either sets it itself, or reaches back to plain stores that
-// all have it. So is a func passed to Logger.UpdateContext whose returned
-// Context has context on every path.
-func (tr *tracer) traceStoredValues(addr ssa.Value, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
-	stored := tr.storedValuesAt(addr)
-	for _, update := range stored.updates {
-		if tr.traceValue(update, t, maps.Clone(visited)) {
-			return true, true
-		}
+// Like the edges of a Phi, every value must have context, and a value that
+// is already being traced is skipped: it is an update in a loop, which keeps
+// the context of the value before it. A path through a Logger.UpdateContext
+// call whose returned Context has context on every path needs no value.
+func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
+	updaterSetsCtx := func(fn *ssa.Function) bool {
+		return tr.traceReturns(fn, tracerContext, maps.Clone(visited))
 	}
-	for _, fn := range stored.contextUpdaters {
-		if tr.traceReturns(fn, tracerContext, maps.Clone(visited)) {
-			return true, true
-		}
+	if tr.positions == nil {
+		tr.positions = make(instrPositions)
 	}
-	if len(stored.plain) == 0 {
+	stored, ok := storesReaching(addr, read, updaterSetsCtx, tr.positions)
+	if !ok {
 		return false, false
 	}
-	for _, v := range stored.plain {
-		// Clone visited for independent tracing of each store
-		if !tr.traceValue(v, t, maps.Clone(visited)) {
+	if stored.unknown {
+		return false, true
+	}
+	found = stored.covered
+	if stored.captured != nil {
+		if !tr.traceFreeVar(stored.captured, t, maps.Clone(visited)) {
 			return false, true
 		}
+		found = true
 	}
-	return true, true
+	for _, v := range stored.values {
+		if visited[v] {
+			continue
+		}
+		// Each store is traced on its own copy of visited, unless it is the
+		// only one: copying on every step of a long chain of updates would
+		// take time quadratic in its length.
+		edgeVisited := visited
+		if len(stored.values) > 1 {
+			edgeVisited = maps.Clone(visited)
+		}
+		if !tr.traceValue(v, t, edgeVisited) {
+			return false, true
+		}
+		found = true
+	}
+	return found, true
 }
 
-// storedValuesAt returns findAllStoredValues(addr), found once per address.
-func (tr *tracer) storedValuesAt(addr ssa.Value) storedValues {
-	if sv, ok := tr.stored[addr]; ok {
-		return sv
+// traceAddressAt traces addr, an address that read uses, such as the
+// receiver of Logger.Info, which has a pointer receiver. A nil read stands
+// for every read of addr. ok is false when addr is not one whose stores
+// storesReaching can find.
+func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
+	switch a := addr.(type) {
+	case *ssa.Alloc, *ssa.FieldAddr, *ssa.IndexAddr, *ssa.FreeVar:
+	case *ssa.Parameter:
+		if _, isPtr := a.Type().Underlying().(*types.Pointer); !isPtr {
+			return false, false
+		}
+	default:
+		return false, false
 	}
-	if tr.stored == nil {
-		tr.stored = make(map[ssa.Value]storedValues)
-	}
-	sv := findAllStoredValues(addr)
-	tr.stored[addr] = sv
-	return sv
+	return tr.traceStoredValues(addr, read, t, visited)
 }
 
 // traceFreeVar traces a FreeVar back to the value bound in MakeClosure.
@@ -364,12 +390,18 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, t tracerType, visited map[ssa.Va
 	return false
 }
 
-// traceReceiver traces the receiver (first argument) of a method call.
+// traceReceiver traces the receiver (first argument) of a method call. A
+// pointer receiver that is a variable, or a field or element of one, holds
+// what the stores that reach the call left there.
 func (tr *tracer) traceReceiver(call *ssa.Call, t tracerType, visited map[ssa.Value]bool) bool {
-	if len(call.Call.Args) > 0 {
-		return tr.traceValue(call.Call.Args[0], t, visited)
+	if len(call.Call.Args) == 0 {
+		return false
 	}
-	return false
+	recv := call.Call.Args[0]
+	if found, ok := tr.traceAddressAt(recv, call, t, visited); ok {
+		return found
+	}
+	return tr.traceValue(recv, t, visited)
 }
 
 // traceReturns reports whether every value fn returns has context, as for an
