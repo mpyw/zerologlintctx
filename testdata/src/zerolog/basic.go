@@ -212,6 +212,28 @@ func goodDeferredMsgInBranch(ctx context.Context, log zerolog.Logger, cond bool)
 	}
 }
 
+// An event made in a loop is another one on each iteration, so a Ctx call on
+// a later one does not count (#156).
+func badDeferredMsgCtxOnLaterIteration(ctx context.Context, log zerolog.Logger) {
+	for i := 0; ; i++ {
+		e := log.Info()
+		if i == 0 {
+			defer e.Msg("deferred, ctx on a later iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+			continue
+		}
+		e.Ctx(ctx)
+		return
+	}
+}
+
+func goodDeferredMsgInLoopCtxSameIteration(ctx context.Context, log zerolog.Logger, n int) {
+	for range n {
+		e := log.Info()
+		defer e.Msg("deferred in a loop, ctx on the same iteration") // OK - .Ctx() runs before the event is made again
+		e.Ctx(ctx)
+	}
+}
+
 func badDeferredMsgCtxBeforeOneReturn(ctx context.Context, log zerolog.Logger, cond bool) {
 	e := log.Info()
 	defer e.Msg("deferred, ctx before one return") // want `zerolog call chain missing .Ctx\(ctx\)`

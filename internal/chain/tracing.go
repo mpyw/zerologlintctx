@@ -177,12 +177,17 @@ func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 //	e.Ctx(ctx)
 //
 // A Ctx call on a value that the chain of v is built from counts too, since
-// it is the same event. The recover block, reached after a panic, is not
-// looked at, as it has no path from d.
+// it is the same event. A path that makes the event again, in a loop, has a
+// new one after. The recover block, reached after a panic, is not looked at,
+// as it has no path from d.
 func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
 	calls := make(map[ssa.Instruction]bool)
+	defs := make(map[ssa.Instruction]bool) // Where the event is made, which starts another one in a loop
 	for w := v; w != nil; w = traceEventReceiver(w) {
 		tr.traceCtxCalls(w, d.Parent(), calls, make(map[ssa.Value]bool))
+		if def, ok := w.(ssa.Instruction); ok {
+			defs[def] = true
+		}
 	}
 	if len(calls) == 0 {
 		return false
@@ -196,7 +201,13 @@ func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
 	for len(queue) > 0 {
 		s := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
-		if slices.ContainsFunc(s.block.Instrs[s.from:], func(instr ssa.Instruction) bool { return calls[instr] }) {
+		i := slices.IndexFunc(s.block.Instrs[s.from:], func(instr ssa.Instruction) bool {
+			return calls[instr] || defs[instr]
+		})
+		if i >= 0 && defs[s.block.Instrs[s.from+i]] {
+			return false // The event is made again, so a Ctx call after is on another one
+		}
+		if i >= 0 {
 			continue // Ctx runs on this path
 		}
 		if _, ok := s.block.Instrs[len(s.block.Instrs)-1].(*ssa.Return); ok {
