@@ -144,6 +144,53 @@ func badIIFEWithoutCapturesReturnsEvent(ctx context.Context) {
 	e.Msg("iife without captures, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A variable that holds one of several func literals is a Phi of them, and
+// each one's returns are traced (#140).
+
+func goodFuncLiteralReplacedOnBranch(ctx context.Context, logger zerolog.Logger, debug bool) {
+	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	if debug {
+		ev = func() *zerolog.Event { return logger.Debug().Ctx(ctx) }
+	}
+	ev().Msg("func literal replaced on a branch") // OK - both return an event with ctx
+}
+
+func goodFuncLiteralReplacedInLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	for range n {
+		ev().Msg("func literal replaced in a loop") // OK - both return an event with ctx
+		ev = func() *zerolog.Event { return logger.Debug().Ctx(ctx) }
+	}
+}
+
+func goodFuncLiteralReplacedOnTwoBranches(ctx context.Context, logger zerolog.Logger, a, b bool) {
+	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	if a {
+		ev = func() *zerolog.Event { return logger.Warn().Ctx(ctx) }
+	}
+	logger.Info().Ctx(ctx).Msg("between the branches") // OK
+	if b {
+		ev = func() *zerolog.Event { return logger.Error().Ctx(ctx) }
+	}
+	ev().Msg("func literal replaced on two branches") // OK - all return an event with ctx
+}
+
+func badFuncLiteralReplacedOnBranch(ctx context.Context, logger zerolog.Logger, debug bool) {
+	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	if debug {
+		ev = func() *zerolog.Event { return logger.Debug() }
+	}
+	ev().Msg("func literal replaced on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncValueOrLiteral(ctx context.Context, logger zerolog.Logger, debug bool, other func() *zerolog.Event) {
+	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	if debug {
+		ev = other
+	}
+	ev().Msg("func value or literal") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== IIFE PARAMETERS =====
 
 // A func literal that is only called where it is written takes the context
