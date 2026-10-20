@@ -526,7 +526,15 @@ func (tr *tracer) traceStored(stored storeReaching, t tracerType, visited map[ss
 //	func(p *zerolog.Logger) {
 //	    p.Info().Msg("x")       // reads *p, which is l below
 //	}(&l)
+//
+// A call that passes the parameter on, as a recursive call does, reaches the
+// same parameter again. It is skipped there, as an update in a loop is: the
+// other calls give the value.
 func (tr *tracer) traceParamPath(pp storeParamPath, t tracerType, visited map[ssa.Value]bool) bool {
+	if visited[pp.param] {
+		return true
+	}
+	visited[pp.param] = true
 	fn := pp.param.Parent()
 	calls, ok := traceFuncLiteralCalls(fn)
 	if !ok || len(calls) == 0 {
@@ -546,6 +554,8 @@ func (tr *tracer) traceParamPath(pp storeParamPath, t tracerType, visited map[ss
 func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, t tracerType, visited map[ssa.Value]bool) bool {
 	addr, read := arg, ssa.Instruction(call)
 	switch {
+	case arg == pp.param && !pp.pointer:
+		return true // A struct or array passed on as it came, by a recursive call
 	case !pp.pointer:
 		// A struct or array passed by value is loaded from where it is
 		load, ok := arg.(*ssa.UnOp)
