@@ -13,19 +13,23 @@
 //	//zerologlintctx:ignore // intentionally not passing context
 //	//zerologlintctx:ignore - intentionally not passing context
 //
-// This directive can be placed on the same line or the line before the code
-// to suppress warnings.
+// This directive can be placed at the end of the line of the code, or on a
+// line of its own before it, to suppress warnings. A call chain that spans
+// several lines is reached from the line it starts on, as well as from the
+// line of the reported call.
 //
 // # Usage Examples
 //
-// Same-line ignore:
+// Same-line ignore. It reaches its own line only:
 //
 //	log.Info().Msg("no ctx needed") //zerologlintctx:ignore
 //
 // Previous-line ignore:
 //
 //	//zerologlintctx:ignore
-//	log.Info().Msg("no ctx needed")
+//	log.Info().
+//	    Str("k", "v").
+//	    Msg("no ctx needed")
 //
 // Unused ignore directives are reported as errors to keep the codebase clean.
 // Any other comment that starts with "zerologlintctx:", such as
@@ -44,8 +48,15 @@ import (
 // directiveTool is the tool part of every zerologlintctx directive.
 const directiveTool = "zerologlintctx"
 
-// IgnoreMap tracks line numbers that have ignore comments.
-type IgnoreMap map[int]*ignoreEntry
+// Ignores holds the ignore directives of one file, and what they can reach.
+type Ignores struct {
+	fset *token.FileSet
+	// byLine holds each ignore directive, keyed by its unadjusted line.
+	byLine map[int]*ignoreEntry
+	// callStarts maps the "(" of each call to where its expression starts,
+	// which is an earlier line for a chain that spans several.
+	callStarts map[token.Pos]token.Pos
+}
 
 // Problem is a comment addressed to zerologlintctx that does nothing.
 type Problem struct {
@@ -54,20 +65,52 @@ type Problem struct {
 }
 
 // Scan reads every comment of file once. It returns the ignore directives,
-// keyed by line, and the comments that are addressed to zerologlintctx but do
-// nothing: malformed directives, unknown directives, and ignore directives
-// with text that is not a reason.
-func Scan(fset *token.FileSet, file *ast.File) (IgnoreMap, []Problem) {
-	ignores := make(IgnoreMap)
+// and the comments that are addressed to zerologlintctx but do nothing:
+// malformed directives, unknown directives, and ignore directives with text
+// that is not a reason.
+//
+// Lines and columns are unadjusted throughout, so a //line directive cannot
+// move an ignore away from its call.
+func Scan(fset *token.FileSet, file *ast.File) (*Ignores, []Problem) {
+	ignores := &Ignores{
+		fset:       fset,
+		byLine:     make(map[int]*ignoreEntry),
+		callStarts: make(map[token.Pos]token.Pos),
+	}
+	codeStart := make(map[int]int) // Line → column of the first code on it
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case nil, *ast.CommentGroup, *ast.Comment:
+			return false
+		case *ast.File:
+			return true
+		case *ast.CallExpr:
+			ignores.callStarts[n.Lparen] = n.Pos()
+		}
+		for _, pos := range []token.Pos{n.Pos(), n.End() - 1} {
+			if !pos.IsValid() {
+				continue
+			}
+			p := fset.PositionFor(pos, false)
+			if col, ok := codeStart[p.Line]; !ok || p.Column < col {
+				codeStart[p.Line] = p.Column
+			}
+		}
+		return true
+	})
+
 	var problems []Problem
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
 			isIgnore, msg := classify(c.Text)
 			switch {
 			case isIgnore:
-				// Unadjusted, so a //line directive cannot move the ignore away from its call.
-				line := fset.PositionFor(c.Pos(), false).Line
-				ignores[line] = &ignoreEntry{pos: c.Pos(), used: false}
+				p := fset.PositionFor(c.Pos(), false)
+				col, hasCode := codeStart[p.Line]
+				ignores.byLine[p.Line] = &ignoreEntry{
+					pos:      c.Pos(),
+					trailing: hasCode && col < p.Column,
+				}
 			case msg != "":
 				problems = append(problems, Problem{Pos: c.Pos(), Message: msg})
 			}
@@ -78,8 +121,9 @@ func Scan(fset *token.FileSet, file *ast.File) (IgnoreMap, []Problem) {
 
 // ignoreEntry tracks an ignore directive and whether it was used.
 type ignoreEntry struct {
-	pos  token.Pos // Position of the ignore comment
-	used bool      // Whether this ignore was actually used to suppress a warning
+	pos      token.Pos // Position of the ignore comment
+	trailing bool      // Whether it follows code on its line, and so reaches that line only
+	used     bool      // Whether this ignore was actually used to suppress a warning
 }
 
 // classify reads text, one comment. isIgnore reports whether it is an ignore
@@ -144,32 +188,40 @@ func isAddressed(text string) bool {
 	return ok && strings.HasPrefix(strings.TrimLeftFunc(body, unicode.IsSpace), directiveTool+":")
 }
 
-// ShouldIgnore returns true if the given line should be ignored.
-// It checks if the same line or the previous line has an ignore comment.
-// When an ignore is used, it marks the entry as used.
+// ShouldIgnore reports whether a report at pos is ignored, and marks the
+// ignore that reaches it as used.
 //
-// Line matching logic:
+// An ignore reaches the line it is on. One on a line of its own also reaches
+// the line below. pos is reached from its own line and, when it is the "(" of
+// a call, from the line where the call expression starts:
 //
-//	Line N-1:  //zerologlintctx:ignore   ← matches line N
-//	Line N:    log.Info().Msg("test")    ← target line
+//	Line N-1:  //zerologlintctx:ignore   ← reaches line N
+//	Line N:    log.Info().               ← the call expression starts here
+//	Line N+1:      Msg("test")           ← pos, the "(" of Msg
 //
-//	Line N:    log.Info().Msg("test") //zerologlintctx:ignore  ← also matches
-func (m IgnoreMap) ShouldIgnore(line int) bool {
-	if entry, onSameLine := m[line]; onSameLine {
-		entry.used = true
-		return true
+//	Line N:    log.Info().Msg("test") //zerologlintctx:ignore  ← reaches line N only
+func (ig *Ignores) ShouldIgnore(pos token.Pos) bool {
+	lines := []int{ig.fset.PositionFor(pos, false).Line}
+	if start, ok := ig.callStarts[pos]; ok {
+		lines = append(lines, ig.fset.PositionFor(start, false).Line)
 	}
-	if entry, onPrevLine := m[line-1]; onPrevLine {
-		entry.used = true
-		return true
+	for _, line := range lines {
+		if entry, onSameLine := ig.byLine[line]; onSameLine {
+			entry.used = true
+			return true
+		}
+		if entry, onPrevLine := ig.byLine[line-1]; onPrevLine && !entry.trailing {
+			entry.used = true
+			return true
+		}
 	}
 	return false
 }
 
-// GetUnusedIgnores returns the positions of ignore directives that were not used.
-func (m IgnoreMap) GetUnusedIgnores() []token.Pos {
+// Unused returns the positions of ignore directives that were not used.
+func (ig *Ignores) Unused() []token.Pos {
 	var unused []token.Pos
-	for _, entry := range m {
+	for _, entry := range ig.byLine {
 		if !entry.used {
 			unused = append(unused, entry.pos)
 		}

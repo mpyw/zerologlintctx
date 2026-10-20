@@ -191,6 +191,48 @@ func goodIgnoredPreviousLine(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("ignored")
 }
 
+// An ignore above a chain that spans several lines reaches the whole chain (#76).
+func goodIgnoredAboveMultiLineChain(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore
+	log.Info().
+		Str("k", "v").
+		Msg("ignored")
+}
+
+func goodIgnoredInsideMultiLineChain(ctx context.Context, log zerolog.Logger) {
+	log.Info().
+		Str("k", "v").
+		//zerologlintctx:ignore
+		Msg("ignored")
+}
+
+func goodIgnoredAboveMultiLineDefer(ctx context.Context, log zerolog.Logger) {
+	//zerologlintctx:ignore
+	defer log.Info().
+		Str("k", "v").
+		Msg("ignored")
+}
+
+// An ignore above a call does not reach the calls inside a closure passed to it.
+func badIgnoreAboveCallDoesNotReachClosure(ctx context.Context, log zerolog.Logger, run func(func())) {
+	//zerologlintctx:ignore // want `unused zerologlintctx:ignore directive`
+	run(func() {
+		log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+	})
+}
+
+// A trailing ignore reaches its own line only, not the line below (#77).
+func badTrailingIgnoreDoesNotReachNextLine(ctx context.Context, log zerolog.Logger) {
+	log.Info().Msg("ignored")     //zerologlintctx:ignore
+	log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badTrailingIgnoreOnBlockOpener(ctx context.Context, log zerolog.Logger, cond bool) {
+	if cond { //zerologlintctx:ignore // want `unused zerologlintctx:ignore directive`
+		log.Info().Msg("not ignored") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
 // A space after "//" makes it malformed, and it suppresses nothing.
 func badIgnoreWithSpaceSameLine(ctx context.Context, log zerolog.Logger) {
 	log.Info().Msg("not ignored") // zerologlintctx:ignore // want `zerolog call chain missing .Ctx\(ctx\)` `malformed zerologlintctx directive: write it as //zerologlintctx:name`

@@ -45,24 +45,23 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, ErrNoSSA
 	}
 
-	ignoreMaps, problems := scanFiles(pass)
+	ignoresByFile, problems := scanFiles(pass)
 
 	for fn, ctxName := range chain.ContextNames(ssaInfo.SrcFuncs) {
-		ignoreMap, ok := ignoreMaps[unadjustedFilename(pass.Fset, fn.Pos())]
+		ignores, ok := ignoresByFile[unadjustedFilename(pass.Fset, fn.Pos())]
 		if !ok {
 			continue // Not in a checked file, or no position at all
 		}
 		chain.NewChecker(ctxName, func(pos token.Pos, msg string) {
-			// Unadjusted, so a //line directive cannot move the call away from its ignore.
-			if ignoreMap.ShouldIgnore(pass.Fset.PositionFor(pos, false).Line) {
+			if ignores.ShouldIgnore(pos) {
 				return
 			}
 			pass.Report(analysis.Diagnostic{Pos: pos, Message: msg})
 		}).CheckFunction(fn)
 	}
 
-	for _, ignoreMap := range ignoreMaps {
-		for _, pos := range ignoreMap.GetUnusedIgnores() {
+	for _, ignores := range ignoresByFile {
+		for _, pos := range ignores.Unused() {
 			pass.Reportf(pos, "unused zerologlintctx:ignore directive")
 		}
 	}
@@ -75,23 +74,23 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 // scanFiles reads the directives of each file to check. It returns the
-// ignore map of each such file, keyed by its unadjusted filename, and the
+// ignores of each such file, keyed by its unadjusted filename, and the
 // directives that do nothing, in file order.
 //
 // Generated files are not checked, and get no entry. Test files can be
 // skipped via the driver's built-in -test flag.
-func scanFiles(pass *analysis.Pass) (map[string]directive.IgnoreMap, []directive.Problem) {
-	ignoreMaps := make(map[string]directive.IgnoreMap)
+func scanFiles(pass *analysis.Pass) (map[string]*directive.Ignores, []directive.Problem) {
+	ignoresByFile := make(map[string]*directive.Ignores)
 	var problems []directive.Problem
 	for _, file := range pass.Files {
 		if ast.IsGenerated(file) {
 			continue
 		}
-		ignoreMap, fileProblems := directive.Scan(pass.Fset, file)
-		ignoreMaps[unadjustedFilename(pass.Fset, file.Pos())] = ignoreMap
+		ignores, fileProblems := directive.Scan(pass.Fset, file)
+		ignoresByFile[unadjustedFilename(pass.Fset, file.Pos())] = ignores
 		problems = append(problems, fileProblems...)
 	}
-	return ignoreMaps, problems
+	return ignoresByFile, problems
 }
 
 // unadjustedFilename names the file pos is in, ignoring //line directives so
