@@ -379,22 +379,10 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 // reachEntry records a path that leads back to the entry of the function, or
 // to its recover block. What is at a pointer parameter there is the caller's,
 // which is known only for a func literal, from its calls. What is at a
-// captured variable is the one the closure was made with.
-//
-// A local variable is declared before any read. A walk from a return, where a
-// deferred closure runs, can get here past a block that declares it:
-//
-//	if cond {
-//	    l := logger.With().Ctx(ctx).Logger()
-//	    defer func() { l.Info().Msg("x") }()
-//	}
-//	return                  // the path that skips the if has no l
-//
-// On such a path the closure was never deferred, and it carries nothing.
+// captured variable is the one the closure was made with. A local variable is
+// declared before any read, and a walk from a return where a deferred call
+// runs only takes the paths through its defer, so its walk never gets here.
 func (w *storeWalk) reachEntry() {
-	if _, ok := w.root.(*ssa.Alloc); ok {
-		return
-	}
 	if fv, ok := w.root.(*ssa.FreeVar); ok {
 		w.out.captured, w.out.capturedPath = fv, slices.Clone(w.path)
 		return
