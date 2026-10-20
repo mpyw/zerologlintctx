@@ -40,6 +40,12 @@ zerologlintctx/
 | Direct logging on Logger | `IsLogger(recv) && ReturnsVoid(sig) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
 | Direct logging via log package | `IsZerologLogPkg(pkg) && ReturnsVoid(sig) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
 
+The message names the first usable `context.Context` parameter, or `*name`
+for a `*context.Context` one. A closure without one of its own takes the name
+from the function it is declared in. Where that name means something else at
+the call, such as a parameter of the closure or a local variable that shadows
+it, the context cannot be passed there, and nothing is reported.
+
 Every call is checked the same way, whether it is a plain call, a `go`
 statement or a `defer` statement. `calleeOf` in `callee.go` resolves the
 declared function a call runs, and its receiver, in each of the three forms a
