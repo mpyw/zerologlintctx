@@ -427,6 +427,12 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 	c, declared := calleeOf(&call.Call)
 	if !declared {
 		sfn := call.Call.StaticCallee()
+		if fns, ok := traceFuncLiteralsOf(call.Call.Value, make(map[ssa.Value]bool)); sfn == nil && ok && len(fns) > 0 {
+			// A variable that holds one of several func literals
+			return !slices.ContainsFunc(fns, func(fn *ssa.Function) bool {
+				return !tr.traceReturns(fn, 0, t, maps.Clone(visited))
+			})
+		}
 		if sfn == nil {
 			// Dynamic dispatch: the method is not known
 			if len(call.Call.Args) == 0 {
@@ -782,6 +788,38 @@ func traceInstrsInScope(fn *ssa.Function) iter.Seq[ssa.Instruction] {
 			}
 		}
 	}
+}
+
+// traceFuncLiteralsOf returns the func literals that v, a Phi, can be, when
+// every edge is a func literal or a closure of one, or another such Phi:
+//
+//	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+//	if debug {
+//	    ev = func() *zerolog.Event { return logger.Debug().Ctx(ctx) }
+//	}
+//	ev().Msg("x")           // ev is a Phi of the two
+func traceFuncLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.Function, bool) {
+	phi, ok := v.(*ssa.Phi)
+	if !ok || seen[v] {
+		return nil, ok
+	}
+	seen[v] = true
+	var fns []*ssa.Function
+	for _, edge := range phi.Edges {
+		if mc, ok := edge.(*ssa.MakeClosure); ok {
+			edge = mc.Fn
+		}
+		if fn, ok := edge.(*ssa.Function); ok && fn.Parent() != nil {
+			fns = append(fns, fn)
+			continue
+		}
+		more, ok := traceFuncLiteralsOf(edge, seen)
+		if !ok {
+			return nil, false
+		}
+		fns = append(fns, more...)
+	}
+	return fns, true
 }
 
 // traceIsFuncValue reports whether v is fn, or a closure of it.
