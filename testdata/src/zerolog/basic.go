@@ -299,8 +299,8 @@ func goodDeferredChainCtxOnEachBranch(ctx context.Context, other context.Context
 }
 
 // LIMITATION (false positive): An in-place Ctx call is not seen by a
-// terminator in a closure, or in a func literal the event is passed to
-// (#139). The event reaches it through a captured variable or a parameter,
+// terminator in a closure, in a func literal the event is passed to, or on
+// another variable the event was copied to (#139). The event reaches it through a captured variable or a parameter,
 // which is not followed back to the calls on it.
 
 func limitationEventCtxResultUnusedClosure(ctx context.Context, log zerolog.Logger) {
@@ -309,6 +309,15 @@ func limitationEventCtxResultUnusedClosure(ctx context.Context, log zerolog.Logg
 	func() {
 		e.Msg("ctx result unused, closure") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
+}
+
+func limitationEventCtxResultUnusedOnCopy(ctx context.Context, log zerolog.Logger) {
+	var e, copied *zerolog.Event
+	func() { _, _ = e, copied }()
+	e = log.Info()
+	copied = e
+	e.Ctx(ctx)
+	copied.Msg("ctx result unused, on a copy") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func limitationEventCtxResultUnusedPassedToFuncLiteral(ctx context.Context, log zerolog.Logger) {
