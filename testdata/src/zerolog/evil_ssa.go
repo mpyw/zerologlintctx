@@ -943,6 +943,45 @@ func goodMethodExpressionWithCtx(ctx context.Context, logger zerolog.Logger) {
 	msg(logger.Info().Ctx(ctx), "method expression with ctx") // OK - ctx set via .Ctx(ctx)
 }
 
+// ===== STRUCT COPIED IN A LOOP =====
+
+// A struct copied back and forth in a loop leads back to a copy already
+// followed (#133).
+
+type walkState struct {
+	log   zerolog.Logger
+	depth int
+}
+
+func goodStructSavedAndRestoredInLoop(ctx context.Context, logger zerolog.Logger, nodes []string) {
+	st := walkState{log: logger.With().Ctx(ctx).Logger()}
+	for _, n := range nodes {
+		saved := st
+		st.depth++
+		st.log.Debug().Str("node", n).Msg("saved and restored") // OK - every copy has ctx
+		st = saved
+	}
+}
+
+func goodStructCopiedBothWaysInLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	a := walkState{log: logger.With().Ctx(ctx).Logger()}
+	b := a
+	for range n {
+		b = a
+		a = b
+		a.log.Info().Msg("copied both ways") // OK - every copy has ctx
+	}
+}
+
+func badStructsSwappedInLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	a := walkState{log: logger}
+	b := walkState{log: logger.With().Ctx(ctx).Logger()}
+	for range n {
+		a, b = b, a
+		a.log.Info().Msg("swapped") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
 // ===== STRUCT WITH MULTIPLE EVENT FIELDS =====
 
 type multiEventHolder struct {

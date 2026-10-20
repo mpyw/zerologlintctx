@@ -5,8 +5,10 @@
 package chain
 
 import (
+	"fmt"
 	"go/token"
 	"slices"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -201,6 +203,16 @@ type storeWalk struct {
 	updaterSetsCtx func(*ssa.Function) bool // Whether a func passed to Logger.UpdateContext sets context
 	positions      instrPositions           // Where each instruction is in its block
 	out            *storeReaching
+	// copies holds the loads that copied walks have started from, with the
+	// path they look for, shared by every walk that copied starts.
+	copies map[storeCopy]bool
+}
+
+// storeCopy is a load that a copied walk starts from, and the selections it
+// looks for from the aggregate loaded.
+type storeCopy struct {
+	load *ssa.UnOp
+	path string
 }
 
 // walkBefore walks every path that leads to instr, from the instruction
@@ -346,8 +358,36 @@ func (w *storeWalk) copied(store *ssa.Store, rest []ssa.Value) {
 		updaterSetsCtx: w.updaterSetsCtx,
 		positions:      w.positions,
 		out:            w.out,
+		copies:         w.copies,
 	}
+	// An aggregate copied back and forth in a loop leads back to a copy
+	// already followed, which adds nothing new.
+	if src.copies == nil {
+		src.copies = make(map[storeCopy]bool)
+		w.copies = src.copies
+	}
+	key := storeCopy{load: load, path: storePathKey(src.path)}
+	if src.copies[key] {
+		return
+	}
+	src.copies[key] = true
 	src.walkBefore(load)
+}
+
+// storePathKey spells the selections of path, which storeSelectsSame
+// compares, so that two paths that select the same have the same key.
+func storePathKey(path []ssa.Value) string {
+	var b strings.Builder
+	for _, step := range path {
+		if fa, ok := step.(*ssa.FieldAddr); ok {
+			fmt.Fprintf(&b, ".%d", fa.Field)
+			continue
+		}
+		// A constant is named by its value, and any other index by the value
+		// it is, which only matches itself
+		fmt.Fprintf(&b, "[%s]", step.(*ssa.IndexAddr).Index.Name())
+	}
+	return b.String()
 }
 
 // addStoresAfter adds the values stored to the address by the stores that
