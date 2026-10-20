@@ -83,11 +83,50 @@ func storesReaching(
 	}
 	// What an escape passes addr on to may read it at any point after, so
 	// what reaches the escape, and every store after it, may be what it reads.
+	// A closure that is only deferred reads it at the returns after it.
 	for _, esc := range escapes {
+		if rets, deferred := storeDeferredReturns(esc, positions); deferred {
+			for _, ret := range rets {
+				w.walkBefore(ret)
+			}
+			continue
+		}
 		w.walkBefore(esc)
 		w.addStoresAfter(esc)
 	}
 	return r, true
+}
+
+// storeDeferredReturns reports whether esc is a closure whose only uses are
+// defer statements that call it, and returns the returns that can run after
+// one of them, where the closure runs. The recover block, reached after a
+// panic, is not among them.
+//
+//	defer func() { l.Info().Msg("x") }() // reads l at each return after it
+func storeDeferredReturns(esc ssa.Instruction, positions instrPositions) (rets []ssa.Instruction, ok bool) {
+	mc, ok := esc.(*ssa.MakeClosure)
+	if !ok {
+		return nil, false
+	}
+	var defers []*ssa.Defer
+	for _, ref := range *mc.Referrers() {
+		d, isDefer := ref.(*ssa.Defer)
+		if !isDefer || d.Call.Value != mc {
+			return nil, false
+		}
+		defers = append(defers, d)
+	}
+	fn := mc.Parent()
+	for _, b := range fn.Blocks {
+		ret, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return)
+		if !isReturn || b == fn.Recover {
+			continue
+		}
+		if slices.ContainsFunc(defers, func(d *ssa.Defer) bool { return positions.reaches(d, ret) }) {
+			rets = append(rets, ret)
+		}
+	}
+	return rets, true
 }
 
 // storeReaching is what storesReaching found can be at an address when it is

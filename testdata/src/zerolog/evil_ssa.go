@@ -1643,6 +1643,46 @@ func replaceEvent(*zerolog.Event) *zerolog.Event { return log.Info() }
 
 func replaceLogger(zerolog.Logger) zerolog.Logger { return zerolog.Nop() }
 
+// A closure that is only deferred runs at the returns after the defer
+// statement, so only the stores that reach them can be what it reads (#123).
+
+func goodDeferredClosureCtxAfterDefer(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	defer func() {
+		l.Info().Msg("deferred closure, ctx after defer") // OK - l has ctx at the return
+	}()
+	l = l.With().Ctx(ctx).Logger()
+}
+
+func badDeferredClosureCtxBeforeOneReturn(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger
+	defer func() {
+		l.Info().Msg("deferred closure, ctx before one return") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+	if cond {
+		return
+	}
+	l = l.With().Ctx(ctx).Logger()
+}
+
+func badDeferredClosureCtxLost(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	defer func() {
+		l.Info().Msg("deferred closure, ctx lost") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+	l = logger
+}
+
+func badClosureDeferredAndCalled(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	f := func() {
+		l.Info().Msg("closure deferred and called") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	defer f()
+	f()
+	l = l.With().Ctx(ctx).Logger()
+}
+
 func goodStoreAfterClosureIsMade(ctx context.Context, logger zerolog.Logger) {
 	var l zerolog.Logger
 	f := func() { l.Info().Msg("store after closure") } // OK - the only store has ctx
