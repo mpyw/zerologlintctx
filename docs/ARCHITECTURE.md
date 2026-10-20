@@ -93,6 +93,10 @@ The tracing system follows SSA values backwards to find if context was set.
 The `tracer` type in `internal/chain/tracing.go` does it. Phi nodes are in
 `phi.go`, and the stores behind a load are found by `store.go`.
 
+One tracer serves a whole function. It keeps each value it found to have
+context, and the stores it found at each address, so neither is worked out
+again for the next call that reaches it.
+
 ```
 ┌──────────────┐     ┌──────────────┐     ┌────────────────┐
 │ tracerEvent  │────▶│ tracerLogger │────▶│ tracerContext  │
