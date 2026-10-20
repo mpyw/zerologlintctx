@@ -12,10 +12,15 @@ zerologlintctx/
 ├── plugin/                    # golangci-lint module plugin
 ├── internal/                  # Core analysis logic
 │   ├── chain/                 # SSA-based chain analysis
-│   │   ├── checker.go         # Checker struct, SSA inspection
+│   │   ├── checker.go         # Checker: checks each call, go and defer
+│   │   ├── callee.go          # Resolves and classifies the function a call runs
 │   │   ├── context.go         # Which functions have a context in scope
-│   │   ├── callee.go          # Classifies a callee by name and package
-│   │   └── tracing.go         # Value tracing and context checking
+│   │   ├── tracing.go         # Tracer types, handoffs, value tracing
+│   │   ├── phi.go             # Phi nodes and edges that lead back to them
+│   │   ├── store.go           # Values stored at an address
+│   │   ├── aggregate.go       # Paths into a struct or array, and its copies
+│   │   ├── match.go           # Whether two addresses are the same
+│   │   └── value.go           # SSA plumbing the other files stand on
 │   ├── directive/             # Comment directive handling
 │   │   └── ignore.go          # //zerologlintctx:ignore parsing, directive problems
 │   └── typeutil/              # Type checking utilities
@@ -31,9 +36,20 @@ zerologlintctx/
 
 | Pattern | Condition | Message |
 |---------|-----------|---------|
-| Event chain missing `.Ctx()` | `isEvent(recv) && returnsVoid(fn)` | `zerolog call chain missing .Ctx(ctx)` |
-| Direct logging on Logger | `isLogger(recv) && returnsVoid(fn) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
-| Direct logging via log package | `zerologLogPath && returnsVoid(fn) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+| Event chain missing `.Ctx()` | `IsEvent(recv) && ReturnsVoid(sig)` | `zerolog call chain missing .Ctx(ctx)` |
+| Direct logging on Logger | `IsLogger(recv) && ReturnsVoid(sig) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+| Direct logging via log package | `IsZerologLogPkg(pkg) && ReturnsVoid(sig) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+
+Every call is checked the same way, whether it is a plain call, a `go`
+statement or a `defer` statement. `calleeOf` in `callee.go` resolves the
+declared function a call runs, and its receiver, in each of the three forms a
+method can take:
+
+| Form | SSA | Receiver |
+|------|-----|----------|
+| `e.Msg("x")` | `(*Event).Msg(e, "x")` | `Args[0]` |
+| `m := e.Msg; m("x")` | `(*Event).Msg$bound(e)`, then a call to it | `Bindings[0]` |
+| `f := (*Event).Msg; f(e, "x")` | `(*Event).Msg$thunk(e, "x")` | `Args[0]` |
 
 ### Type-Based Analysis
 
@@ -41,11 +57,11 @@ The analyzer uses **return type checking** instead of method name hardcoding for
 
 | Transition | Detection Method | Examples |
 |------------|------------------|----------|
-| Logger → Event | `returnsEvent(fn)` | `Info()`, `Debug()`, `Err()`, `WithLevel()` |
-| Logger → Context | `returnsContext(fn)` | `With()` |
-| Context → Logger | `returnsLogger(fn)` | `Logger()` |
-| Event → Event | `shouldContinueOnReceiver` | `Str()`, `Int()`, `Ctx()`, etc. |
-| Context → Context | `shouldContinueOnReceiver` | `Str()`, `Int()`, `Ctx()`, etc. |
+| Logger → Event | `ReturnsEvent(sig)` | `Info()`, `Debug()`, `Err()`, `WithLevel()` |
+| Logger → Context | `ReturnsContext(sig)` | `With()` |
+| Context → Logger | `ReturnsLogger(sig)` | `Logger()` |
+| Event → Event | receiver is the traced type | `Str()`, `Int()`, `Ctx()`, etc. |
+| Context → Context | receiver is the traced type | `Str()`, `Int()`, `Ctx()`, etc. |
 
 This approach automatically handles new zerolog methods without code changes.
 
@@ -74,7 +90,8 @@ This is necessary because `UpdateContext` also returns void but is not a logging
 ## SSA Tracing
 
 The tracing system follows SSA values backwards to find if context was set.
-All tracing logic is implemented in `internal/chain/tracing.go`.
+The `tracer` type in `internal/chain/tracing.go` does it. Phi nodes are in
+`phi.go`, and the stores behind a load are found by `store.go`.
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌────────────────┐
@@ -91,23 +108,28 @@ All tracing logic is implemented in `internal/chain/tracing.go`.
 
 ### Context Checking
 
-Each tracer type knows its context sources:
+Each tracer type knows the calls that set its context (`isCtxSetBy`):
 
-**tracerEvent:**
-- `Event.Ctx(ctx)` → Found
-- `Context.Ctx(ctx)` → Found
-- `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` → Found
-- `Logger.Info()` etc. → Delegate to tracerLogger
-- `Context.Logger()` → Delegate to tracerContext
+| Tracer | Context set by |
+|--------|----------------|
+| `tracerEvent` | `Event.Ctx(ctx)`, `Context.Ctx(ctx)`, `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
+| `tracerLogger` | `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
+| `tracerContext` | `Context.Ctx(ctx)` |
 
-**tracerLogger:**
-- `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` → Found
-- `Context.Logger()` → Delegate to tracerContext
-- `Logger.With()` → Self-delegate (traces parent Logger)
+> [!NOTE]
+> `zerolog.Ctx(ctx)` returns the logger stored in `ctx`. It does not attach
+> `ctx` to the events of that logger. The analyzer still accepts it: the code
+> took its logger from the context, which is a deliberate use of it.
 
-**tracerContext:**
-- `Context.Ctx(ctx)` → Found
-- `Logger.With()` → Delegate to tracerLogger
+A call that turns one zerolog type into another is a handoff. Tracing goes on
+from the call's receiver, with the receiver's tracer. Each handoff is declared
+once, and `tracerHandoffs` lists which ones each tracer follows:
+
+| Handoff | Call | Followed by |
+|---------|------|-------------|
+| `traceLoggerOfEvent` | `Logger.Info()`, `Logger.Debug()`, ... | `tracerEvent` |
+| `traceContextOfLogger` | `Context.Logger()` | `tracerEvent`, `tracerLogger` |
+| `traceLoggerOfContext` | `Logger.With()` | `tracerLogger`, `tracerContext` |
 
 ### Common SSA Patterns
 
@@ -119,6 +141,18 @@ Each tracer type knows its context sources:
 - **FreeVar** - Closure captured variables
 - **FieldAddr/Field** - Struct field access
 - **Store tracking** - Values stored at addresses
+
+#### Updates
+
+A store whose value loads from the same address, such as
+`l = l.With().Ctx(ctx).Logger()` once `l` has its address taken, is an update.
+Real zerolog takes that address for every `Logger.Info()` call, since the
+method has a pointer receiver. An update is not traced as a value of its own,
+since it is built from the other stores.
+
+An update can still set the context itself. It is accepted on its own when it
+runs before every read of the local variable and no plain store can run after
+it. An update on one branch only does not count.
 
 #### Address Matching
 
@@ -179,6 +213,7 @@ Due to SSA analysis constraints:
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE is supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
+- **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 
 These are documented in test cases with `// LIMITATION` comments.
 

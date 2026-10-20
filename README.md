@@ -164,10 +164,13 @@ func handler(ctx context.Context, log zerolog.Logger) {
     // Good: includes .Ctx(ctx)
     log.Info().Ctx(ctx).Str("key", "value").Msg("hello")
 
-    // Also good: context from log.Ctx() or zerolog.Ctx()
+    // Also accepted: the logger stored in ctx, from log.Ctx() or zerolog.Ctx()
     log.Ctx(ctx).Info().Str("key", "value").Msg("hello")
 }
 ```
+
+> [!NOTE]
+> [`zerolog.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Ctx) returns the logger stored in `ctx`. It does not attach `ctx` to the events of that logger. zerologlintctx accepts it anyway, since taking the logger from the context is a deliberate use of it. Add `.Ctx(ctx)` too if hooks need the context.
 
 ### Direct Logging Methods
 

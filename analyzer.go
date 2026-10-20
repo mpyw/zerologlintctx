@@ -22,6 +22,8 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
+// ErrNoSSA is returned when the pass has no buildssa result, which the
+// analyzer requires.
 var ErrNoSSA = errors.New("SSA analyzer result not found")
 
 // run checks every function that has a context in scope, then reports the
@@ -35,7 +37,8 @@ var ErrNoSSA = errors.New("SSA analyzer result not found")
 // Context can be set via:
 //   - Event.Ctx(ctx): Sets context on the current event
 //   - Context.Ctx(ctx): Sets default context for the derived logger
-//   - zerolog.Ctx(ctx): Returns a logger from context (already has ctx)
+//   - zerolog.Ctx(ctx): Returns the logger stored in ctx. It does not attach
+//     ctx to its events, but taking the logger from ctx counts as using it
 func run(pass *analysis.Pass) (any, error) {
 	ssaInfo, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	if !ok {

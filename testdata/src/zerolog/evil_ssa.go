@@ -7,10 +7,11 @@
 // KNOWN LIMITATIONS (search for "LIMITATION" or "limitation" to find test cases):
 //
 // False Negatives (should report but doesn't):
-//   - Helper returns: Cross-function tracking not supported (except IIFE)
-//   - Deep FreeVar: Triple-nested closures
+//   - Helper methods: An event logged inside a method that has no context of its own
 //
 // False Positives (reports when shouldn't):
+//   - Helper returns: .Ctx() set inside a helper is not seen (IIFE is supported)
+//   - Slice/map access: An event read back from a slice or map is not traced
 //   - Channel send/receive: Can't trace through channels
 //   - sync.Pool: Can't trace through Get/Put
 //   - Embedded struct: `h.Msg()` where h embeds *Event
@@ -265,6 +266,12 @@ func limitationEventFromSliceWithCtx(ctx context.Context, logger zerolog.Logger)
 	// LIMITATION: SSA doesn't track events through slice/array access
 	events := []*zerolog.Event{logger.Info().Ctx(ctx)}
 	events[0].Msg("from slice with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationEventFromMapWithCtx(ctx context.Context, logger zerolog.Logger) {
+	// LIMITATION: SSA doesn't track events through map lookups
+	events := map[string]*zerolog.Event{"info": logger.Info().Ctx(ctx)}
+	events["info"].Msg("from map with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== POINTER INDIRECTION =====

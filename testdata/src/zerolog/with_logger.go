@@ -47,17 +47,21 @@ func goodWithLoggerContextCtx(ctx context.Context, logger zerolog.Logger) {
 	derived.Info().Msg("derived logger") // OK - ctx was set during With()
 }
 
-// Chained With().Logger() directly calling log methods
+// With().Logger() used right away. Logger.Info has a pointer receiver, so
+// the Logger() result must be held in a variable first.
 func badWithLoggerInline(ctx context.Context, logger zerolog.Logger) {
-	logger.With().Str("k", "v").Logger().Info().Msg("inline") // want `zerolog call chain missing .Ctx\(ctx\)`
+	l := logger.With().Str("k", "v").Logger()
+	l.Info().Msg("inline") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func goodWithLoggerInlineCtx(ctx context.Context, logger zerolog.Logger) {
-	logger.With().Str("k", "v").Ctx(ctx).Logger().Info().Msg("inline with ctx") // OK
+	l := logger.With().Str("k", "v").Ctx(ctx).Logger()
+	l.Info().Msg("inline with ctx") // OK
 }
 
 func goodWithLoggerInlineEventCtx(ctx context.Context, logger zerolog.Logger) {
-	logger.With().Str("k", "v").Logger().Info().Ctx(ctx).Msg("inline event ctx") // OK
+	l := logger.With().Str("k", "v").Logger()
+	l.Info().Ctx(ctx).Msg("inline event ctx") // OK
 }
 
 // Global logger With() pattern
