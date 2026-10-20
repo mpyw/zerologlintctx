@@ -25,6 +25,7 @@
 package chain
 
 import (
+	"cmp"
 	"fmt"
 	"go/token"
 	"go/types"
@@ -122,10 +123,7 @@ func (c *Checker) reportOnce(pos token.Pos, format string) {
 //	    }("x")
 //	}
 func (c *Checker) ctxInScopeAt(pos token.Pos) bool {
-	inner := c.scope.Innermost(pos)
-	if inner == nil {
-		return true // Not in a file of the package, which a call always is
-	}
+	inner := cmp.Or(c.scope.Innermost(pos), c.scope) // A call is always in a file of the package
 	_, obj := inner.LookupParent(strings.TrimPrefix(c.ctxName, "*"), pos)
 	v, ok := obj.(*types.Var)
 	return ok && typeutil.IsContextType(v.Type())
