@@ -44,6 +44,7 @@ type Checker struct {
 	ctxName  string                          // Context variable name (for error messages)
 	report   func(pos token.Pos, msg string) // Receives each finding
 	reported map[token.Pos]bool              // Deduplication: same position reported once
+	tracer   tracer                          // Traces each terminator's receiver
 }
 
 // NewChecker creates a new checker for analyzing a function that has ctxName
@@ -91,7 +92,7 @@ func (c *Checker) checkTerminatorCall(cc *ssa.CallCommon, pos token.Pos) {
 	}
 
 	// Trace back to find if context was set
-	if len(cc.Args) > 0 && c.eventChainHasCtx(cc.Args[0]) {
+	if len(cc.Args) > 0 && c.tracer.eventHasCtx(cc.Args[0]) {
 		return
 	}
 
@@ -128,7 +129,7 @@ func (c *Checker) checkBoundMethodTerminator(mc *ssa.MakeClosure, callee *ssa.Fu
 	}
 
 	// Trace the receiver to find if context was set
-	if c.eventChainHasCtx(mc.Bindings[0]) {
+	if c.tracer.eventHasCtx(mc.Bindings[0]) {
 		return
 	}
 
@@ -156,9 +157,4 @@ func (c *Checker) reportOnce(pos token.Pos, format string) {
 	}
 	c.reported[pos] = true
 	c.report(pos, fmt.Sprintf(format, c.ctxName))
-}
-
-// eventChainHasCtx traces an Event value to check if .Ctx() was called.
-func (c *Checker) eventChainHasCtx(v ssa.Value) bool {
-	return c.traceValue(v, tracerEvent, make(map[ssa.Value]bool))
 }
