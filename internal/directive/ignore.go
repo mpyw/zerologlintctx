@@ -77,6 +77,23 @@ func Scan(fset *token.FileSet, file *ast.File) (*Ignores, []Problem) {
 		byLine:     make(map[int]*ignoreEntry),
 		callStarts: make(map[token.Pos]token.Pos),
 	}
+	var problems []Problem
+	var directives []*ast.Comment
+	for _, cg := range file.Comments {
+		for _, c := range cg.List {
+			isIgnore, msg := classify(c.Text)
+			switch {
+			case isIgnore:
+				directives = append(directives, c)
+			case msg != "":
+				problems = append(problems, Problem{Pos: c.Pos(), Message: msg})
+			}
+		}
+	}
+	if len(directives) == 0 {
+		return ignores, problems // Most files have none, and need no walk of their code
+	}
+
 	codeStart := make(map[int]int) // Line → column of the first code on it
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch n := n.(type) {
@@ -98,22 +115,12 @@ func Scan(fset *token.FileSet, file *ast.File) (*Ignores, []Problem) {
 		}
 		return true
 	})
-
-	var problems []Problem
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			isIgnore, msg := classify(c.Text)
-			switch {
-			case isIgnore:
-				p := fset.PositionFor(c.Pos(), false)
-				col, hasCode := codeStart[p.Line]
-				ignores.byLine[p.Line] = &ignoreEntry{
-					pos:      c.Pos(),
-					trailing: hasCode && col < p.Column,
-				}
-			case msg != "":
-				problems = append(problems, Problem{Pos: c.Pos(), Message: msg})
-			}
+	for _, c := range directives {
+		p := fset.PositionFor(c.Pos(), false)
+		col, hasCode := codeStart[p.Line]
+		ignores.byLine[p.Line] = &ignoreEntry{
+			pos:      c.Pos(),
+			trailing: hasCode && col < p.Column,
 		}
 	}
 	return ignores, problems
