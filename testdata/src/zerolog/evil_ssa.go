@@ -212,6 +212,69 @@ func goodFuncLiteralsOnBranchSecondResult(ctx context.Context, logger zerolog.Lo
 	e.Msg("func literals on a branch, second result") // OK - every second result has ctx
 }
 
+// A func literal in a variable that a closure captures is called through a
+// load of the variable, and the func literals stored there are traced (#157).
+
+func badCapturedFuncLiteralReturnsOther(ctx context.Context, logger zerolog.Logger) {
+	f := func(p *zerolog.Event) *zerolog.Event { return logger.Warn() }
+	func() { _ = f }()
+	f(logger.Info().Ctx(ctx)).Msg("captured func literal returns another event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodCapturedFuncLiteral(ctx context.Context, logger zerolog.Logger) {
+	f := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	func() { _ = f }()
+	f().Msg("captured func literal") // OK - it returns an event with ctx
+}
+
+func goodFuncLiteralCalledInClosure(ctx context.Context, logger zerolog.Logger) {
+	f := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	func() {
+		f().Msg("func literal called in a closure") // OK - it returns an event with ctx
+	}()
+}
+
+func goodCapturedFuncReplacedByValue(ctx context.Context, logger zerolog.Logger, other func(*zerolog.Event) *zerolog.Event) {
+	f := func(e *zerolog.Event) *zerolog.Event { return e }
+	func() { f = other }()
+	f(logger.Info().Ctx(ctx)).Msg("captured func replaced by a value") // OK - a func not known is taken to keep its first argument
+}
+
+func badCapturedFuncAddressTaken(ctx context.Context, logger zerolog.Logger, keep func(*func() *zerolog.Event)) {
+	f := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	keep(&f)
+	f().Msg("captured func address taken") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+type funcHolder struct{ f *func() *zerolog.Event }
+
+func badCapturedFuncAddressStored(ctx context.Context, logger zerolog.Logger, h *funcHolder) {
+	f := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	func() { _ = f }()
+	h.f = &f
+	f().Msg("captured func address stored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+var globalEventFunc = func() *zerolog.Event { return log.Info() }
+
+func badGlobalFuncVariable(ctx context.Context) {
+	globalEventFunc().Msg("global func variable") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncFromChannel(ctx context.Context, ch chan func() *zerolog.Event) {
+	(<-ch)().Msg("func from a channel") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodCapturedFuncReplacedOnBranchInLoop(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	f := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
+	for range n {
+		if cond {
+			f = func() *zerolog.Event { return logger.Warn().Ctx(ctx) }
+		}
+	}
+	f().Msg("func replaced on a branch in a loop") // OK - both return an event with ctx
+}
+
 func badFuncLiteralReplacedOnBranch(ctx context.Context, logger zerolog.Logger, debug bool) {
 	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
 	if debug {
