@@ -535,3 +535,18 @@ func badUpdateContextThenReplaced(ctx context.Context, l zerolog.Logger, other z
 func badPointerParamWithoutUpdate(ctx context.Context, l *zerolog.Logger) {
 	l.Info().Msg("pointer param") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+func addServiceKey(c zerolog.Context) zerolog.Context {
+	return c.Str("service", "api")
+}
+
+func badUpdateContextWithDeclaredFunc(ctx context.Context, l zerolog.Logger) {
+	l.UpdateContext(addServiceKey)
+	l.Info().Msg("declared func without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// The func is not known statically, so it cannot count.
+func badUpdateContextWithFuncValue(ctx context.Context, l zerolog.Logger, update func(zerolog.Context) zerolog.Context) {
+	l.UpdateContext(update)
+	l.Info().Msg("func value") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

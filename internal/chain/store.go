@@ -67,13 +67,14 @@ func findAllStoredValues(addr ssa.Value) storedValues {
 	if !isLocal && !isParam {
 		return sv
 	}
+	refs := *addr.Referrers() // An Alloc or a Parameter always has them
 	for _, update := range updates {
-		if storeUpdateSeenByEveryRead(addr, update, plain, updates) {
+		if storeUpdateSeenByEveryRead(addr, refs, update, plain, updates) {
 			sv.updates = append(sv.updates, update.Val)
 		}
 	}
-	for _, call := range storeContextUpdatesOf(addr) {
-		if fn := storeContextUpdater(call); fn != nil && storeUpdateSeenByEveryRead(addr, call, plain, updates) {
+	for _, call := range storeContextUpdatesOf(addr, refs) {
+		if fn := storeContextUpdater(call); fn != nil && storeUpdateSeenByEveryRead(addr, refs, call, plain, updates) {
 			sv.contextUpdaters = append(sv.contextUpdaters, fn)
 		}
 	}
@@ -97,13 +98,14 @@ type storedValues struct {
 
 // storeUpdateSeenByEveryRead reports whether update, which changes the value
 // at addr, runs before every read of addr, and no plain store can run after
-// it. Loads that only feed a self-referential store are not reads: they are
-// how the store takes the value before it.
-func storeUpdateSeenByEveryRead(addr ssa.Value, update ssa.Instruction, plain, updates []*ssa.Store) bool {
-	refs := addr.Referrers()
-	if refs == nil {
-		return false
-	}
+// it. refs are the referrers of addr. Loads that only feed a self-referential
+// store are not reads: they are how the store takes the value before it.
+func storeUpdateSeenByEveryRead(
+	addr ssa.Value,
+	refs []ssa.Instruction,
+	update ssa.Instruction,
+	plain, updates []*ssa.Store,
+) bool {
 	feeding := make(map[ssa.Instruction]bool)
 	for _, u := range updates {
 		recordLoad := func(v ssa.Value) bool {
@@ -114,7 +116,7 @@ func storeUpdateSeenByEveryRead(addr ssa.Value, update ssa.Instruction, plain, u
 		}
 		derivesFrom(u.Val, recordLoad, unOpOperand, make(map[ssa.Value]bool))
 	}
-	for _, ref := range *refs {
+	for _, ref := range refs {
 		if ref == update || feeding[ref] {
 			continue
 		}
@@ -131,14 +133,11 @@ func storeUpdateSeenByEveryRead(addr ssa.Value, update ssa.Instruction, plain, u
 	return true
 }
 
-// storeContextUpdatesOf returns the calls of Logger.UpdateContext on addr.
-func storeContextUpdatesOf(addr ssa.Value) []*ssa.Call {
-	refs := addr.Referrers()
-	if refs == nil {
-		return nil
-	}
+// storeContextUpdatesOf returns the calls of Logger.UpdateContext on addr,
+// among refs, its referrers.
+func storeContextUpdatesOf(addr ssa.Value, refs []ssa.Instruction) []*ssa.Call {
 	var calls []*ssa.Call
-	for _, ref := range *refs {
+	for _, ref := range refs {
 		call, ok := ref.(*ssa.Call)
 		if !ok {
 			continue
@@ -153,10 +152,8 @@ func storeContextUpdatesOf(addr ssa.Value) []*ssa.Call {
 // storeContextUpdater returns the func that a Logger.UpdateContext call
 // passes, or nil when it is not known statically.
 func storeContextUpdater(call *ssa.Call) *ssa.Function {
-	if len(call.Call.Args) < 2 {
-		return nil
-	}
-	switch fn := call.Call.Args[1].(type) {
+	// The receiver comes first, so the func is the last argument.
+	switch fn := call.Call.Args[len(call.Call.Args)-1].(type) {
 	case *ssa.Function:
 		return fn
 	case *ssa.MakeClosure:
