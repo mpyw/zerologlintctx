@@ -57,13 +57,13 @@ type Checker struct {
 	ctxName  string                          // Context variable name of the function checked (for error messages)
 	report   func(pos token.Pos, msg string) // Receives each finding of the function checked
 	reported map[token.Pos]bool              // Deduplication: same position reported once
-	tracer   tracer                          // Traces each terminator's receiver
+	tracer   *tracer                         // Traces each terminator's receiver
 	scope    *types.Scope                    // The scope of the package of the function checked
 }
 
 // NewChecker creates a new checker for the functions of one package.
 func NewChecker() *Checker {
-	return &Checker{reported: make(map[token.Pos]bool)}
+	return &Checker{reported: make(map[token.Pos]bool), tracer: newTracer()}
 }
 
 // CheckFunction analyzes all instructions in fn, a function that has ctxName

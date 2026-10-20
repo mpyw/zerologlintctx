@@ -140,6 +140,13 @@ type tracer struct {
 	positions instrPositions
 }
 
+// newTracer creates a tracer with nothing found yet.
+//
+//declscope:shared // checker.go creates one per package
+func newTracer() *tracer {
+	return &tracer{hasCtx: make(map[tracedValue]bool), positions: make(instrPositions)}
+}
+
 // tracedValue is a value traced by one tracer type.
 type tracedValue struct {
 	v ssa.Value
@@ -153,9 +160,6 @@ type tracedValue struct {
 func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 	if tr.traceValue(v, tracerEvent, make(map[ssa.Value]bool)) {
 		return true
-	}
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
 	}
 	done := make(map[tracePointValue]bool)
 	before := tracePoint{block: at.Block(), index: tr.positions.of(at)}
@@ -428,9 +432,6 @@ func (tr *tracer) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bo
 	if !tr.traceUncached(v, t, visited) {
 		return false
 	}
-	if tr.hasCtx == nil {
-		tr.hasCtx = make(map[tracedValue]bool)
-	}
 	tr.hasCtx[key] = true
 	return true
 }
@@ -545,9 +546,6 @@ func (tr *tracer) traceSelectedValue(v ssa.Value, t tracerType, visited map[ssa.
 	}
 	slices.Reverse(selections)
 	root, path := aggregatePath(load.X)
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
-	}
 	stored, ok := storesReachingAt(root, append(path, selections...), load, tr.positions)
 	if !ok {
 		return false, false
@@ -585,9 +583,6 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Val
 // is already being traced is skipped: it is an update in a loop, which keeps
 // the context of the value before it.
 func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
-	}
 	stored, ok := storesReaching(addr, read, tr.positions)
 	if !ok {
 		return false, false
@@ -1043,9 +1038,6 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []ssa.Value, t tracerType, 
 //	l = l.With().Ctx(ctx).Logger()
 //	defer func() { l.Info().Msg("end") }()
 func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
-	if tr.positions == nil {
-		tr.positions = make(instrPositions)
-	}
 	stored := storesReachingClosure(mc.Bindings[idx], path, mc, tr.positions)
 	return tr.traceStored(stored, t, visited)
 }
