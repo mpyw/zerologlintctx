@@ -148,8 +148,9 @@ e.Ctx(ctx)
 e.Msg("x") // OK
 ```
 
-A deferred terminator runs at each return, so for one a `Ctx` call that runs
-before every return counts too.
+A deferred terminator runs at each return after the `defer` statement, so for
+one a `Ctx` call that runs on every path from the `defer` to a return counts
+too.
 
 A call that turns one zerolog type into another is a handoff. Tracing goes on
 from the call's receiver, with the receiver's tracer. Each handoff is declared
