@@ -539,7 +539,7 @@ func (tr *tracer) traceSelectedValue(v ssa.Value, t tracerType, visited map[ssa.
 	if tr.positions == nil {
 		tr.positions = make(instrPositions)
 	}
-	stored, ok := storesReachingAt(root, append(path, selections...), load, tr.updaterSetsCtx(visited), tr.positions)
+	stored, ok := storesReachingAt(root, append(path, selections...), load, tr.positions)
 	if !ok {
 		return false, false
 	}
@@ -574,25 +574,16 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Val
 //
 // Like the edges of a Phi, every value must have context, and a value that
 // is already being traced is skipped: it is an update in a loop, which keeps
-// the context of the value before it. A path through a Logger.UpdateContext
-// call whose returned Context has context on every path needs no value.
+// the context of the value before it.
 func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
 	if tr.positions == nil {
 		tr.positions = make(instrPositions)
 	}
-	stored, ok := storesReaching(addr, read, tr.updaterSetsCtx(visited), tr.positions)
+	stored, ok := storesReaching(addr, read, tr.positions)
 	if !ok {
 		return false, false
 	}
 	return tr.traceStored(stored, t, visited), true
-}
-
-// updaterSetsCtx reports whether every Context a func passed to
-// Logger.UpdateContext returns has context.
-func (tr *tracer) updaterSetsCtx(visited map[ssa.Value]bool) func(*ssa.Function) bool {
-	return func(fn *ssa.Function) bool {
-		return tr.traceReturns(fn, 0, tracerContext, maps.Clone(visited))
-	}
 }
 
 // traceStored reports whether what storesReaching found can be at an
@@ -601,7 +592,7 @@ func (tr *tracer) traceStored(stored storeReaching, t tracerType, visited map[ss
 	if stored.unknown {
 		return false
 	}
-	found := stored.covered
+	found := false
 	if stored.captured != nil {
 		if !tr.traceFreeVar(stored.captured, t, maps.Clone(visited)) {
 			return false
@@ -679,7 +670,7 @@ func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp st
 		return tr.traceReceiver(arg, call, t, visited)
 	}
 	root, path := aggregatePath(addr)
-	stored, ok := storesReachingAt(root, append(path, pp.path...), read, tr.updaterSetsCtx(visited), tr.positions)
+	stored, ok := storesReachingAt(root, append(path, pp.path...), read, tr.positions)
 	return ok && tr.traceStored(stored, t, visited)
 }
 
@@ -916,7 +907,7 @@ func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, t tracerType, visit
 	if tr.positions == nil {
 		tr.positions = make(instrPositions)
 	}
-	stored := storesReachingClosure(mc.Bindings[idx], mc, tr.updaterSetsCtx(visited), tr.positions)
+	stored := storesReachingClosure(mc.Bindings[idx], mc, tr.positions)
 	return tr.traceStored(stored, t, visited)
 }
 
@@ -932,8 +923,7 @@ func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, t tracerTy
 }
 
 // traceReturns reports whether the value at resultIndex from every return of
-// fn has context, as for an IIFE (Immediately Invoked Function Expression) or
-// a func passed to Logger.UpdateContext.
+// fn has context, as for an IIFE (Immediately Invoked Function Expression).
 func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, t tracerType, visited map[ssa.Value]bool) bool {
 	// Find all return statements and trace their values. A result of
 	// another type, such as an interface, is traced through to the value it

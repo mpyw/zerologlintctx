@@ -108,9 +108,9 @@ func (c callee) logsDirectly() bool {
 }
 
 // updatesLoggerContext reports whether c is Logger.UpdateContext, which
-// changes the Logger it runs on in place.
+// changes the fields of the Logger it runs on in place, but not its context.
 //
-//declscope:shared // store.go reads the context such a call sets
+//declscope:shared // store.go does not take such a call for a read
 func (c callee) updatesLoggerContext() bool {
 	recv := c.fn.Signature().Recv()
 	return c.fn.Name() == "UpdateContext" && recv != nil && typeutil.IsLogger(recv.Type())

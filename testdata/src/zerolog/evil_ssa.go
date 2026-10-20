@@ -1857,9 +1857,7 @@ func goodUpdateOnEveryCase(ctx context.Context, logger zerolog.Logger, n int) {
 	case 2:
 		l = logger.With().Ctx(ctx).Logger()
 	default:
-		l.UpdateContext(func(c zerolog.Context) zerolog.Context {
-			return c.Ctx(ctx)
-		})
+		l = l.With().Str("k", "v").Ctx(ctx).Logger()
 	}
 	l.Info().Msg("updated on every case") // OK - ctx set on every path
 }

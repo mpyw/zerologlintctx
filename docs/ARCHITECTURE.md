@@ -200,7 +200,6 @@ leads back to the Phi is.
 |--------------------|-----------------|
 | A store to the address | The value stored |
 | A store of the whole struct or array that holds it | What reaches the same field of the aggregate copied in |
-| `Logger.UpdateContext(fn)` on it, when every Context `fn` returns has context | Context, as `return c.Ctx(ctx)` gives |
 | The declaration of a local variable | Its zero value, which has nothing to trace |
 | The entry of the function, for a pointer parameter | The caller's value, which is not known, so it is reported |
 | The entry of a func literal only called where it is written, for a pointer parameter | What is at the same field of each argument when its call runs |
@@ -217,6 +216,10 @@ read of the address counts. An instruction that passes the address on, such
 as a closure that captures it, may read it later, so every store after it
 counts too. A closure that is only deferred runs at the returns after the
 `defer` statement, so the stores that reach those returns count instead.
+
+`Logger.UpdateContext(fn)` neither stops a path nor reads the Logger.
+zerolog keeps only the fields `fn` writes, and drops the context
+`Context.Ctx` sets in it, so the Logger has the context it had before.
 
 #### Address Matching
 
