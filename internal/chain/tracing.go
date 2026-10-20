@@ -476,7 +476,7 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 	case *ssa.Alloc:
 		return tr.traceAlloc(val, t, visited)
 	case *ssa.FreeVar:
-		return tr.traceFreeVar(val, t, visited)
+		return tr.traceFreeVar(val, nil, t, visited)
 	case *ssa.Parameter:
 		// A pointer parameter can be updated in place; see storesReaching.
 		if found, _ := tr.traceAddressAt(val, nil, t, visited); found {
@@ -584,7 +584,7 @@ func (tr *tracer) traceStored(stored storeReaching, t tracerType, visited map[ss
 	}
 	found := false
 	if stored.captured != nil {
-		if !tr.traceFreeVar(stored.captured, t, maps.Clone(visited)) {
+		if !tr.traceFreeVar(stored.captured, stored.capturedPath, t, maps.Clone(visited)) {
 			return false
 		}
 		found = true
@@ -890,8 +890,9 @@ func traceIsFuncValue(v ssa.Value, fn *ssa.Function) bool {
 	return v == fn
 }
 
-// traceFreeVar traces a FreeVar back to the value bound in MakeClosure.
-func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, t tracerType, visited map[ssa.Value]bool) bool {
+// traceFreeVar traces a FreeVar back to the variable bound in MakeClosure, at
+// path, the selections from it: nil for the variable itself.
+func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	fn := fv.Parent()
 	if fn == nil {
 		return false
@@ -916,26 +917,26 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, t tracerType, visited map[ssa.Va
 		if !ok || closureFn != fn {
 			continue
 		}
-		if idx < len(mc.Bindings) && tr.traceBinding(mc, idx, t, visited) {
+		if idx < len(mc.Bindings) && tr.traceBinding(mc, idx, path, t, visited) {
 			return true
 		}
 	}
 	return false
 }
 
-// traceBinding traces the variable that mc binds as its free variable idx, as
-// the closure reads it: what can be there when the closure runs, not at every
+// traceBinding traces what is at path in the variable that mc binds as its
+// free variable idx, as the closure reads it: what can be there when the closure runs, not at every
 // read of the variable in the function that makes it.
 //
 //	l := base
 //	l.Debug().Ctx(ctx).Msg("start") // reads base, before the closure is made
 //	l = l.With().Ctx(ctx).Logger()
 //	defer func() { l.Info().Msg("end") }()
-func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, t tracerType, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	if tr.positions == nil {
 		tr.positions = make(instrPositions)
 	}
-	stored := storesReachingClosure(mc.Bindings[idx], mc, tr.positions)
+	stored := storesReachingClosure(mc.Bindings[idx], path, mc, tr.positions)
 	return tr.traceStored(stored, t, visited)
 }
 

@@ -2155,6 +2155,54 @@ func badOnlyNilStoredToCapturedEvent(ctx context.Context, logger zerolog.Logger)
 	e.Msg("nil or no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A field or constant element of a captured variable is what is at the same
+// selections of the variable bound where the closure is made (#153).
+
+type capturedHolder struct {
+	l zerolog.Logger
+	e *zerolog.Event
+}
+
+func goodCapturedField(ctx context.Context, logger zerolog.Logger) {
+	var h capturedHolder
+	h.l = logger.With().Ctx(ctx).Logger()
+	func() {
+		h.l.Info().Msg("captured field") // OK - h.l has ctx
+	}()
+}
+
+func goodCapturedEventField(ctx context.Context, logger zerolog.Logger) {
+	h := capturedHolder{e: logger.Info().Ctx(ctx)}
+	func() {
+		h.e.Msg("captured event field") // OK - h.e has ctx
+	}()
+}
+
+func goodDeferredCapturedArrayElement(ctx context.Context, logger zerolog.Logger) {
+	var arr [2]zerolog.Logger
+	arr[1] = logger.With().Ctx(ctx).Logger()
+	defer func() {
+		arr[1].Info().Msg("deferred captured array element") // OK - arr[1] has ctx
+	}()
+}
+
+func badCapturedField(ctx context.Context, logger zerolog.Logger) {
+	h := capturedHolder{l: logger.With().Ctx(ctx).Logger()}
+	f := func() {
+		h.l.Info().Msg("captured field") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	h.l = logger
+	f()
+}
+
+func badCapturedFieldOther(ctx context.Context, logger zerolog.Logger) {
+	var h capturedHolder
+	h.l = logger
+	func() {
+		h.l.Info().Msg("captured field without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
 func goodStoreAfterClosureIsMade(ctx context.Context, logger zerolog.Logger) {
 	var l zerolog.Logger
 	f := func() { l.Info().Msg("store after closure") } // OK - the only store has ctx
