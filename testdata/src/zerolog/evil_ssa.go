@@ -1898,6 +1898,56 @@ func badClosureDeferredAndCalled(ctx context.Context, logger zerolog.Logger) {
 	l = l.With().Ctx(ctx).Logger()
 }
 
+// A closure reads what its captured variable can hold when it runs, not
+// what the variable held at a read before the closure was made (#136).
+
+func goodDeferredClosureAfterEarlierRead(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Str("req", "x").Logger()
+	l.Debug().Ctx(ctx).Msg("start")
+	l = l.With().Ctx(ctx).Logger()
+	defer func() {
+		l.Info().Msg("deferred after an earlier read") // OK - l has ctx when the closure runs
+	}()
+}
+
+func goodIIFEAfterEarlierRead(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	l.Debug().Ctx(ctx).Msg("start")
+	l = l.With().Ctx(ctx).Logger()
+	func() {
+		l.Info().Msg("iife after an earlier read") // OK - l has ctx when the closure runs
+	}()
+}
+
+func goodGoClosureEventAfterEarlierUse(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	_ = e.Str("k", "v")
+	e = logger.Info().Ctx(ctx)
+	go func() {
+		e.Msg("go closure after an earlier use") // OK - e has ctx when the closure runs
+	}()
+}
+
+func goodLoggerPointerPickedOnBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	a := logger.With().Ctx(ctx).Logger()
+	b := logger.With().Ctx(ctx).Str("k", "v").Logger()
+	_ = a.With()
+	p := &a
+	if cond {
+		p = &b
+	}
+	p.Info().Msg("logger pointer picked on a branch") // OK - both loggers have ctx
+}
+
+func badClosureStoreAfterIsMade(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	f := func() {
+		l.Info().Msg("store after the closure is made") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	l = logger
+	f()
+}
+
 func goodStoreAfterClosureIsMade(ctx context.Context, logger zerolog.Logger) {
 	var l zerolog.Logger
 	f := func() { l.Info().Msg("store after closure") } // OK - the only store has ctx

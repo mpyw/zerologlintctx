@@ -818,11 +818,27 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, t tracerType, visited map[ssa.Va
 		if !ok || closureFn != fn {
 			continue
 		}
-		if idx < len(mc.Bindings) && tr.traceValue(mc.Bindings[idx], t, visited) {
+		if idx < len(mc.Bindings) && tr.traceBinding(mc, idx, t, visited) {
 			return true
 		}
 	}
 	return false
+}
+
+// traceBinding traces the variable that mc binds as its free variable idx, as
+// the closure reads it: what can be there when the closure runs, not at every
+// read of the variable in the function that makes it.
+//
+//	l := base
+//	l.Debug().Ctx(ctx).Msg("start") // reads base, before the closure is made
+//	l = l.With().Ctx(ctx).Logger()
+//	defer func() { l.Info().Msg("end") }()
+func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, t tracerType, visited map[ssa.Value]bool) bool {
+	if tr.positions == nil {
+		tr.positions = make(instrPositions)
+	}
+	stored := storesReachingClosure(mc.Bindings[idx], mc, tr.updaterSetsCtx(visited), tr.positions)
+	return tr.traceStored(stored, t, visited)
 }
 
 // traceReceiver traces recv, the receiver of call, a method call. It is the

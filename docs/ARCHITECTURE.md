@@ -205,7 +205,7 @@ leads back to the Phi is.
 | The entry of the function, for a pointer parameter | The caller's value, which is not known, so it is reported |
 | The entry of a func literal only called where it is written, for a pointer parameter | What is at the same field of each argument when its call runs |
 | A copy of a struct or array parameter of such a func literal | What is at the same field of each argument when it is loaded |
-| The entry of a closure, for a variable it captures | The value bound where the closure is made |
+| The entry of a closure, for a variable it captures | What can be in the variable when the closure runs: what reaches the `make closure` and the stores after it, or what reaches the returns after a `defer` of it |
 
 This holds for a local variable, a pointer parameter, a captured variable, and
 a field or constant element of one, wherever the read runs. A field of a
