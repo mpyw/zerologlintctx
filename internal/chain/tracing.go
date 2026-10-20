@@ -716,12 +716,26 @@ func (tr *tracer) traceArguments(param *ssa.Parameter, t tracerType, visited map
 		return false
 	}
 	idx := slices.Index(fn.Params, param)
+	passesOn := func(arg ssa.Value) bool {
+		for v := arg; v != nil; v = traceEventReceiver(v) {
+			if v == param {
+				return true
+			}
+		}
+		return false
+	}
+	found := false
 	for _, call := range calls {
-		if !tr.traceValue(call.Common().Args[idx], t, maps.Clone(visited)) {
+		arg := call.Common().Args[idx]
+		if passesOn(arg) {
+			continue // Passed on by a recursive call, as an update in a loop is
+		}
+		if !tr.traceValue(arg, t, maps.Clone(visited)) {
 			return false
 		}
+		found = true
 	}
-	return true
+	return found
 }
 
 // traceFuncLiteralCalls finds every call that may run fn, a func literal. ok

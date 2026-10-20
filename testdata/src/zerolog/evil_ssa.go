@@ -405,6 +405,61 @@ func goodRecursiveFuncLiteralStructParam(ctx context.Context, logger zerolog.Log
 	walk(iifeLoggerHolder{l: logger.With().Ctx(ctx).Logger()}, n)
 }
 
+// A recursive call that passes an event parameter on, updated or not, keeps
+// the event it had (#171).
+
+func goodRecursiveFuncLiteralEventParam(ctx context.Context, logger zerolog.Logger, n int) {
+	var walk func(e *zerolog.Event, n int)
+	walk = func(e *zerolog.Event, n int) {
+		if n > 0 {
+			walk(e.Int("n", n), n-1)
+			return
+		}
+		e.Msg("recursive event param") // OK - the outer call passes ctx
+	}
+	walk(logger.Info().Ctx(ctx), n)
+}
+
+func badRecursiveFuncLiteralEventParam(ctx context.Context, logger zerolog.Logger, n int) {
+	var walk func(e *zerolog.Event, n int)
+	walk = func(e *zerolog.Event, n int) {
+		if n > 0 {
+			walk(e.Int("n", n), n-1)
+			return
+		}
+		e.Msg("recursive event param") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	walk(logger.Info(), n)
+}
+
+func badRecursiveFuncLiteralEventParamOnBranch(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	var walk func(e *zerolog.Event, n int)
+	walk = func(e *zerolog.Event, n int) {
+		if n > 0 {
+			next := e
+			if cond {
+				next = logger.Warn()
+			}
+			walk(next, n-1)
+			return
+		}
+		e.Msg("recursive event param on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	walk(logger.Info().Ctx(ctx), n)
+}
+
+func badRecursiveFuncLiteralEventParamReplaced(ctx context.Context, logger zerolog.Logger, n int) {
+	var walk func(e *zerolog.Event, n int)
+	walk = func(e *zerolog.Event, n int) {
+		if n > 0 {
+			walk(logger.Warn(), n-1)
+			return
+		}
+		e.Msg("recursive event param replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	walk(logger.Info().Ctx(ctx), n)
+}
+
 func badRecursiveFuncLiteralPointerParam(ctx context.Context, logger zerolog.Logger, n int) {
 	l := logger
 	var walk func(p *zerolog.Logger, n int)
