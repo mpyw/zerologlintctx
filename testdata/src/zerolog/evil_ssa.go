@@ -1816,6 +1816,33 @@ func goodDeferredClosureCtxAfterDefer(ctx context.Context, logger zerolog.Logger
 	l = l.With().Ctx(ctx).Logger()
 }
 
+func goodDeferredClosureInBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	if cond {
+		l := logger.With().Ctx(ctx).Logger()
+		defer func() {
+			l.Info().Msg("deferred closure in a branch") // OK - l has ctx wherever the closure runs (#135)
+		}()
+	}
+}
+
+func goodDeferredClosureInLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	for range n {
+		l := logger.With().Ctx(ctx).Logger()
+		defer func() {
+			l.Info().Msg("deferred closure in a loop") // OK - each l has ctx (#135)
+		}()
+	}
+}
+
+func badDeferredClosureInBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	if cond {
+		l := logger
+		defer func() {
+			l.Info().Msg("deferred closure in a branch, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}
+}
+
 func badDeferredClosureCtxBeforeOneReturn(ctx context.Context, logger zerolog.Logger, cond bool) {
 	l := logger
 	defer func() {
