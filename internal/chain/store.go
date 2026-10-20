@@ -85,19 +85,20 @@ func storesReaching(
 	return r, true
 }
 
-// storesReachingClosure finds the values that can be at v when the closure mc
-// makes reads it, as storesReaching does for an escape. v is a variable that
-// mc captures: a local variable, or a variable that the function making mc
-// captures in turn.
+// storesReachingClosure finds the values that can be at path, selections from
+// v, when the closure mc makes reads it, as storesReaching does for an escape.
+// v is a variable that mc captures: a local variable, or a variable that the
+// function making mc captures in turn.
 //
 //declscope:shared // tracing.go traces what a closure reads of what it captures
 func storesReachingClosure(
 	v ssa.Value,
+	path []ssa.Value,
 	mc *ssa.MakeClosure,
 	positions instrPositions,
 ) storeReaching {
 	var r storeReaching
-	w := &storeWalk{root: v, positions: positions, out: &r}
+	w := &storeWalk{root: v, path: path, positions: positions, out: &r}
 	w.walkEscape(mc)
 	return r
 }
@@ -161,9 +162,11 @@ type storeReaching struct {
 	// aggregate was copied whole from where no store can be seen.
 	unknown bool
 	// captured is the variable a closure captures, when some path carries
-	// the value it holds as the closure starts. Tracing it finds the value
-	// bound where the closure is made.
-	captured *ssa.FreeVar
+	// the value at capturedPath in it as the closure starts. Tracing it finds
+	// what is at the same selections of the variable bound where the closure
+	// is made.
+	captured     *ssa.FreeVar
+	capturedPath []ssa.Value
 	// params are the parameters of a func literal, with the selections from
 	// them, whose values some path carries from the entry of the func literal.
 	// Tracing them finds what the calls of the func literal pass.
@@ -276,8 +279,8 @@ func (w *storeWalk) reachEntry() {
 	if _, ok := w.root.(*ssa.Alloc); ok {
 		return
 	}
-	if fv, ok := w.root.(*ssa.FreeVar); ok && len(w.path) == 0 {
-		w.out.captured = fv
+	if fv, ok := w.root.(*ssa.FreeVar); ok {
+		w.out.captured, w.out.capturedPath = fv, slices.Clone(w.path)
 		return
 	}
 	if p, ok := storeIsFuncLiteralParam(w.root); ok {
