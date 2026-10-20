@@ -89,6 +89,20 @@ func goodIIFEMultipleReturnsAllCtx(ctx context.Context, logger zerolog.Logger, c
 	}().Msg("multiple returns all ctx") // OK - all return paths have ctx
 }
 
+func goodIIFEMultipleResultsUsesSecond(ctx context.Context, logger zerolog.Logger) {
+	_, e := func() (int, *zerolog.Event) {
+		return 1, logger.Info().Ctx(ctx)
+	}()
+	e.Msg("second result has ctx") // OK - the extracted event result has ctx
+}
+
+func badIIFEMultipleResultsUsesSecond(ctx context.Context, logger zerolog.Logger) {
+	_, e := func() (*zerolog.Event, *zerolog.Event) {
+		return logger.Info().Ctx(ctx), logger.Info()
+	}()
+	e.Msg("second result has no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A func literal that captures nothing is called as the function itself, not
 // through a closure (#112).
 
