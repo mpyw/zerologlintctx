@@ -230,9 +230,8 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 // traceUnOp handles SSA unary operations, especially pointer dereferences.
 func (tr *tracer) traceUnOp(unop *ssa.UnOp, t tracerType, visited map[ssa.Value]bool) bool {
 	if unop.Op == token.MUL {
-		storedValues := findAllStoredValues(unop.X)
-		if len(storedValues) > 0 {
-			return tr.traceAllStoredValues(storedValues, t, visited)
+		if found, ok := tr.traceStoredValues(unop.X, t, visited); ok {
+			return found
 		}
 	}
 	return tr.traceValue(unop.X, t, visited)
@@ -240,24 +239,34 @@ func (tr *tracer) traceUnOp(unop *ssa.UnOp, t tracerType, visited map[ssa.Value]
 
 // traceAlloc handles SSA Alloc nodes (local variable allocation).
 func (tr *tracer) traceAlloc(alloc *ssa.Alloc, t tracerType, visited map[ssa.Value]bool) bool {
-	storedValues := findAllStoredValues(alloc)
-	if len(storedValues) > 0 {
-		return tr.traceAllStoredValues(storedValues, t, visited)
-	}
-	return false
+	found, _ := tr.traceStoredValues(alloc, t, visited)
+	return found
 }
 
-// traceAllStoredValues traces all stored values and returns true only if ALL have context.
-// This is similar to Phi node handling - all paths must have context.
-func (tr *tracer) traceAllStoredValues(storedValues []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
-	for _, stored := range storedValues {
-		// Clone visited for independent tracing of each store
-		storeVisited := maps.Clone(visited)
-		if !tr.traceValue(stored, t, storeVisited) {
-			return false
+// traceStoredValues traces the values stored at addr. ok is false when no
+// plain store was found and no update has context.
+//
+// Like the edges of a Phi, every plain store must have context. An update
+// that every read sees (see findAllStoredValues) is enough on its own when it
+// has context: it either sets it itself, or reaches back to plain stores that
+// all have it.
+func (tr *tracer) traceStoredValues(addr ssa.Value, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
+	values, updates := findAllStoredValues(addr)
+	for _, update := range updates {
+		if tr.traceValue(update, t, maps.Clone(visited)) {
+			return true, true
 		}
 	}
-	return true
+	if len(values) == 0 {
+		return false, false
+	}
+	for _, stored := range values {
+		// Clone visited for independent tracing of each store
+		if !tr.traceValue(stored, t, maps.Clone(visited)) {
+			return false, true
+		}
+	}
+	return true, true
 }
 
 // traceFreeVar traces a FreeVar back to the value bound in MakeClosure.

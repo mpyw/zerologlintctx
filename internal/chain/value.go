@@ -77,6 +77,52 @@ func derivesFrom(
 	return false
 }
 
+// unOpOperand returns the operand of a unary operation, or nil for any other
+// value. As the next step of derivesFrom, it follows loads.
+func unOpOperand(v ssa.Value) ssa.Value {
+	if unop, ok := v.(*ssa.UnOp); ok {
+		return unop.X
+	}
+	return nil
+}
+
+// instrDominates reports whether a runs before b on every path to b.
+func instrDominates(a, b ssa.Instruction) bool {
+	if a.Block() != b.Block() {
+		return a.Block().Dominates(b.Block())
+	}
+	return instrIndex(a) < instrIndex(b)
+}
+
+// instrReaches reports whether b can run after a.
+func instrReaches(a, b ssa.Instruction) bool {
+	if a.Block() == b.Block() && instrIndex(a) < instrIndex(b) {
+		return true
+	}
+	seen := make(map[*ssa.BasicBlock]bool)
+	queue := slices.Clone(a.Block().Succs)
+	for len(queue) > 0 {
+		block := queue[0]
+		queue = queue[1:]
+		if seen[block] {
+			continue
+		}
+		seen[block] = true
+		if block == b.Block() {
+			return true
+		}
+		queue = append(queue, block.Succs...)
+	}
+	return false
+}
+
+// instrIndex returns the position of instr in its block.
+//
+//declscope:private
+func instrIndex(instr ssa.Instruction) int {
+	return slices.Index(instr.Block().Instrs, instr)
+}
+
 // isNilConst checks if a value is a nil constant.
 func isNilConst(v ssa.Value) bool {
 	c, ok := v.(*ssa.Const)
