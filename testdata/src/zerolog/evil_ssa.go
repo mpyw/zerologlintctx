@@ -175,6 +175,43 @@ func goodFuncLiteralReplacedOnTwoBranches(ctx context.Context, logger zerolog.Lo
 	ev().Msg("func literal replaced on two branches") // OK - all return an event with ctx
 }
 
+// A call of one of several func literals is a call of each, for their
+// parameters, and gives the result it is extracted for (#154).
+
+func goodFuncLiteralsOnBranchReturnParam(ctx context.Context, logger zerolog.Logger, cond bool) {
+	f := func(e *zerolog.Event) *zerolog.Event { return e }
+	if cond {
+		f = func(e *zerolog.Event) *zerolog.Event { return e.Str("k", "v") }
+	}
+	f(logger.Info().Ctx(ctx)).Msg("func literals on a branch return their param") // OK - the argument has ctx
+}
+
+func badFuncLiteralsOnBranchReturnParam(ctx context.Context, logger zerolog.Logger, cond bool) {
+	f := func(e *zerolog.Event) *zerolog.Event { return e }
+	if cond {
+		f = func(e *zerolog.Event) *zerolog.Event { return e.Str("k", "v") }
+	}
+	f(logger.Info()).Msg("func literals on a branch return their param") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralsOnBranchSecondResult(ctx context.Context, logger zerolog.Logger, cond bool) {
+	f := func() (*zerolog.Event, *zerolog.Event) { return logger.Info().Ctx(ctx), logger.Info() }
+	if cond {
+		f = func() (*zerolog.Event, *zerolog.Event) { return logger.Info().Ctx(ctx), logger.Warn() }
+	}
+	_, e := f()
+	e.Msg("func literals on a branch, second result") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodFuncLiteralsOnBranchSecondResult(ctx context.Context, logger zerolog.Logger, cond bool) {
+	f := func() (*zerolog.Event, *zerolog.Event) { return logger.Info(), logger.Info().Ctx(ctx) }
+	if cond {
+		f = func() (*zerolog.Event, *zerolog.Event) { return logger.Warn(), logger.Warn().Ctx(ctx) }
+	}
+	_, e := f()
+	e.Msg("func literals on a branch, second result") // OK - every second result has ctx
+}
+
 func badFuncLiteralReplacedOnBranch(ctx context.Context, logger zerolog.Logger, debug bool) {
 	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
 	if debug {
@@ -420,13 +457,23 @@ func badFuncLiteralPassedOnFromClosure(ctx context.Context, logger zerolog.Logge
 	func() { run(send) }()
 }
 
+// A call that may run another func too is still a call of the func literal.
+func goodFuncLiteralReplacedInClosure(ctx context.Context, logger zerolog.Logger, other func(*zerolog.Event)) {
+	send := func(e *zerolog.Event) {
+		e.Msg("replaced in closure") // OK - every call that may run it passes ctx
+	}
+	send(logger.Info().Ctx(ctx))
+	func() { send = other }()
+	send(logger.Warn().Ctx(ctx))
+}
+
 func badFuncLiteralReplacedInClosure(ctx context.Context, logger zerolog.Logger, other func(*zerolog.Event)) {
 	send := func(e *zerolog.Event) {
 		e.Msg("replaced in closure") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}
 	send(logger.Info().Ctx(ctx))
 	func() { send = other }()
-	send(logger.Warn().Ctx(ctx))
+	send(logger.Warn())
 }
 
 func badFuncLiteralVariableAddressTaken(ctx context.Context, logger zerolog.Logger, keep func(*func(*zerolog.Event))) {
@@ -435,6 +482,14 @@ func badFuncLiteralVariableAddressTaken(ctx context.Context, logger zerolog.Logg
 	}
 	keep(&send)
 	send(logger.Info().Ctx(ctx))
+}
+
+func badFuncLiteralReturned(ctx context.Context, logger zerolog.Logger) func(*zerolog.Event) {
+	send := func(e *zerolog.Event) {
+		e.Msg("returned") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+	send(logger.Info().Ctx(ctx))
+	return send
 }
 
 func badFuncLiteralNeverCalled(ctx context.Context, logger zerolog.Logger) {

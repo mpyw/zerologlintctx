@@ -426,24 +426,14 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 
 	c, declared := calleeOf(&call.Call)
 	if !declared {
-		sfn := call.Call.StaticCallee()
-		if fns, ok := traceFuncLiteralsOf(call.Call.Value, make(map[ssa.Value]bool)); sfn == nil && ok && len(fns) > 0 {
-			// A variable that holds one of several func literals
-			return !slices.ContainsFunc(fns, func(fn *ssa.Function) bool {
-				return !tr.traceReturns(fn, 0, t, maps.Clone(visited))
-			})
+		if found, ok := tr.traceFuncLiteralResult(call, 0, t, visited); ok {
+			return found
 		}
-		if sfn == nil {
-			// Dynamic dispatch: the method is not known
-			if len(call.Call.Args) == 0 {
-				return false
-			}
-			return tr.traceReceiver(call.Call.Args[0], call, t, visited)
+		if call.Call.StaticCallee() != nil || len(call.Call.Args) == 0 {
+			return false
 		}
-		// A func literal, called on the spot as an IIFE (Immediately Invoked
-		// Function Expression) or through a variable. One that captures
-		// nothing is called as the function itself, not as a closure.
-		return sfn.Parent() != nil && tr.traceReturns(sfn, 0, t, visited)
+		// Dynamic dispatch: the method is not known
+		return tr.traceReceiver(call.Call.Args[0], call, t, visited)
 	}
 
 	if t.isCtxSetBy(c) {
@@ -474,8 +464,8 @@ func (tr *tracer) traceCommon(v ssa.Value, t tracerType, visited map[ssa.Value]b
 		}
 	case *ssa.Extract:
 		if call, ok := val.Tuple.(*ssa.Call); ok {
-			if sfn := call.Call.StaticCallee(); sfn != nil && sfn.Parent() != nil {
-				return tr.traceReturns(sfn, val.Index, t, visited)
+			if found, ok := tr.traceFuncLiteralResult(call, val.Index, t, visited); ok {
+				return found
 			}
 		}
 		return tr.traceValue(val.Tuple, t, visited)
@@ -716,42 +706,50 @@ func (tr *tracer) traceArguments(param *ssa.Parameter, t tracerType, visited map
 	return true
 }
 
-// traceFuncLiteralCalls finds every call of fn, a func literal. ok is false
-// when fn is a declared function, or may be called where it cannot be seen.
+// traceFuncLiteralCalls finds every call that may run fn, a func literal. ok
+// is false when fn is a declared function, or may be called where it cannot
+// be seen.
 //
 // A func literal can only be used inside the function it is written in, and
 // the closures declared there. It may be kept in a variable on the way, and a
 // closure that calls it captures that variable:
 //
-//	t2 = new func(e *Event) (logIt)  // a variable that holds fn
+//	t2 = new func(e *Event) (logIt)  // a variable that may hold fn
 //	*t2 = f$1
-//	t3 = *t2                         // holds fn
-//	t4 = t3(t6)                      // a call of fn
+//	t3 = *t2                         // may be fn
+//	t4 = t3(t6)                      // a call that may run fn
 //	t8 = make closure f$2 [t2]       // logIt is a free variable of f$2
 //
-// Each value that holds fn may only be called, or stored to such a local
-// variable.
-// Each such variable may only be stored fn, loaded, or captured. Any other
-// use passes fn on, to be called with anything.
+// A value that may be fn is fn, a closure of it, a load of such a variable,
+// or a Phi with such an edge. It may only be called, stored to a local
+// variable, or merged in a Phi. Such a variable may only be stored to,
+// loaded, or captured. Any other use passes fn on, to be called with anything.
+// A call that may run another func too still counts: every call that may
+// run fn must pass an argument with context.
 func traceFuncLiteralCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
 	parent := fn.Parent()
 	if parent == nil {
 		return nil, false // A declared function can be called from anywhere
 	}
-	vars := make(map[ssa.Value]bool) // The variables that hold fn
-	holdsFn := func(v ssa.Value) bool {
+	vars := make(map[ssa.Value]bool) // The variables that may hold fn
+	phis := make(map[ssa.Value]bool) // The Phis that may be fn
+	mayBeFn := func(v ssa.Value) bool {
 		if load, ok := v.(*ssa.UnOp); ok && load.Op == token.MUL {
 			return vars[load.X]
 		}
-		return traceIsFuncValue(v, fn)
+		return phis[v] || traceIsFuncValue(v, fn)
 	}
 	for changed := true; changed; {
 		changed = false
 		for instr := range traceInstrsInScope(parent) {
 			switch in := instr.(type) {
 			case *ssa.Store:
-				if _, isLocal := in.Addr.(*ssa.Alloc); isLocal && holdsFn(in.Val) && !vars[in.Addr] {
+				if _, isLocal := in.Addr.(*ssa.Alloc); isLocal && mayBeFn(in.Val) && !vars[in.Addr] {
 					vars[in.Addr], changed = true, true
+				}
+			case *ssa.Phi:
+				if !phis[in] && slices.ContainsFunc(in.Edges, mayBeFn) {
+					phis[in], changed = true, true
 				}
 			case *ssa.MakeClosure:
 				closure, _ := in.Fn.(*ssa.Function)
@@ -769,17 +767,15 @@ func traceFuncLiteralCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bo
 		}
 		for _, op := range instr.Operands(nil) {
 			switch {
-			case holdsFn(*op):
-				if call, isCall := instr.(ssa.CallInstruction); isCall && op == &call.Common().Value {
+			case mayBeFn(*op):
+				if !traceUsesFuncValue(instr, op, vars) {
+					return nil, false // The func is passed on, and may be called where it cannot be seen
+				}
+				if call, isCall := instr.(ssa.CallInstruction); isCall {
 					calls = append(calls, call)
-					continue
 				}
-				if store, isStore := instr.(*ssa.Store); isStore && op == &store.Val && vars[store.Addr] {
-					continue // To a local variable that holds fn
-				}
-				return nil, false // The func is passed on, and may be called where it cannot be seen
 			case vars[*op]:
-				if !traceUsesFuncVar(instr, op, holdsFn) {
+				if !traceUsesFuncVar(instr) {
 					return nil, false
 				}
 			}
@@ -788,17 +784,30 @@ func traceFuncLiteralCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bo
 	return calls, true
 }
 
-// traceUsesFuncVar reports whether instr uses op, a variable that holds a func
-// literal, in a way that keeps it from being called where it cannot be seen:
-// a store of the func, a load, or a capture by a closure.
-func traceUsesFuncVar(instr ssa.Instruction, op *ssa.Value, holdsFn func(ssa.Value) bool) bool {
+// traceUsesFuncValue reports whether instr uses op, a value that may be a
+// func literal, in a way that keeps it from being called where it cannot be
+// seen: a call of it, a store of it to a local variable in vars, or a Phi.
+func traceUsesFuncValue(instr ssa.Instruction, op *ssa.Value, vars map[ssa.Value]bool) bool {
 	switch in := instr.(type) {
+	case ssa.CallInstruction:
+		return op == &in.Common().Value
 	case *ssa.Store:
-		return op == &in.Addr && holdsFn(in.Val)
+		return op == &in.Val && vars[in.Addr]
+	case *ssa.Phi:
+		return true
+	}
+	return false
+}
+
+// traceUsesFuncVar reports whether instr, a use of a variable that may hold a
+// func literal, keeps it from being called where it cannot be seen: a store
+// to it, a load, or a capture by a closure.
+func traceUsesFuncVar(instr ssa.Instruction) bool {
+	switch in := instr.(type) {
+	case *ssa.Store, *ssa.MakeClosure:
+		return true
 	case *ssa.UnOp:
 		return in.Op == token.MUL
-	case *ssa.MakeClosure:
-		return true
 	}
 	return false
 }
@@ -820,6 +829,25 @@ func traceInstrsInScope(fn *ssa.Function) iter.Seq[ssa.Instruction] {
 			}
 		}
 	}
+}
+
+// traceFuncLiteralResult reports whether the result idx of call has context,
+// when call runs a func literal: one called on the spot as an IIFE
+// (Immediately Invoked Function Expression), through a variable, or one of
+// several a variable can hold. One that captures nothing is called as the
+// function itself, not as a closure. ok is false when call runs no func
+// literal that is known.
+func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, t tracerType, visited map[ssa.Value]bool) (found, ok bool) {
+	fns, ok := traceFuncLiteralsOf(call.Call.Value, make(map[ssa.Value]bool))
+	if sfn := call.Call.StaticCallee(); sfn != nil {
+		fns, ok = []*ssa.Function{sfn}, sfn.Parent() != nil
+	}
+	if !ok || len(fns) == 0 {
+		return false, false
+	}
+	return !slices.ContainsFunc(fns, func(fn *ssa.Function) bool {
+		return !tr.traceReturns(fn, idx, t, maps.Clone(visited))
+	}), true
 }
 
 // traceFuncLiteralsOf returns the func literals that v, a Phi, can be, when
