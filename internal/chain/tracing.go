@@ -596,8 +596,8 @@ func (tr *tracer) traceStored(stored storeReaching, t tracerType, visited map[ss
 		found = true
 	}
 	for _, v := range stored.values {
-		if visited[v] {
-			continue
+		if visited[v] || isNilConst(v) {
+			continue // A nil event logs nothing, as for an edge of a Phi
 		}
 		// Each store is traced on its own copy of visited, unless it is the
 		// only one: copying on every step of a long chain of updates would
