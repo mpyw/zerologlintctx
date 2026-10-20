@@ -3,6 +3,7 @@ package chain
 import (
 	"go/token"
 	"go/types"
+	"iter"
 	"maps"
 	"slices"
 
@@ -373,36 +374,123 @@ func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, t tracerT
 //	}(logger.Info().Ctx(ctx))
 func (tr *tracer) traceArguments(param *ssa.Parameter, t tracerType, visited map[ssa.Value]bool) bool {
 	fn := param.Parent()
-	parent := fn.Parent()
-	if parent == nil {
-		return false // A declared function can be called from anywhere
-	}
-	idx := slices.Index(fn.Params, param)
-	var calls []*ssa.CallCommon
-	for instr := range instrsIn(parent) {
-		if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == fn {
-			continue // Where the closure is made
-		}
-		call, isCall := instr.(ssa.CallInstruction)
-		for _, op := range instr.Operands(nil) {
-			if !traceIsFuncValue(*op, fn) {
-				continue
-			}
-			if !isCall || op != &call.Common().Value {
-				return false // The func is passed on, and may be called where it cannot be seen
-			}
-			calls = append(calls, call.Common())
-		}
-	}
-	if len(calls) == 0 {
+	calls, ok := traceFuncLiteralCalls(fn)
+	if !ok || len(calls) == 0 {
 		return false
 	}
+	idx := slices.Index(fn.Params, param)
 	for _, cc := range calls {
 		if !tr.traceValue(cc.Args[idx], t, maps.Clone(visited)) {
 			return false
 		}
 	}
 	return true
+}
+
+// traceFuncLiteralCalls finds every call of fn, a func literal. ok is false
+// when fn is a declared function, or may be called where it cannot be seen.
+//
+// A func literal can only be used inside the function it is written in, and
+// the closures declared there. It may be kept in a variable on the way, and a
+// closure that calls it captures that variable:
+//
+//	t2 = new func(e *Event) (logIt)  // a variable that holds fn
+//	*t2 = f$1
+//	t3 = *t2                         // holds fn
+//	t4 = t3(t6)                      // a call of fn
+//	t8 = make closure f$2 [t2]       // logIt is a free variable of f$2
+//
+// Each value that holds fn may only be called, or stored to such a local
+// variable.
+// Each such variable may only be stored fn, loaded, or captured. Any other
+// use passes fn on, to be called with anything.
+func traceFuncLiteralCalls(fn *ssa.Function) (calls []*ssa.CallCommon, ok bool) {
+	parent := fn.Parent()
+	if parent == nil {
+		return nil, false // A declared function can be called from anywhere
+	}
+	vars := make(map[ssa.Value]bool) // The variables that hold fn
+	holdsFn := func(v ssa.Value) bool {
+		if load, ok := v.(*ssa.UnOp); ok && load.Op == token.MUL {
+			return vars[load.X]
+		}
+		return traceIsFuncValue(v, fn)
+	}
+	for changed := true; changed; {
+		changed = false
+		for instr := range traceInstrsInScope(parent) {
+			switch in := instr.(type) {
+			case *ssa.Store:
+				if _, isLocal := in.Addr.(*ssa.Alloc); isLocal && holdsFn(in.Val) && !vars[in.Addr] {
+					vars[in.Addr], changed = true, true
+				}
+			case *ssa.MakeClosure:
+				closure, _ := in.Fn.(*ssa.Function)
+				for i, b := range in.Bindings {
+					if vars[b] && closure != nil && !vars[closure.FreeVars[i]] {
+						vars[closure.FreeVars[i]], changed = true, true
+					}
+				}
+			}
+		}
+	}
+	for instr := range traceInstrsInScope(parent) {
+		if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == fn {
+			continue // Where the closure is made
+		}
+		for _, op := range instr.Operands(nil) {
+			switch {
+			case holdsFn(*op):
+				if call, isCall := instr.(ssa.CallInstruction); isCall && op == &call.Common().Value {
+					calls = append(calls, call.Common())
+					continue
+				}
+				if store, isStore := instr.(*ssa.Store); isStore && op == &store.Val && vars[store.Addr] {
+					continue // To a local variable that holds fn
+				}
+				return nil, false // The func is passed on, and may be called where it cannot be seen
+			case vars[*op]:
+				if !traceUsesFuncVar(instr, op, holdsFn) {
+					return nil, false
+				}
+			}
+		}
+	}
+	return calls, true
+}
+
+// traceUsesFuncVar reports whether instr uses op, a variable that holds a func
+// literal, in a way that keeps it from being called where it cannot be seen:
+// a store of the func, a load, or a capture by a closure.
+func traceUsesFuncVar(instr ssa.Instruction, op *ssa.Value, holdsFn func(ssa.Value) bool) bool {
+	switch in := instr.(type) {
+	case *ssa.Store:
+		return op == &in.Addr && holdsFn(in.Val)
+	case *ssa.UnOp:
+		return in.Op == token.MUL
+	case *ssa.MakeClosure:
+		return true
+	}
+	return false
+}
+
+// traceInstrsInScope yields every instruction of fn, and of the func literals
+// declared in it, at any depth.
+func traceInstrsInScope(fn *ssa.Function) iter.Seq[ssa.Instruction] {
+	return func(yield func(ssa.Instruction) bool) {
+		for instr := range instrsIn(fn) {
+			if !yield(instr) {
+				return
+			}
+		}
+		for _, anon := range fn.AnonFuncs {
+			for instr := range traceInstrsInScope(anon) {
+				if !yield(instr) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // traceIsFuncValue reports whether v is fn, or a closure of it.
