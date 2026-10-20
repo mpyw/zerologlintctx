@@ -113,6 +113,15 @@ func (p instrPositions) reaches(a, b ssa.Instruction) bool {
 // after returns a test of whether an instruction can run after a. It finds
 // the blocks that follow a once, for every instruction it is asked about.
 func (p instrPositions) after(a ssa.Instruction) func(ssa.Instruction) bool {
+	following := p.following(a)
+	return func(b ssa.Instruction) bool {
+		return following[b.Block()] || a.Block() == b.Block() && p.of(a) < p.of(b)
+	}
+}
+
+// following returns the blocks that can run after the block of a: its
+// successors, theirs, and so on. The block of a is among them only in a loop.
+func (p instrPositions) following(a ssa.Instruction) map[*ssa.BasicBlock]bool {
 	following := make(map[*ssa.BasicBlock]bool)
 	queue := slices.Clone(a.Block().Succs)
 	for len(queue) > 0 {
@@ -124,9 +133,7 @@ func (p instrPositions) after(a ssa.Instruction) func(ssa.Instruction) bool {
 		following[block] = true
 		queue = append(queue, block.Succs...)
 	}
-	return func(b ssa.Instruction) bool {
-		return following[b.Block()] || a.Block() == b.Block() && p.of(a) < p.of(b)
-	}
+	return following
 }
 
 // isNilConst checks if a value is a nil constant.

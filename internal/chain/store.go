@@ -110,9 +110,9 @@ func storesReachingClosure(
 // unless the variable is declared in a loop, and one that is only called reads
 // it at each call.
 func (w *storeWalk) walkEscape(esc ssa.Instruction) {
-	if rets, deferred := storeDeferredReturns(esc, w.positions); deferred && !w.declaredInLoop() {
-		for _, ret := range rets {
-			w.walkBefore(ret)
+	if defers, deferred := storeDeferredOnly(esc); deferred && !w.declaredInLoop() {
+		for _, d := range defers {
+			w.walkDeferred(d)
 		}
 		return
 	}
@@ -156,18 +156,16 @@ func (w *storeWalk) declaredInLoop() bool {
 	return ok && w.positions.reaches(alloc, alloc)
 }
 
-// storeDeferredReturns reports whether esc is a closure whose only uses are
-// defer statements that call it, and returns the returns that can run after
-// one of them, where the closure runs. The recover block, reached after a
-// panic, is not among them.
+// storeDeferredOnly reports whether esc is a closure whose only uses are defer
+// statements that call it, and returns them. The closure runs at the returns
+// after each:
 //
 //	defer func() { l.Info().Msg("x") }() // reads l at each return after it
-func storeDeferredReturns(esc ssa.Instruction, positions instrPositions) (rets []ssa.Instruction, ok bool) {
+func storeDeferredOnly(esc ssa.Instruction) (defers []*ssa.Defer, ok bool) {
 	mc, ok := esc.(*ssa.MakeClosure)
 	if !ok {
 		return nil, false
 	}
-	var defers []*ssa.Defer
 	for _, ref := range *mc.Referrers() {
 		d, isDefer := ref.(*ssa.Defer)
 		if !isDefer || d.Call.Value != mc {
@@ -175,21 +173,75 @@ func storeDeferredReturns(esc ssa.Instruction, positions instrPositions) (rets [
 		}
 		defers = append(defers, d)
 	}
-	return storeReturnsAfter(defers, positions), true
+	return defers, true
 }
 
-// storeReturnsAfter returns the returns that can run after one of defers,
-// where what they defer runs. The recover block, reached after a panic, is
-// not among them.
-func storeReturnsAfter(defers []*ssa.Defer, positions instrPositions) []ssa.Instruction {
+// walkDeferred walks to the returns after d, where what d defers runs, along
+// the paths that pass d only: on a path that skips d, nothing is deferred.
+// Each path goes back to d, and from there on as walkBefore goes.
+//
+//	l := base
+//	if cond {
+//	    defer func() { l.Info().Msg("x") }()
+//	    l = l.With().Ctx(ctx).Logger() // the only store on a path through d
+//	}
+//	return                              // the path that skips the if defers nothing
+func (w *storeWalk) walkDeferred(d *ssa.Defer) {
+	type step struct {
+		block *ssa.BasicBlock
+		to    int // Index after the last instruction of block to look at
+	}
+	following := w.positions.following(d)
+	start := w.positions.of(d) + 1
+	reachesD := false
+	var queue []step
+	for _, ret := range storeReturnsAfter(d, w.positions) {
+		queue = append(queue, step{ret.Block(), w.positions.of(ret)})
+	}
+	seen := make(map[*ssa.BasicBlock]bool)
+	for len(queue) > 0 {
+		s := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		from := 0
+		if s.block == d.Block() {
+			from = start // Before it, the path goes on from d
+		}
+		stopped := false
+		for i := s.to - 1; i >= from && !stopped; i-- {
+			stopped = w.stopsAt(s.block.Instrs[i])
+		}
+		if stopped {
+			continue
+		}
+		if s.block == d.Block() {
+			reachesD = true
+			continue
+		}
+		for _, pred := range s.block.Preds {
+			if following[pred] || pred == d.Block() {
+				if !seen[pred] {
+					seen[pred] = true
+					queue = append(queue, step{pred, len(pred.Instrs)})
+				}
+			}
+		}
+	}
+	if reachesD {
+		w.walkBefore(d)
+	}
+}
+
+// storeReturnsAfter returns the returns that can run after d, where what it
+// defers runs. The recover block, reached after a panic, is not among them.
+func storeReturnsAfter(d *ssa.Defer, positions instrPositions) []ssa.Instruction {
 	var rets []ssa.Instruction
-	fn := defers[0].Parent()
+	fn := d.Parent()
 	for _, b := range fn.Blocks {
 		ret, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return)
 		if !isReturn || b == fn.Recover {
 			continue
 		}
-		if slices.ContainsFunc(defers, func(d *ssa.Defer) bool { return positions.reaches(d, ret) }) {
+		if positions.reaches(d, ret) {
 			rets = append(rets, ret)
 		}
 	}
@@ -202,9 +254,7 @@ func storeReturnsAfter(defers []*ssa.Defer, positions instrPositions) []ssa.Inst
 // escape too, since a return may meet a later iteration's variable first.
 func (w *storeWalk) walkToRead(read ssa.Instruction) {
 	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() {
-		for _, ret := range storeReturnsAfter([]*ssa.Defer{d}, w.positions) {
-			w.walkBefore(ret)
-		}
+		w.walkDeferred(d)
 		return
 	}
 	switch read.(type) {

@@ -2252,6 +2252,41 @@ func badDeferredClosureCtxOnLaterIteration(ctx context.Context, logger zerolog.L
 	}
 }
 
+// On a path that skips a defer statement, nothing is deferred, and what is
+// stored there does not count.
+
+func goodDeferredClosureInBranchUpdatedAfter(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger
+	if cond {
+		defer func() {
+			l.Info().Msg("deferred in a branch, updated after") // OK - l has ctx at every return the defer reaches
+		}()
+		l = l.With().Ctx(ctx).Logger()
+	}
+}
+
+func badDeferredClosureInBranchUpdatedOnOnePath(ctx context.Context, logger zerolog.Logger, a, b bool) {
+	l := logger
+	if a {
+		defer func() {
+			l.Info().Msg("deferred in a branch, updated on one path") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+		if b {
+			l = l.With().Ctx(ctx).Logger()
+		}
+	}
+}
+
+func goodDeferredPointerArgInBranchUpdatedAfter(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger
+	if cond {
+		defer func(p *zerolog.Logger) {
+			p.Info().Msg("deferred pointer in a branch, updated after") // OK - l has ctx at every return the defer reaches
+		}(&l)
+		l = l.With().Ctx(ctx).Logger()
+	}
+}
+
 func badDeferredClosureInBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
 	if cond {
 		l := logger
