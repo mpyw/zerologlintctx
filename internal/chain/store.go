@@ -415,13 +415,14 @@ func (w *storeWalk) copied(store *ssa.Store, rest []ssa.Value) {
 func storePathKey(path []ssa.Value) string {
 	var b strings.Builder
 	for _, step := range path {
-		if fa, ok := step.(*ssa.FieldAddr); ok {
-			fmt.Fprintf(&b, ".%d", fa.Field)
+		field, index := storeSelection(step)
+		if index == nil {
+			fmt.Fprintf(&b, ".%d", field)
 			continue
 		}
 		// A constant is named by its value, and any other index by the value
 		// it is, which only matches itself
-		fmt.Fprintf(&b, "[%s]", step.(*ssa.IndexAddr).Index.Name())
+		fmt.Fprintf(&b, "[%s]", index.Name())
 	}
 	return b.String()
 }
@@ -512,13 +513,27 @@ func storePathsMatch(a, b []ssa.Value) bool {
 // storeSelectsSame reports whether two selections pick the same field, or the
 // same constant element, each from its own aggregate.
 func storeSelectsSame(a, b ssa.Value) bool {
-	if x, ok := a.(*ssa.FieldAddr); ok {
-		y, ok := b.(*ssa.FieldAddr)
-		return ok && x.Field == y.Field
+	fa, ia := storeSelection(a)
+	fb, ib := storeSelection(b)
+	if ia == nil || ib == nil {
+		return ia == nil && ib == nil && fa == fb
 	}
-	x := a.(*ssa.IndexAddr) // aggregatePath makes no other selection
-	y, ok := b.(*ssa.IndexAddr)
-	return ok && constIndexesMatch(x.Index, y.Index)
+	return constIndexesMatch(ia, ib)
+}
+
+// storeSelection returns what a selection in a path picks: the field, for a
+// field of an address or of a struct value, or the index, nil for a field, for
+// an element of an address or of an array value. A path holds no other value.
+func storeSelection(step ssa.Value) (field int, index ssa.Value) {
+	switch s := step.(type) {
+	case *ssa.FieldAddr:
+		return s.Field, nil
+	case *ssa.Field:
+		return s.Field, nil
+	case *ssa.IndexAddr:
+		return 0, s.Index
+	}
+	return 0, step.(*ssa.Index).Index
 }
 
 // storeContextUpdater returns the func that a Logger.UpdateContext call
