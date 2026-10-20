@@ -124,7 +124,21 @@ func (t tracerType) handoffAt(call *ssa.Call, callee *ssa.Function, recv *types.
 // tracer follows SSA values backwards to find whether context was set.
 //
 //declscope:shared // checker.go holds one per checked function
-type tracer struct{}
+type tracer struct {
+	// hasCtx remembers each value found to have context, per tracer type.
+	// Only found results are kept: a value not found may have been cut short
+	// by a cycle, and found elsewhere. Without it, a chain of Phis whose edges
+	// all lead to the previous one is traced once per path, 2^n times in all.
+	//
+	//declscope:private
+	hasCtx map[tracedValue]bool
+}
+
+// tracedValue is a value traced by one tracer type.
+type tracedValue struct {
+	v ssa.Value
+	t tracerType
+}
 
 // eventHasCtx traces an Event value to check if .Ctx() was called.
 //
@@ -143,6 +157,7 @@ func (tr *tracer) eventHasCtx(v ssa.Value) bool {
 //	│  Input: ssa.Value                                                │
 //	│     │                                                            │
 //	│     ├─ Already visited? → return false (cycle detection)        │
+//	│     ├─ Found before? → return true (cached)                     │
 //	│     │                                                            │
 //	│     ├─ Is *ssa.Call?                                             │
 //	│     │     │                                                      │
@@ -162,8 +177,25 @@ func (tr *tracer) traceValue(v ssa.Value, t tracerType, visited map[ssa.Value]bo
 	if visited[v] {
 		return false
 	}
+	key := tracedValue{v: v, t: t}
+	if tr.hasCtx[key] {
+		return true
+	}
 	visited[v] = true
 
+	if !tr.traceUncached(v, t, visited) {
+		return false
+	}
+	if tr.hasCtx == nil {
+		tr.hasCtx = make(map[tracedValue]bool)
+	}
+	tr.hasCtx[key] = true
+	return true
+}
+
+// traceUncached does the work of traceValue for a value not yet found to
+// have context.
+func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	call, ok := v.(*ssa.Call)
 	if !ok {
 		return tr.traceCommon(v, t, visited)
