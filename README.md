@@ -199,7 +199,14 @@ func handler(ctx context.Context, log zerolog.Logger) {
 }
 ```
 
-The comment can be on the same line or the line above. Write a reason after `//`. A reason after ` - ` also works, for compatibility.
+Place the comment at the end of the line, or on a line of its own above the code:
+
+| Placement | Reaches |
+|-----------|---------|
+| At the end of a line of code | That line only |
+| On a line of its own | The line below. A call chain that starts there is reached even when it spans several lines |
+
+Write a reason after `//`. A reason after ` - ` also works, for compatibility.
 
 Any other comment that starts with `zerologlintctx:`, such as `//zerologlintctx:bogus`, does nothing and is reported. So is an ignore that suppresses nothing.
 

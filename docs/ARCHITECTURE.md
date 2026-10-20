@@ -204,6 +204,8 @@ event.Send()
 3. `ignore` is the only name. Any other name, such as `ignre` or `ignore-reason`, is an unknown directive. `go/ast` takes the name up to the first space, so these parse as directives and would otherwise do nothing without a report.
 4. `ignore` takes no argument. A reason after ` - ` is kept for compatibility. Other text, such as `//zerologlintctx:ignore intentionally detached`, is reported.
 
+An ignore at the end of a line of code reaches that line only. An ignore on a line of its own reaches the line below. A report sits at the `(` of the reported call, so a chain that spans several lines is also reached from the line where its call expression starts. `directive.Scan` records that start for every call, and whether each ignore follows code on its line, from the file's AST.
+
 None of these reported comments silences anything (#60). Guessing what was meant would silence a report nobody asked to silence.
 
 ## Known Limitations
