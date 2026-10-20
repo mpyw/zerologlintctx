@@ -290,7 +290,8 @@ func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before tracePoint, done map[tr
 }
 
 // traceCtxSetOnEdges reports whether each edge of phi, apart from nil, has
-// Event.Ctx called on it before the end of the block it comes from.
+// Event.Ctx called on it before the end of the block it comes from, or has
+// context of its own.
 func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool) bool {
 	found := false
 	for i, edge := range phi.Edges {
@@ -298,7 +299,9 @@ func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool
 			continue
 		}
 		pred := phi.Block().Preds[i]
-		if !tr.traceCtxSetInPlace(edge, tracePoint{block: pred, index: len(pred.Instrs)}, done) {
+		// An edge with context of its own needs no Ctx call in place
+		if !tr.traceCtxSetInPlace(edge, tracePoint{block: pred, index: len(pred.Instrs)}, done) &&
+			!tr.traceValue(edge, tracerEvent, make(map[ssa.Value]bool)) {
 			return false
 		}
 		found = true
@@ -351,7 +354,10 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 			if calls[instr] {
 				stopped = true // Ctx runs on this path
 			} else if makes[instr] {
-				return false // v is made on this path, and Ctx does not run after
+				if !tr.traceStoredEventHasCtx(instr) {
+					return false // v is made on this path, and Ctx does not run after
+				}
+				stopped = true // An event with context of its own is stored on this path
 			}
 		}
 		if stopped {
@@ -368,6 +374,20 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 		}
 	}
 	return true
+}
+
+// traceStoredEventHasCtx reports whether instr, where another event is in a
+// variable on the path, stores an event that has context of its own:
+//
+//	e := logger.Info()
+//	e.Ctx(ctx)                      // in place, on the first iteration
+//	for range n {
+//	    e.Msg("x")
+//	    e = logger.Warn().Ctx(ctx)  // of its own, on the later ones
+//	}
+func (tr *tracer) traceStoredEventHasCtx(instr ssa.Instruction) bool {
+	store, ok := instr.(*ssa.Store)
+	return ok && typeutil.IsEvent(store.Val.Type()) && tr.traceValue(store.Val, tracerEvent, make(map[ssa.Value]bool))
 }
 
 // traceCtxCalls adds to calls the Event.Ctx calls in fn on the event v,
