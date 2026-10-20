@@ -300,8 +300,8 @@ func goodDeferredChainCtxOnEachBranch(ctx context.Context, other context.Context
 
 // LIMITATION (false positive): An in-place Ctx call is not seen by a
 // terminator in a closure, in a func literal the event is passed to, or on
-// another variable the event was copied to (#139). The event reaches it through a captured variable or a parameter,
-// which is not followed back to the calls on it.
+// another variable the event was copied to (#139). The event reaches it
+// through another reference, which is not followed back to the calls on it.
 
 func limitationEventCtxResultUnusedClosure(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
