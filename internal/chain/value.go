@@ -13,6 +13,7 @@ package chain
 
 import (
 	"iter"
+	"slices"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -38,6 +39,42 @@ func unwrapInner(v ssa.Value) ssa.Value {
 		return val.X
 	}
 	return nil
+}
+
+// derivesFrom reports whether found holds for v, or for a value v derives
+// from: the receiver of a call, an edge of a Phi, or what next returns for
+// any other value (nil to stop). Values in seen are not followed, and each
+// value followed is added to it, so cycles end.
+func derivesFrom(
+	v ssa.Value,
+	found func(ssa.Value) bool,
+	next func(ssa.Value) ssa.Value,
+	seen map[ssa.Value]bool,
+) bool {
+	if found(v) {
+		return true
+	}
+	if seen[v] {
+		return false
+	}
+	seen[v] = true
+
+	switch val := v.(type) {
+	case *ssa.Call:
+		if len(val.Call.Args) > 0 {
+			return derivesFrom(val.Call.Args[0], found, next, seen)
+		}
+		return false
+	case *ssa.Phi:
+		return slices.ContainsFunc(val.Edges, func(edge ssa.Value) bool {
+			return derivesFrom(edge, found, next, seen)
+		})
+	}
+
+	if inner := next(v); inner != nil {
+		return derivesFrom(inner, found, next, seen)
+	}
+	return false
 }
 
 // isNilConst checks if a value is a nil constant.

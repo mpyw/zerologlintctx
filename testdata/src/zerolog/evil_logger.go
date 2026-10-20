@@ -427,6 +427,26 @@ func badGlobalPrintf(ctx context.Context) {
 	log.Printf("global %s", "printf") // want `zerolog direct logging bypasses context`
 }
 
+// Direct logging run by go or defer is reported as the plain call is (#78).
+func badDeferredLoggerPrint(ctx context.Context, logger zerolog.Logger) {
+	defer logger.Print("deferred print") // want `zerolog direct logging bypasses context`
+}
+
+func badGoGlobalPrint(ctx context.Context) {
+	go log.Print("go print") // want `zerolog direct logging bypasses context`
+}
+
+// Direct logging through a method value is reported as the plain call is (#79).
+func badLoggerPrintfMethodValue(ctx context.Context, logger zerolog.Logger) {
+	p := logger.Printf
+	p("bound %d", 1) // want `zerolog direct logging bypasses context`
+}
+
+func badLoggerPrintMethodExpression(ctx context.Context, logger *zerolog.Logger) {
+	p := (*zerolog.Logger).Print
+	p(logger, "method expression") // want `zerolog direct logging bypasses context`
+}
+
 // These should NOT be reported (void but not logging)
 func goodSetGlobalLevel(ctx context.Context) {
 	zerolog.SetGlobalLevel(zerolog.DebugLevel) // OK - not a logging call

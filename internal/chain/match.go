@@ -14,27 +14,17 @@ import (
 //
 //declscope:shared // store.go asks this of a load
 func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
-	switch val := v.(type) {
-	case *ssa.UnOp:
-		// Check if this is a dereference of the address
-		if val.Op == token.MUL && addressesMatch(val.X, addr) {
-			return true
-		}
-		return valueLoadsFromMatchingAddress(val.X, addr)
-	case *ssa.Call:
-		// Check receiver (first argument for method calls)
-		if len(val.Call.Args) > 0 {
-			return valueLoadsFromMatchingAddress(val.Call.Args[0], addr)
-		}
-	case *ssa.Phi:
-		// Check all edges
-		for _, edge := range val.Edges {
-			if valueLoadsFromMatchingAddress(edge, addr) {
-				return true
-			}
-		}
+	isLoadFromAddr := func(v ssa.Value) bool {
+		unop, ok := v.(*ssa.UnOp)
+		return ok && unop.Op == token.MUL && addressesMatch(unop.X, addr)
 	}
-	return false
+	unOpOperand := func(v ssa.Value) ssa.Value {
+		if unop, ok := v.(*ssa.UnOp); ok {
+			return unop.X
+		}
+		return nil
+	}
+	return derivesFrom(v, isLoadFromAddr, unOpOperand, make(map[ssa.Value]bool))
 }
 
 // addressesMatch checks if two addresses refer to the same memory location.

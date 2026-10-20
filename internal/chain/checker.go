@@ -29,8 +29,12 @@ import (
 	"go/token"
 
 	"golang.org/x/tools/go/ssa"
+)
 
-	"github.com/mpyw/zerologlintctx/internal/typeutil"
+// The messages of the two findings. Each takes the context name.
+const (
+	checkerMissingCtx    = "zerolog call chain missing .Ctx(%s)"
+	checkerDirectLogging = "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)"
 )
 
 // Checker performs SSA-based analysis of zerolog chains.
@@ -57,95 +61,32 @@ func NewChecker(ctxName string, report func(pos token.Pos, msg string)) *Checker
 	}
 }
 
-// CheckFunction analyzes all instructions in a function.
+// CheckFunction analyzes all instructions in a function. Calls, go
+// statements and defer statements are checked alike.
 func (c *Checker) CheckFunction(fn *ssa.Function) {
 	for instr := range instrsIn(fn) {
-		switch v := instr.(type) {
-		case *ssa.Call:
-			c.checkTerminatorCall(&v.Call, v.Pos())
-			c.checkDirectLoggingCall(v)
-		case *ssa.Defer:
-			c.checkTerminatorCall(&v.Call, v.Pos())
+		if call, ok := instr.(ssa.CallInstruction); ok {
+			c.checkCall(call.Common(), call.Pos())
 		}
 	}
 }
 
-// checkTerminatorCall checks if a terminator call (Msg, Msgf, MsgFunc, Send),
-// called or deferred at pos, has context properly set in the chain.
-func (c *Checker) checkTerminatorCall(cc *ssa.CallCommon, pos token.Pos) {
-	callee := cc.StaticCallee()
-	if callee == nil {
+// checkCall checks one call, run at pos:
+//   - A terminator (Msg, Msgf, MsgFunc, Send) is reported unless its Event
+//     chain has context set
+//   - Direct logging (Logger.Print*, log.Print*) is always reported
+func (c *Checker) checkCall(cc *ssa.CallCommon, pos token.Pos) {
+	callee, ok := calleeOf(cc)
+	if !ok {
 		return
 	}
-
-	// Check if this is a bound method call (method value)
-	// e.g., msg := e.Msg; msg("text") or defer msg("text")
-	if mc, ok := cc.Value.(*ssa.MakeClosure); ok {
-		c.checkBoundMethodTerminator(mc, callee, pos)
-		return
-	}
-
-	// Must be on zerolog.Event and return void (terminators: Msg, Msgf, MsgFunc, Send)
-	recv := cc.Signature().Recv()
-	if recv == nil || !typeutil.IsEvent(recv.Type()) || !typeutil.ReturnsVoid(callee.Signature) {
-		return
-	}
-
-	// Trace back to find if context was set
-	if len(cc.Args) > 0 && c.tracer.eventHasCtx(cc.Args[0]) {
-		return
-	}
-
-	c.reportOnce(pos, "zerolog call chain missing .Ctx(%s)")
-}
-
-// checkBoundMethodTerminator checks if a bound method call (method value),
-// called or deferred at pos, is a terminator without context.
-//
-// Bound methods are created when a method is extracted as a value:
-//
-//	msg := e.Msg    // Creates MakeClosure with receiver in Bindings[0]
-//	msg("text")     // Calls the bound method wrapper (*Event).Msg$bound
-//
-// SSA representation:
-//
-//	t0 = (*Event).Msg$bound(e)   ← MakeClosure with e in Bindings[0]
-//	t0("text")                   ← Call to the closure
-//
-// We need to trace Bindings[0] (the receiver) to find if .Ctx() was called.
-func (c *Checker) checkBoundMethodTerminator(mc *ssa.MakeClosure, callee *ssa.Function, pos token.Pos) {
-	// Check if it returns void (terminators return void)
-	if !typeutil.ReturnsVoid(callee.Signature) {
-		return
-	}
-
-	// Check if receiver (in Bindings[0]) is *zerolog.Event
-	if len(mc.Bindings) == 0 {
-		return
-	}
-	recvType := mc.Bindings[0].Type()
-	if !typeutil.IsEvent(recvType) {
-		return
-	}
-
-	// Trace the receiver to find if context was set
-	if c.tracer.eventHasCtx(mc.Bindings[0]) {
-		return
-	}
-
-	c.reportOnce(pos, "zerolog call chain missing .Ctx(%s)")
-}
-
-// checkDirectLoggingCall checks for direct logging calls that bypass the Event chain.
-func (c *Checker) checkDirectLoggingCall(call *ssa.Call) {
-	callee := call.Call.StaticCallee()
-	if callee == nil {
-		return
-	}
-
-	// Logger.Print* or log.Print*
-	if isDirectLoggingCallee(callee, call.Call.Signature().Recv()) {
-		c.reportOnce(call.Pos(), "zerolog direct logging bypasses context; use Event chain with .Ctx(%s)")
+	switch {
+	case callee.endsEventChain():
+		if !c.tracer.eventHasCtx(callee.recv) {
+			c.reportOnce(pos, checkerMissingCtx)
+		}
+	case callee.logsDirectly():
+		c.reportOnce(pos, checkerDirectLogging)
 	}
 }
 
