@@ -232,6 +232,10 @@ Any other comment that starts with `zerologlintctx:`, such as `//zerologlintctx:
 - `contextcheck` warns about creating new contexts when one should be propagated
 - `zerologlintctx` specifically warns about not using an available context in zerolog chains
 
+## AI usage
+
+zerologlintctx is developed with AI coding agents (Claude Code). The fixtures under `testdata/src/` define what it reports.
+
 ## License
 
 MIT
