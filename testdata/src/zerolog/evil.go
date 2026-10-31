@@ -1040,6 +1040,13 @@ func evilAnyTypeParam[C any](ctx C, logger zerolog.Logger) {
 	logger.Info().Msg("any type param") // OK - not a context
 }
 
+func evilIntTypeParam[C interface {
+	~int
+	String() string
+}](ctx C, logger zerolog.Logger) {
+	logger.Info().Msg("int type param") // OK - not a context
+}
+
 func evilPointerCtxTypeParam[C *context.Context](ctx C, logger zerolog.Logger) {
 	logger.Info().Msg("pointer constraint type param") // OK - not named as *ctx
 }

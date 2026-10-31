@@ -122,7 +122,7 @@ func ReturnsVoid(sig *types.Signature) bool {
 // context.Context, as for C in func f[C context.Context](ctx C).
 func IsContextType(t types.Type) bool {
 	if tp, ok := types.Unalias(unwrapPointer(t)).(*types.TypeParam); ok {
-		return constrainsToContext(tp.Constraint(), make(map[types.Type]bool))
+		return constrainsToContext(tp.Constraint())
 	}
 	return isNamedType(t, contextPkgPath, "Context")
 }
@@ -130,11 +130,7 @@ func IsContextType(t types.Type) bool {
 // constrainsToContext reports whether the constraint c is context.Context, or
 // an interface that embeds it at any depth. A pointer, as in
 // func f[C *context.Context](ctx C), does not count: ctx is not a context.
-func constrainsToContext(c types.Type, seen map[types.Type]bool) bool {
-	if seen[c] {
-		return false
-	}
-	seen[c] = true
+func constrainsToContext(c types.Type) bool {
 	if _, isPtr := types.Unalias(c).(*types.Pointer); isPtr {
 		return false
 	}
@@ -146,7 +142,7 @@ func constrainsToContext(c types.Type, seen map[types.Type]bool) bool {
 		return false
 	}
 	for e := range iface.EmbeddedTypes() {
-		if constrainsToContext(e, seen) {
+		if constrainsToContext(e) {
 			return true
 		}
 	}
