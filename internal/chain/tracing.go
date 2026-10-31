@@ -410,7 +410,7 @@ func (tr *tracer) traceUncached(v ssa.Value, st traceState) verdict {
 // a fresh context.Background() or TODO() (see isFreshContext). The context is
 // the last argument in each form of the call.
 func (tr *tracer) givesFreshContext(cc *ssa.CallCommon) bool {
-	return len(cc.Args) > 0 && isFreshContext(cc.Args[len(cc.Args)-1], tr.positions)
+	return len(cc.Args) > 0 && isFreshContext(cc.Args[len(cc.Args)-1], tr.positions, tr.closures)
 }
 
 // traceSource traces v, one of the values something can be, such as an edge
@@ -726,7 +726,7 @@ func (tr *tracer) traceEmbeddedAt(
 	switch {
 	case n == len(embedded) && ok:
 		return tr.traceResolved(tr.resolver(st).resolveStored(stored), st)
-	case !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0:
+	case !ok || stored.unknown || len(stored.captured) > 0 || len(stored.params) > 0:
 		return no
 	}
 	elem := field.Underlying().(*types.Pointer).Elem()

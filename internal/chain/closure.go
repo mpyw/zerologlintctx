@@ -40,7 +40,7 @@ type closures struct {
 	// funcsHeldBy.
 	//
 	//declscope:private
-	aliases map[*ssa.Alloc]map[ssa.Value]bool
+	aliases map[ssa.Value]map[ssa.Value]bool
 	//declscope:private
 	calls map[*ssa.Function]closureCalls
 	//declscope:private
@@ -55,7 +55,7 @@ func newClosures() *closures {
 		indexed:  make(map[*ssa.Function]bool),
 		makers:   make(map[*ssa.Function][]*ssa.MakeClosure),
 		captures: make(map[ssa.Value][]*ssa.FreeVar),
-		aliases:  make(map[*ssa.Alloc]map[ssa.Value]bool),
+		aliases:  make(map[ssa.Value]map[ssa.Value]bool),
 		calls:    make(map[*ssa.Function]closureCalls),
 		held:     make(map[*ssa.Alloc]closureHeld),
 	}
@@ -275,26 +275,67 @@ func (c *closures) bindingOf(fv *ssa.FreeVar) ssa.Value {
 	return makers[len(makers)-1].Bindings[slices.Index(fn.FreeVars, fv)]
 }
 
-// aliasesOf returns alloc, a local variable, and the free variables that
-// stand for it in the closures that capture it, at any depth.
-func (c *closures) aliasesOf(alloc *ssa.Alloc) map[ssa.Value]bool {
-	if aliases, ok := c.aliases[alloc]; ok {
+// writtenUnseen reports whether what is at at, in a local variable, a pointer
+// parameter or a variable a closure captures, may be written where a walk of
+// the control flow of walked does not see it: by a closure that is neither
+// walked nor one walked is declared in, or through an address of it, or of a
+// field or element of it, that is passed on in any function, such as to a
+// call, other than via. A free variable stands for the variable bound where
+// its closure is made, at any depth. One bound to anything else, such as the
+// address of a field of another variable, may be written anywhere.
+//
+// The stores of a function that walked is declared in reach it as the
+// closure starts, which a walk of that function finds (see
+// storesReachingClosure). via, when not nil, is the call of a func literal
+// through whose parameter the address is read, whose stores the walk of the
+// func literal sees.
+//
+//declscope:shared // resolve.go finds the variables whose stores a walk cannot all see
+func (c *closures) writtenUnseen(at place, walked *ssa.Function, via ssa.Instruction) bool {
+	root := at.root
+	for fv, ok := root.(*ssa.FreeVar); ok; fv, ok = root.(*ssa.FreeVar) {
+		root = c.bindingOf(fv)
+	}
+	switch root.(type) {
+	case *ssa.Alloc, *ssa.Parameter:
+	default:
+		return true // Bound to an address in another variable, or not found
+	}
+	for alias := range c.aliasesOf(root) {
+		fn := parentFunc(alias)
+		if fv, isFreeVar := alias.(*ssa.FreeVar); isFreeVar {
+			fn = fv.Parent()
+		}
+		other := !closureEncloses(fn, walked)
+		for instr := range instrsIn(fn) {
+			if instr != via && closureWritesUnseen(instr, place{root: alias, path: at.path}, other) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// aliasesOf returns v, a local variable or a parameter, and the free
+// variables that stand for it in the closures that capture it, at any depth.
+func (c *closures) aliasesOf(v ssa.Value) map[ssa.Value]bool {
+	if aliases, ok := c.aliases[v]; ok {
 		return aliases
 	}
-	c.index(alloc.Parent())
-	aliases := map[ssa.Value]bool{alloc: true}
-	queue := []ssa.Value{alloc}
+	c.index(parentFunc(v))
+	aliases := map[ssa.Value]bool{v: true}
+	queue := []ssa.Value{v}
 	for len(queue) > 0 {
-		v := queue[len(queue)-1]
+		w := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
-		for _, fv := range c.captures[v] {
+		for _, fv := range c.captures[w] {
 			if !aliases[fv] {
 				aliases[fv] = true
 				queue = append(queue, fv)
 			}
 		}
 	}
-	c.aliases[alloc] = aliases
+	c.aliases[v] = aliases
 	return aliases
 }
 
@@ -322,6 +363,44 @@ func (c *closures) index(fn *ssa.Function) {
 			c.captures[b] = append(c.captures[b], closure.FreeVars[i])
 		}
 	}
+}
+
+// closureEncloses reports whether fn is inner, or a function that inner is
+// declared in, at any depth.
+func closureEncloses(fn, inner *ssa.Function) bool {
+	for f := inner; f != nil; f = f.Parent() {
+		if f == fn {
+			return true
+		}
+	}
+	return false
+}
+
+// closureWritesUnseen reports whether instr uses an address that overlaps
+// at in a way that may write to it where a walk does not see: a store to it
+// when other is true, as in another closure, or any use but a load, a store
+// to it, a selection of a field or element, or a capture by a closure.
+func closureWritesUnseen(instr ssa.Instruction, at place, other bool) bool {
+	for _, op := range instr.Operands(nil) {
+		if *op == nil {
+			continue
+		}
+		if p, _ := placeOf(*op); !p.overlaps(at) {
+			continue
+		}
+		switch in := instr.(type) {
+		case *ssa.Store:
+			if op != &in.Addr || other {
+				return true // A store to it unseen, or of the address itself
+			}
+		case *ssa.UnOp, *ssa.FieldAddr, *ssa.IndexAddr, *ssa.MakeClosure, *ssa.DebugRef:
+			// A load, which an address is the operand of only as such, or a
+			// use followed on its own, or by the aliases of the variable
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // closureRuns are the calls, go and defer statements that run a closure.

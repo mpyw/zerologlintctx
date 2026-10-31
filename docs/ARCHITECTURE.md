@@ -311,10 +311,24 @@ A `Ctx` call given a fresh `context.Background()` or `context.TODO()` does not
 set the context. It replaces the context in scope, so tracing stops there and
 reports the chain. `isFreshContext` in `context.go` takes the semantics of
 goroutinectx: every value the argument can be must be a call of one of the
-two. It sees through a Phi and a conversion. For a load, every store that
-reaches it must be fresh. This holds for a local variable, a pointer
-parameter, and a field of one. A global is not followed. A context derived from one, such as
+two. It sees through a Phi and a conversion. For a load, every source that
+`resolve.go` finds must be fresh: the stores that reach it, in a local
+variable, a pointer parameter, a variable a closure captures, or a field of
+one, through where the closure is made and the calls of a func literal. A
+global is not followed. A context derived from one, such as
 `context.WithoutCancel(context.Background())`, is not fresh.
+
+The tracer leaves out a store that a walk of the function does not see. For a
+fresh context, that would report a context that is not fresh, so such a
+variable is not fresh: one that a closure stores to, other than the one read
+in and the functions it is declared in, or whose address is passed on, such as
+to a call:
+
+```go
+bg := context.Background()
+func() { bg = ctx }()
+l.Info().Ctx(bg).Msg("x") // OK: a closure stores to bg
+```
 
 `Event.Ctx` sets the context on the event it runs on, and returns that same
 event. So an event whose chain has no `Ctx` call is still accepted when one
@@ -469,11 +483,9 @@ temporary, and walks on from the load of it with the rest of the path.
 not walked. Both shapes are handled, since whether the compiler emits the
 temporary depends on the x/tools version.
 
-A copy from a variable that a closure captures is not followed, though
-`isTrackedRoot` accepts its root, and the value read is unknown. The walk of
-the copy shares its result with the walk that met the copy, and the result
-holds one captured variable. Each walk that reaches the entry of the closure
-would set it, and one variable would be lost:
+A copy from a variable that a closure captures is followed too. Each walk
+that reaches the entry of the closure adds its variable to the result, so
+both variables are traced here:
 
 ```go
 func() {
@@ -524,7 +536,7 @@ Due to SSA analysis constraints:
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Array elements with a variable index**: An element read with a variable index, as a range over an array reads it, is not matched to the stores of each element, so one stored with `.Ctx(ctx)` is still reported
 - **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
-- **Fresh contexts not seen**: A fresh context given to `Ctx` in place, with its result unused, does not replace the context the event had. A fresh context in a variable a closure captures is not taken as fresh
+- **Fresh contexts not seen**: A fresh context given to `Ctx` in place, with its result unused, does not replace the context the event had
 
 These are documented in test cases with `// LIMITATION` comments, tagged `// LIMITATION(#n)` where an issue tracks the case.
 

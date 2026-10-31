@@ -119,6 +119,23 @@ func (p place) prefixOf(q place) bool {
 	return true
 }
 
+// overlaps reports whether p and q have the same root, and may select memory
+// in common: the selections of one start with those of the other. An element
+// whose index is not a constant may be any element, so it may be the one the
+// other selects.
+func (p place) overlaps(q place) bool {
+	if p.root != q.root {
+		return false
+	}
+	for i := range min(len(p.path), len(q.path)) {
+		s, o := p.path[i], q.path[i]
+		if !s.variable() && !o.variable() && !s.same(o) {
+			return false
+		}
+	}
+	return true
+}
+
 // same reports whether p and q have the same root, and select the same.
 func (p place) same(q place) bool {
 	return len(p.path) == len(q.path) && p.prefixOf(q)
