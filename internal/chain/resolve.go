@@ -126,13 +126,10 @@ func (r resolver) yieldStored(stored storeReaching, yield func(resolved) bool) b
 // asked for more.
 func (r resolver) yieldFreeVar(fv *ssa.FreeVar, path []sel, yield func(resolved) bool) bool {
 	fn := fv.Parent()
-	if fn == nil {
-		return yield(resolved{})
-	}
 	idx := slices.Index(fn.FreeVars, fv)
 	makers := r.closures.makersOf(fn)
-	if idx < 0 || len(makers) == 0 {
-		return yield(resolved{})
+	if len(makers) == 0 {
+		return yield(resolved{}) // A wrapper, such as a method value, made where it cannot be seen
 	}
 	for _, mc := range makers {
 		stored := storesReachingClosure(mc.Bindings[idx], path, mc, r.positions)
