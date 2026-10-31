@@ -18,8 +18,9 @@ zerologlintctx/
 │   │   ├── tracing.go         # Trace states, value tracing
 │   │   ├── phi.go             # Phi nodes and edges that lead back to them
 │   │   ├── store.go           # Values stored at an address
-│   │   ├── aggregate.go       # Paths into a struct or array, and its copies
+│   │   ├── aggregate.go       # The copies of a struct or array
 │   │   ├── match.go           # Whether two addresses are the same
+│   │   ├── place.go           # An address as a root and its selections
 │   │   └── value.go           # SSA plumbing the other files stand on
 │   ├── directive/             # Comment directive handling
 │   │   └── ignore.go          # //zerologlintctx:ignore parsing, directive problems
@@ -305,11 +306,46 @@ calls count.
 zerolog keeps only the fields `fn` writes, and drops the context
 `Context.Ctx` sets in it, so the Logger has the context it had before.
 
+#### Places
+
+`place.go` models an address as a `place`: a root, the variable or pointer
+the address is in, and a path of selections from it, outermost first.
+`placeOf(addr)` builds one from the `FieldAddr` and `IndexAddr` instructions
+of an address. A selection is a `sel`:
+
+| Selection | `sel` |
+|-----------|-------|
+| A field, of an address or of a struct value | `field` |
+| An element at a constant index | `index`, the constant |
+| An element at any other index | `operand`, the index value, with no `index` |
+
+`sel.same` is the only test of whether two selections are the same. Two fields
+are the same when their numbers are. Two constant elements are the same when
+their values are, whatever the type of the constant. An element at a variable
+index may be any element, so it is the same as no selection, not even one at
+the same index.
+
+`place.key` gives a place in a form that `==` can compare, for a map key. It
+spells each element by its operand: a constant by its value and type, and a
+variable index by the value. So the key, unlike `sel.same`, tells apart
+`a[1]` and `a[uint8(1)]`, and takes two elements at the same variable index
+for the same.
+
+`isTrackedRoot` tells whether every store to a place with that root can be
+seen in the function alone: a local variable, a parameter, or a variable a
+closure captures. A global, or a pointer the function loads, can be changed
+anywhere. A walk back from a read is only done for a tracked root.
+
 #### Address Matching
 
 Addresses are compared structurally, not by identity: SSA emits a fresh
 `FieldAddr`/`IndexAddr` for every access, so the write and read halves of a
-nested access (`h.inner.event`) never share a value.
+nested access (`h.inner.event`) never share a value. `addressesMatch`
+compares each selection with `sel.same`, from the outermost in, and takes an
+instruction for the same as itself. So an element at a variable index matches
+only through the same `IndexAddr` instruction. Under the selections, two
+loads of the same address, or two fields of the same struct value, match
+when the same stores reach them.
 
 #### Aggregate Copies
 
@@ -326,12 +362,27 @@ t5 = *t1
 t6 = &t0.event     // the address we want the value of
 ```
 
-An address is split into a root plus a chain of selections. When the walk
-back from a read meets a store of the whole root, `storeWalk.copied` follows
-the copy back to the temporary, and walks on from the load of it with the same
-chain. `findStoresThroughAggregateCopy` does the same for an address whose
-stores are not walked. Both shapes are handled, since whether the compiler
-emits the temporary depends on the x/tools version.
+When the walk back from a read meets a store of the whole root, or of a
+place the path starts with, `storeWalk.copied` follows the copy back to the
+temporary, and walks on from the load of it with the rest of the path.
+`findStoresThroughAggregateCopy` does the same for an address whose stores are
+not walked. Both shapes are handled, since whether the compiler emits the
+temporary depends on the x/tools version.
+
+A copy from a variable that a closure captures is not followed, though
+`isTrackedRoot` accepts its root, and the value read is unknown. The walk of
+the copy shares its result with the walk that met the copy, and the result
+holds one captured variable. Each walk that reaches the entry of the closure
+would set it, and one variable would be lost:
+
+```go
+func() {
+    if cond {
+        g = h          // a copy of h, which the closure captures
+    }
+    g.l.Info().Msg("x") // reads h.l or g.l: both must be traced
+}()
+```
 
 ## Terminator Detection
 
