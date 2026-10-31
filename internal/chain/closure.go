@@ -67,10 +67,11 @@ func newClosures() *closures {
 // which has no function it is declared in.
 //
 // SSA makes a func literal once, where it is written, so there is at most one.
-// bindingOf takes the last, and the tracer of a free variable tries each. The
-// two rules agree as long as that holds.
+// bindingOf takes the last, and the resolver of a free variable takes each,
+// every one of which must give a value with context. The two rules agree as
+// long as that holds.
 //
-//declscope:shared // tracing.go traces a free variable from where it is bound
+//declscope:shared // resolve.go resolves a free variable from where it is bound
 func (c *closures) makersOf(fn *ssa.Function) []*ssa.MakeClosure {
 	if fn.Parent() == nil {
 		return nil
@@ -100,7 +101,7 @@ func (c *closures) makersOf(fn *ssa.Function) []*ssa.MakeClosure {
 // A call that may run another func too still counts: every call that may
 // run fn must pass an argument with context.
 //
-//declscope:shared // tracing.go traces the arguments of each call of a func literal
+//declscope:shared // tracing.go and resolve.go follow the arguments of each call of a func literal
 func (c *closures) callsOf(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
 	if found, done := c.calls[fn]; done {
 		return found.calls, found.ok

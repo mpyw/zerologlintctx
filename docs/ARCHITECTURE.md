@@ -161,6 +161,12 @@ The tracing system follows SSA values backwards to find if context was set.
 The `tracer` type in `internal/chain/tracing.go` does it, and the stores
 behind a load are found by `store.go`.
 
+`resolve.go` turns what `store.go` found into sources, one at a time: a
+variable a closure captures becomes what the variable bound where the closure
+is made holds when it runs, and a parameter of a func literal becomes what
+each call passes for it, until only values stored, or unknown, are left. The
+tracer judges each source, and every one must have context.
+
 One tracer serves a whole package. It keeps the verdict of each value it
 traced, so it is not worked out again for the next call that reaches it,
 or for a closure that reaches a value of the function it is declared in.
@@ -185,8 +191,8 @@ reach a load, or the calls of a func literal, combines them with `all`:
 | None, or all `neutral` | `neutral` |
 
 `some` is the other way round, for ways to find the same value, any of which
-will do: the closures that may bind a free variable, or the value an IIFE
-returns and the argument it stands for. At the terminator, only `yes` counts.
+will do: the value an IIFE returns and the argument it stands for. At the
+terminator, only `yes` counts.
 
 #### Cycles
 
@@ -248,8 +254,9 @@ any depth, the first time a query reaches it, and keeps each answer:
 | `funcsHeldBy(v)` | The values stored to a variable that is only stored to, loaded and captured |
 
 SSA makes a func literal once, where it is written, so `makersOf` gives at
-most one. `bindingOf` takes the last, and tracing a free variable tries each.
-The two rules agree as long as that holds.
+most one. `bindingOf` takes the last, and resolving a free variable takes
+each, every one of which must give a value with context. The two rules agree
+as long as that holds.
 
 `store.go` asks only how a closure that captures an address runs where it is
 made, `closureRunsOf`: the calls, go and defer statements of it, without

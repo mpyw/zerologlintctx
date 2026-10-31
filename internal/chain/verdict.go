@@ -59,6 +59,8 @@ func all(seq iter.Seq[verdict]) verdict {
 // some combines the verdicts of the ways to find one value, any of which will
 // do: yes when one is yes, no when there is at least one no and the rest are
 // neutral, and neutral when every one is. It stops at the first yes.
+//
+//declscope:private
 func some(seq iter.Seq[verdict]) verdict {
 	result := neutral
 	for v := range seq {

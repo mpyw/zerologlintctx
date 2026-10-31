@@ -53,7 +53,7 @@ import (
 // positions finds where each instruction is in its block, and may be kept
 // across calls.
 //
-//declscope:shared // tracing.go traces what reaches each read
+//declscope:shared // resolve.go and context.go find what reaches each read
 func storesReaching(
 	addr ssa.Value,
 	read ssa.Instruction,
@@ -218,7 +218,7 @@ func (r *storeReaching) merge(o storeReaching) {
 // v is a variable that mc captures: a local variable, or a variable that the
 // function making mc captures in turn.
 //
-//declscope:shared // tracing.go traces what a closure reads of what it captures
+//declscope:shared // resolve.go finds what a closure reads of what it captures
 func storesReachingClosure(
 	v ssa.Value,
 	path []sel,
@@ -346,7 +346,7 @@ func (w *storeWalk) walkToRead(read ssa.Instruction) {
 // storeReaching is what storesReaching found can be at an address when it is
 // read.
 //
-//declscope:shared // tracing.go traces each part
+//declscope:shared // resolve.go resolves each part, and tracing.go reads the pointers at an embedded field
 type storeReaching struct {
 	// values are the values stored. Every one must have context.
 	values []ssa.Value
@@ -370,7 +370,7 @@ type storeReaching struct {
 // literal: from what the parameter points to when pointer is true, or from
 // the parameter itself, a struct or array, otherwise.
 //
-//declscope:shared // tracing.go traces it in each call of the func literal
+//declscope:shared // resolve.go resolves it in each call of the func literal
 type storeParamPath struct {
 	param   *ssa.Parameter
 	path    []sel
@@ -387,7 +387,7 @@ func storeIsFuncLiteralParam(v ssa.Value) (*ssa.Parameter, bool) {
 // runs, as storesReaching does for a read it is given. ok is false when the
 // root of at is not one isTrackedRoot accepts.
 //
-//declscope:shared // tracing.go walks from a call of a func literal
+//declscope:shared // resolve.go walks from a call of a func literal, tracing.go from an embedded field
 func storesReachingAt(
 	at place,
 	read ssa.Instruction,

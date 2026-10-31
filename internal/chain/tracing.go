@@ -3,6 +3,7 @@ package chain
 import (
 	"go/token"
 	"go/types"
+	"iter"
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
@@ -450,7 +451,7 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 	case *ssa.Alloc:
 		return tr.traceAlloc(val, st)
 	case *ssa.FreeVar:
-		return tr.traceFreeVar(val, nil, st)
+		return tr.traceResolved(tr.resolver(st).resolveFreeVar(val, nil), st)
 	case *ssa.Parameter:
 		// A pointer parameter can be updated in place; see storesReaching.
 		// Otherwise, or failing that, the arguments give it
@@ -501,11 +502,11 @@ func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState) (found verdict,
 	}
 	slices.Reverse(selections)
 	at, _ := placeOf(load.X)
-	stored, ok := storesReachingAt(at.with(selections...), load, tr.positions)
+	sources, ok := tr.resolver(st).resolveAt(at.with(selections...), load)
 	if !ok {
 		return no, false
 	}
-	return tr.traceStored(stored, st), true
+	return tr.traceResolved(sources, st), true
 }
 
 // =============================================================================
@@ -538,83 +539,50 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, st traceState) verdict {
 // is already being traced is neutral: it is an update in a loop, which keeps
 // the context of the value before it.
 func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, st traceState) (found verdict, ok bool) {
-	stored, ok := storesReaching(addr, read, tr.positions)
+	sources, ok := tr.resolver(st).resolve(addr, read)
 	if !ok {
 		return no, false
 	}
-	return tr.traceStored(stored, st), true
+	return tr.traceResolved(sources, st), true
 }
 
-// traceStored combines the verdicts of what storesReaching found can be at an
-// address: the variable a closure captures, the parameters of a func
-// literal, and the values stored. Every one must have context.
-func (tr *tracer) traceStored(stored storeReaching, st traceState) verdict {
-	if stored.unknown {
-		return no
-	}
+// traceResolved combines the verdicts of the sources a resolver found, as
+// traceSource judges each: every one must have context. An unknown source
+// has none, and a pointer that the resolver could not follow is traced as a
+// value, through what it points to.
+func (tr *tracer) traceResolved(sources iter.Seq[resolved], st traceState) verdict {
 	return all(func(yield func(verdict) bool) {
-		if stored.captured != nil && !yield(tr.traceFreeVar(stored.captured, stored.capturedPath, st)) {
-			return
-		}
-		for _, pp := range stored.params {
-			if !yield(tr.traceParamPath(pp, st)) {
-				return
+		for src := range sources {
+			found := no
+			switch {
+			case src.v == nil:
+			case src.pointer:
+				found = tr.traceValue(src.v, st)
+			default:
+				found = tr.traceSource(src.v, st)
 			}
-		}
-		for _, v := range stored.values {
-			if !yield(tr.traceSource(v, st)) {
+			if !yield(found) {
 				return
 			}
 		}
 	})
 }
 
-// traceParamPath traces the value at pp, in a parameter of a func literal,
-// as each call of the func literal passes it. The value is what is at the
-// same selections from the argument when the call runs:
-//
-//	func(p *zerolog.Logger) {
-//	    p.Info().Msg("x")       // reads *p, which is l below
-//	}(&l)
-//
-// A call that passes the parameter on, as a recursive call does, reaches the
-// same parameter again. It is neutral there, as an update in a loop is: the
-// other calls give the value.
-func (tr *tracer) traceParamPath(pp storeParamPath, st traceState) verdict {
-	return tr.memo.trace(memoKey{v: pp.param, st: st, param: true}, false, func() verdict {
-		fn := pp.param.Parent()
-		calls, ok := tr.closures.callsOf(fn)
-		if !ok || len(calls) == 0 {
-			return no
-		}
-		idx := slices.Index(fn.Params, pp.param)
-		return all(verdictsOf(calls, func(call ssa.CallInstruction) verdict {
-			return tr.traceArgumentAt(call.Common().Args[idx], call, pp, st)
-		}))
-	})
-}
-
-// traceArgumentAt traces the value at the selections of pp from arg, which
-// call passes for the parameter of pp.
-func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, st traceState) verdict {
-	addr, read := arg, ssa.Instruction(call)
-	switch {
-	case !pp.pointer:
-		// A struct or array passed by value is loaded from where it is
-		load, ok := asLoad(arg)
-		if !ok {
-			return no
-		}
-		addr, read = load.X, load
-	case len(pp.path) == 0:
-		return tr.traceReceiver(arg, call, st)
+// resolver returns a resolver for a trace in st. A parameter of a func
+// literal that it resolves is in progress in the memo, as a value is, so
+// that reaching it again, through a recursive call, is neutral, and a
+// verdict that depends on that is kept no longer than it holds.
+func (tr *tracer) resolver(st traceState) resolver {
+	return resolver{
+		positions: tr.positions,
+		closures:  tr.closures,
+		enter: func(param *ssa.Parameter, expand func()) {
+			tr.memo.trace(memoKey{v: param, st: st, param: true}, false, func() verdict {
+				expand()
+				return neutral
+			})
+		},
 	}
-	at, _ := placeOf(addr)
-	stored, ok := storesReachingAt(at.with(pp.path...), read, tr.positions)
-	if !ok {
-		return no
-	}
-	return tr.traceStored(stored, st)
 }
 
 // traceAddressAt traces addr, an address that read uses, such as the
@@ -622,16 +590,7 @@ func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp st
 // for every read of addr. ok is false when addr is not one whose stores
 // storesReaching can find.
 func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, st traceState) (found verdict, ok bool) {
-	if zerologapi.TypeOf(addr.Type()) == zerologapi.TypeEvent {
-		return no, false // A *zerolog.Event is the value itself, not a variable it is read from
-	}
-	switch a := addr.(type) {
-	case *ssa.Alloc, *ssa.FieldAddr, *ssa.IndexAddr, *ssa.FreeVar:
-	case *ssa.Parameter:
-		if _, isPtr := a.Type().Underlying().(*types.Pointer); !isPtr {
-			return no, false
-		}
-	default:
+	if !resolvesThrough(addr) {
 		return no, false
 	}
 	return tr.traceStoredValues(addr, read, st)
@@ -702,38 +661,6 @@ func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args
 	return neutral
 }
 
-// traceFreeVar traces a FreeVar back to the variable bound in MakeClosure, at
-// path, the selections from it: nil for the variable itself. Any MakeClosure
-// of its closure whose binding has context will do (see closures.makersOf).
-func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []sel, st traceState) verdict {
-	fn := fv.Parent()
-	if fn == nil {
-		return no
-	}
-	idx := slices.Index(fn.FreeVars, fv)
-	makers := tr.closures.makersOf(fn)
-	if idx < 0 || len(makers) == 0 {
-		return no
-	}
-	// Each MakeClosure of fn binds every free variable of it
-	return some(verdictsOf(makers, func(mc *ssa.MakeClosure) verdict {
-		return tr.traceBinding(mc, idx, path, st)
-	}))
-}
-
-// traceBinding traces what is at path in the variable that mc binds as its
-// free variable idx, as the closure reads it: what can be there when the closure runs, not at every
-// read of the variable in the function that makes it.
-//
-//	l := base
-//	l.Debug().Ctx(ctx).Msg("start") // reads base, before the closure is made
-//	l = l.With().Ctx(ctx).Logger()
-//	defer func() { l.Info().Msg("end") }()
-func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []sel, st traceState) verdict {
-	stored := storesReachingClosure(mc.Bindings[idx], path, mc, tr.positions)
-	return tr.traceStored(stored, st)
-}
-
 // receiverHasCtx reports whether the event c runs on, the receiver of the
 // terminator at, has context, as eventHasCtx does. For a method expression of
 // a promoted method, the event is read from the struct it is embedded in,
@@ -798,7 +725,7 @@ func (tr *tracer) traceEmbeddedAt(
 	stored, ok := storesReachingAt(at, read, tr.positions)
 	switch {
 	case n == len(embedded) && ok:
-		return tr.traceStored(stored, st)
+		return tr.traceResolved(tr.resolver(st).resolveStored(stored), st)
 	case !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0:
 		return no
 	}
