@@ -28,7 +28,7 @@ func TestPluginReports(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		analysistest.Run(t, dir, as[0], "zerolog")
+		analysistest.Run(t, dir, as[0], "zerolog/...")
 	}
 }
 

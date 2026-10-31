@@ -1,13 +1,12 @@
-package zerolog
+// Package go127 covers Go 1.27 language features, exercised so the analyzer keeps
+// working on code that uses them.
+package go127
 
 import (
 	"context"
 
 	"github.com/rs/zerolog"
 )
-
-// Go 1.27 language features, exercised so the analyzer keeps working on code
-// that uses them.
 
 // ===== PROMOTED FIELD KEYS IN COMPOSITE LITERALS (Go 1.27) =====
 

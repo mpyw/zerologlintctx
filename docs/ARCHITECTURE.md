@@ -357,7 +357,7 @@ Due to SSA analysis constraints:
 - **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
 - **Fresh contexts not seen**: A fresh context given to `Ctx` in place, with its result unused, does not replace the context the event had. A fresh context in a variable a closure captures is not taken as fresh
 
-These are documented in test cases with `// LIMITATION` comments.
+These are documented in test cases with `// LIMITATION` comments, tagged `// LIMITATION(#n)` where an issue tracks the case.
 
 ## Testing
 
@@ -376,12 +376,23 @@ func good(ctx context.Context, log zerolog.Logger) {
 ### Test Organization
 
 ```
-testdata/src/zerolog/
-├── basic.go        # Simple cases, ignore directives and directive problems
-├── evil.go         # Edge cases (nesting, closures)
-├── evil_ssa.go     # SSA-specific patterns (Phi, FreeVar)
-├── evil_logger.go  # Logger patterns, direct logging
-├── with_logger.go  # WithLogger-specific tests
-├── alias.go        # zerolog/context types reached through aliases
-└── go127.go        # Go 1.27 syntax (promoted field keys, generic methods)
+testdata/src/zerolog/      # One package per topic, each its own subtest of TestZerolog
+├── alias/       # zerolog/context types reached through aliases and defined types
+├── api/         # Event API: levels, fields, terminators, MsgFunc, Enabled, Discard
+├── basic/       # Simple good/bad cases, global logger
+├── closures/    # Closures, nested func literals, goroutines, captured variables
+├── ctxname/     # Which context is in scope: several, named _, shadowed, pointer, type parameter
+├── deferred/    # Deferred terminators and deferred closures
+├── directive/   # Ignore directives and directive problems
+├── directlog/   # Print, Printf, Println on a logger
+├── freshctx/    # context.Background() or TODO() in place of the context in scope
+├── go127/       # Go 1.27 syntax (promoted field keys, generic methods)
+├── iife/        # IIFE, func literals called through a variable, helpers
+├── inplace/     # Event.Ctx with its result unused, Logger.UpdateContext
+├── logger/      # Logger transformations: With().Logger(), Level, Output, New, Nop, Ctx
+├── memory/      # Struct fields, embedded fields, pointers, arrays, slices, maps, channels
+├── methods/     # Method values and method expressions in the chain
+├── phi/         # Branches, switches, loops, goto, select, pointers picked on a branch
+├── stores/      # Which stores to a variable in memory reach a read
+└── variables/   # Local variables: reassignment, shadowing, interfaces, results
 ```
