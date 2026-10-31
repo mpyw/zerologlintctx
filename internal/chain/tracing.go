@@ -1216,7 +1216,7 @@ func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, t tracerTy
 // The struct must be loaded from an address, or be a pointer, whose stores
 // storesReachingAt can find. Otherwise nothing is found.
 func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, t tracerType, visited map[ssa.Value]bool) bool {
-	addr, typ, read, ok := embeddedStart(c, call)
+	addr, typ, read, ok := traceEmbeddedStart(c, call)
 	if !ok {
 		return false
 	}
@@ -1224,11 +1224,11 @@ func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, t tracer
 	return tr.traceEmbeddedAt(root, path, typ, c.embedded, read, call, t, visited)
 }
 
-// embeddedStart returns where the struct c.recv is, for c, a method
+// traceEmbeddedStart returns where the struct c.recv is, for c, a method
 // expression of a promoted method that call runs: the address the struct is
 // at, its type, and the instruction that reads it there. ok is false when the
 // struct is a value that is not loaded from an address.
-func embeddedStart(c callee, call ssa.Instruction) (addr ssa.Value, typ types.Type, read ssa.Instruction, ok bool) {
+func traceEmbeddedStart(c callee, call ssa.Instruction) (addr ssa.Value, typ types.Type, read ssa.Instruction, ok bool) {
 	if ptr, isPtr := c.recv.Type().Underlying().(*types.Pointer); isPtr {
 		return c.recv, ptr.Elem(), call, true
 	}
@@ -1259,7 +1259,7 @@ func (tr *tracer) traceEmbeddedAt(
 	t tracerType,
 	visited map[ssa.Value]bool,
 ) bool {
-	path, n, field := embeddedPath(typ, path, embedded)
+	path, n, field := traceEmbeddedPath(typ, path, embedded)
 	stored, ok := storesReachingAt(root, path, read, tr.positions)
 	if n == len(embedded) {
 		return ok && tr.traceStored(stored, t, visited)
@@ -1282,11 +1282,11 @@ func (tr *tracer) traceEmbeddedAt(
 	return found
 }
 
-// embeddedPath returns path with the embedded fields of the struct of type
+// traceEmbeddedPath returns path with the embedded fields of the struct of type
 // typ appended, one after another, up to the first that is a pointer to a
 // struct, which is a field but the last. n is how many it appended, and field
 // is the type of the last of them.
-func embeddedPath(typ types.Type, path []ssa.Value, embedded []int) (_ []ssa.Value, n int, field types.Type) {
+func traceEmbeddedPath(typ types.Type, path []ssa.Value, embedded []int) (_ []ssa.Value, n int, field types.Type) {
 	path = slices.Clone(path)
 	for i, index := range embedded {
 		// Each embedded field but the last is a struct or a pointer to one
@@ -1315,12 +1315,12 @@ func embeddedPath(typ types.Type, path []ssa.Value, embedded []int) (_ []ssa.Val
 //
 // Each embedded field but the last must be a struct, not a pointer to one.
 func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) bool {
-	addr, typ, _, ok := embeddedStart(c, call)
+	addr, typ, _, ok := traceEmbeddedStart(c, call)
 	if !ok {
 		return false
 	}
 	root, base := aggregatePath(addr)
-	path, n, _ := embeddedPath(typ, base, c.embedded)
+	path, n, _ := traceEmbeddedPath(typ, base, c.embedded)
 	if n < len(c.embedded) {
 		return false // Reading past a pointer is a load, which a path does not take
 	}
@@ -1333,7 +1333,7 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 	for k := len(base); k <= len(path); k++ {
 		loads, _, _ := storeLoadsAt(root, path[:k])
 		for _, load := range loads {
-			for _, ev := range embeddedSelections(load, c.embedded[k-len(base):]) {
+			for _, ev := range traceEmbeddedSelections(load, c.embedded[k-len(base):]) {
 				tr.traceCtxCalls(ev, fn, calls, make(map[ssa.Value]bool))
 			}
 		}
@@ -1343,10 +1343,10 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, before)
 }
 
-// embeddedSelections returns the Field instructions that select the embedded
+// traceEmbeddedSelections returns the Field instructions that select the embedded
 // fields from the struct value v, one after another: each value of the last
 // field the function selects from v, or v itself when there are none.
-func embeddedSelections(v ssa.Value, embedded []int) []ssa.Value {
+func traceEmbeddedSelections(v ssa.Value, embedded []int) []ssa.Value {
 	values := []ssa.Value{v}
 	for _, index := range embedded {
 		var next []ssa.Value

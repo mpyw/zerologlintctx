@@ -69,7 +69,7 @@ func addressesMatch(a, b ssa.Value) bool {
 	l2, ok2 := b.(*ssa.UnOp)
 	if ok1 && ok2 {
 		return l1.Op == token.MUL && l2.Op == token.MUL && addressesMatch(l1.X, l2.X) &&
-			maps.Equal(storesBeforeLoad(l1), storesBeforeLoad(l2))
+			maps.Equal(matchReachingStores(l1), matchReachingStores(l2))
 	}
 
 	f1, ok1 := a.(*ssa.Field)
@@ -81,13 +81,13 @@ func addressesMatch(a, b ssa.Value) bool {
 	return false
 }
 
-// storesBeforeLoad returns the instructions after which the value that load
+// matchReachingStores returns the instructions after which the value that load
 // reads is at its address, on some path to load: the stores to the address,
 // or to an aggregate that holds it, and the declaration of the local variable
 // it is in. A path that leads back to the entry of the function, or to its
 // recover block, is the nil key. Stores through another reference are not
 // seen, as storesReaching does not see them.
-func storesBeforeLoad(load *ssa.UnOp) map[ssa.Instruction]bool {
+func matchReachingStores(load *ssa.UnOp) map[ssa.Instruction]bool {
 	found := make(map[ssa.Instruction]bool)
 	b := load.Block()
 	type step struct {
@@ -101,7 +101,7 @@ func storesBeforeLoad(load *ssa.UnOp) map[ssa.Instruction]bool {
 		queue = queue[:len(queue)-1]
 		stopped := false
 		for i := s.from; i >= 0 && !stopped; i-- {
-			if instr := s.block.Instrs[i]; overwritesLoaded(instr, load.X) {
+			if instr := s.block.Instrs[i]; matchOverwrites(instr, load.X) {
 				found[instr] = true
 				stopped = true
 			}
@@ -123,10 +123,10 @@ func storesBeforeLoad(load *ssa.UnOp) map[ssa.Instruction]bool {
 	return found
 }
 
-// overwritesLoaded reports whether instr puts another value at addr: a store
+// matchOverwrites reports whether instr puts another value at addr: a store
 // to addr or to an aggregate that holds it, or the declaration of the local
 // variable addr is in.
-func overwritesLoaded(instr ssa.Instruction, addr ssa.Value) bool {
+func matchOverwrites(instr ssa.Instruction, addr ssa.Value) bool {
 	store, isStore := instr.(*ssa.Store)
 	for x := addr; x != nil; {
 		if isStore && addressesMatch(store.Addr, x) {
