@@ -470,6 +470,14 @@ func storesReachingAt(
 //declscope:shared // tracing.go finds the Ctx calls on an event in memory
 func storeLoadsOf(addr ssa.Value) (loads []*ssa.UnOp, overwrites map[ssa.Instruction]bool, ok bool) {
 	root, path := aggregatePath(addr)
+	return storeLoadsAt(root, path)
+}
+
+// storeLoadsAt returns what storeLoadsOf does for the address that path
+// selects from root.
+//
+//declscope:shared // tracing.go finds the Ctx calls on an embedded event
+func storeLoadsAt(root ssa.Value, path []ssa.Value) (loads []*ssa.UnOp, overwrites map[ssa.Instruction]bool, ok bool) {
 	switch root.(type) {
 	case *ssa.Alloc, *ssa.Parameter, *ssa.FreeVar:
 	default:
@@ -477,7 +485,11 @@ func storeLoadsOf(addr ssa.Value) (loads []*ssa.UnOp, overwrites map[ssa.Instruc
 	}
 	w := &storeWalk{root: root, path: path}
 	overwrites = make(map[ssa.Instruction]bool)
-	for instr := range instrsIn(parentFunc(addr)) {
+	fn := parentFunc(root)
+	if fv, isFreeVar := root.(*ssa.FreeVar); isFreeVar {
+		fn = fv.Parent()
+	}
+	for instr := range instrsIn(fn) {
 		switch in := instr.(type) {
 		case *ssa.UnOp:
 			if n, ok := w.prefixLen(in.X); ok && in.Op == token.MUL && n == len(path) {

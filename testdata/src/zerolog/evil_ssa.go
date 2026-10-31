@@ -1604,6 +1604,119 @@ func badNestedEmbeddedStructMethodExpression(ctx context.Context, logger zerolog
 	embeddedHolderOfHolder.Msg(h, "nested method expression via embedding") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// The embedding may go through a pointer partway. The pointer stored there
+// is followed to the struct it points to (#204).
+
+type embeddedHolderPointerOfHolder struct {
+	*embeddedHolder
+}
+
+func goodNestedEmbeddedPointerMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info().Ctx(ctx)}}
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer partway") // OK - the embedded event has ctx
+}
+
+func goodNestedEmbeddedPointerVariableMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	inner := embeddedHolder{logger.Info().Ctx(ctx)}
+	h := embeddedHolderPointerOfHolder{&inner}
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer to a variable") // OK - the embedded event has ctx
+}
+
+func badNestedEmbeddedPointerMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer partway") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badNestedEmbeddedPointerOneLacksCtxMethodExpression(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info().Ctx(ctx)}}
+	if cond {
+		h = embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
+	}
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer, one lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badNestedEmbeddedPointerParamMethodExpression(ctx context.Context, inner *embeddedHolder) {
+	h := embeddedHolderPointerOfHolder{inner}
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer parameter") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badNestedEmbeddedPointerOfPointerParamMethodExpression(ctx context.Context, h *embeddedHolderPointerOfHolder) {
+	embeddedHolderPointerOfHolder.Msg(*h, "method expression of a pointer parameter") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodNestedEmbeddedPointerSetToNilMethodExpression(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info().Ctx(ctx)}}
+	if cond {
+		h.embeddedHolder = nil
+	}
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer set to nil") // OK - a nil pointer has no event to log
+}
+
+func badNestedEmbeddedNilPointerMethodExpression(ctx context.Context) {
+	var h embeddedHolderPointerOfHolder
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a nil pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Ctx called in place on the embedded event, with its result unused, sets
+// the context of the event the method expression reads (#204).
+func goodEmbeddedStructCtxInPlaceMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info()}
+	h.Ctx(ctx)
+	embeddedHolder.Msg(h, "method expression after Ctx in place") // OK - Ctx set the context in place
+}
+
+func goodEmbeddedStructPointerCtxInPlaceMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := &embeddedHolder{logger.Info()}
+	h.Ctx(ctx)
+	(*embeddedHolder).Msg(h, "pointer method expression after Ctx in place") // OK - Ctx set the context in place
+}
+
+func badEmbeddedStructCtxInPlaceOverwrittenMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info()}
+	h.Ctx(ctx)
+	h.Event = logger.Warn()
+	embeddedHolder.Msg(h, "method expression after another event is stored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEmbeddedStructCtxInPlaceOnOneBranchMethodExpression(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := embeddedHolder{logger.Info()}
+	if cond {
+		h.Ctx(ctx)
+	}
+	embeddedHolder.Msg(h, "method expression after Ctx on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEmbeddedStructCtxBackgroundInPlaceMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info()}
+	h.Ctx(context.Background())
+	embeddedHolder.Msg(h, "method expression after a fresh Ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): Ctx in place is not seen through an embedded
+// pointer partway, which the event is read past with a load.
+func limitationNestedEmbeddedPointerCtxInPlaceMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
+	h.Ctx(ctx)
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer after Ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEmbeddedStructCtxInPlaceInClosureMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info()}
+	func() {
+		h.Ctx(ctx)
+		embeddedHolder.Msg(h, "method expression after Ctx in place, in a closure") // OK - Ctx set the context in place
+	}()
+}
+
+func badEmbeddedStructOfPointerParamPointerMethodExpression(ctx context.Context, p **embeddedHolder) {
+	(*p).Ctx(ctx)
+	(*embeddedHolder).Msg(*p, "pointer method expression of a pointer loaded again") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEmbeddedStructOfGlobalMethodExpression(ctx context.Context) {
+	embeddedHolder.Msg(globalEmbeddedHolder, "method expression of a global") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func goodEmbeddedLoggerPointerMethodExpression(ctx context.Context, logger zerolog.Logger) {
 	l := logger.With().Ctx(ctx).Logger()
 	w := embeddedLoggerPointer{&l}
@@ -1750,6 +1863,84 @@ func badRunHolder(ctx context.Context, h reloadedMonitorHolder) {
 
 func badRunHolderNoStore(ctx context.Context, h reloadedMonitorHolder) {
 	h.m.log.Info().Msg("pointer field of a struct value, not stored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// Two loads of the pointer are the same pointer only when the same stores to
+// it reach both. A store of another pointer between them makes the read go
+// through that one (#205).
+
+func badReassignedCapturedPointer(ctx context.Context, a, b *reloadedMonitor) {
+	p := a
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	p = b
+	p.log.Info().Msg("b.log is not stored here") // want `zerolog call chain missing .Ctx\(ctx\)`
+	go func() { _ = p }()
+}
+
+func badReassignedCapturedPointerOnOneBranch(ctx context.Context, a, b *reloadedMonitor, cond bool) {
+	p := a
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	if cond {
+		p = b
+	}
+	p.log.Info().Msg("b.log is not stored here") // want `zerolog call chain missing .Ctx\(ctx\)`
+	go func() { _ = p }()
+}
+
+func goodReassignedCapturedPointerStoredAfter(ctx context.Context, a, b *reloadedMonitor) {
+	p := a
+	p = b
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	p.log.Info().Msg("stored through b") // OK - the only store through b has ctx
+	go func() { _ = p }()
+}
+
+func goodPointerLoadedFromParam(ctx context.Context, pp **reloadedMonitor) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	(*pp).log.Info().Msg("pointer loaded again from a parameter") // OK - the only store has ctx
+}
+
+func badPointerLoadedFromParamReassigned(ctx context.Context, pp **reloadedMonitor, b *reloadedMonitor) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	*pp = b
+	(*pp).log.Info().Msg("b.log is not stored here") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodPointerInArrayElement(ctx context.Context, a *reloadedMonitor) {
+	var arr [1]*reloadedMonitor
+	arr[0] = a
+	arr[0].log = zerolog.Ctx(ctx).With().Logger()
+	arr[0].log.Info().Msg("pointer in an array element") // OK - the only store has ctx
+	go func() { _ = arr }()
+}
+
+func badPointerInArrayReassigned(ctx context.Context, a, b *reloadedMonitor) {
+	var arr [1]*reloadedMonitor
+	arr[0] = a
+	arr[0].log = zerolog.Ctx(ctx).With().Logger()
+	arr = [1]*reloadedMonitor{b}
+	arr[0].log.Info().Msg("b.log is not stored here") // want `zerolog call chain missing .Ctx\(ctx\)`
+	go func() { _ = arr }()
+}
+
+func goodCapturedPointerDeclaredInLoop(ctx context.Context, a *reloadedMonitor, n int, cond bool) {
+	for range n {
+		var p *reloadedMonitor
+		if cond {
+			p = a
+		}
+		p.log = zerolog.Ctx(ctx).With().Logger()
+		p.log.Info().Msg("declared in a loop") // OK - the store in the same iteration has ctx
+		go func() { _ = p }()
+	}
+}
+
+func goodCapturedPointerInLoop(ctx context.Context, ms []*reloadedMonitor) {
+	for _, m := range ms {
+		m.log = zerolog.Ctx(ctx).With().Logger()
+		m.log.Info().Msg("captured in a loop") // OK - the store in the same iteration has ctx
+		go func() { _ = m }()
+	}
 }
 
 // ===== WRITES THROUGH ANOTHER REFERENCE =====
