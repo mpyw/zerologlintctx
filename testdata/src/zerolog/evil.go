@@ -992,6 +992,59 @@ var evilGlobalClosureShadowed = func(ctx context.Context) {
 }
 
 // =============================================================================
+// EVIL: CONTEXT TYPE PARAMETER
+// =============================================================================
+
+// A type parameter whose constraint is, or embeds, context.Context is a
+// context (#198).
+func evilCtxTypeParam[C context.Context](ctx C, logger zerolog.Logger) {
+	logger.Info().Msg("type param ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func evilCtxTypeParamWithCtx[C context.Context](ctx C, logger zerolog.Logger) {
+	logger.Info().Ctx(ctx).Msg("type param ctx with ctx") // OK
+}
+
+func evilCtxTypeParamEmbedded[C interface {
+	context.Context
+	Name() string
+}](ctx C, logger zerolog.Logger) {
+	logger.Info().Msg("embedded type param ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+type evilCtxConstraint interface {
+	context.Context
+}
+
+type evilNestedCtxConstraint interface {
+	evilCtxConstraint
+	Name() string
+}
+
+func evilCtxTypeParamNestedEmbedded[C evilNestedCtxConstraint](ctx C, logger zerolog.Logger) {
+	logger.Info().Msg("nested embedded type param ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func evilCtxTypeParamPointer[C context.Context](ctx *C, logger zerolog.Logger) {
+	logger.Info().Msg("pointer to type param ctx") // want `zerolog call chain missing .Ctx\(\*ctx\)`
+}
+
+func evilCtxTypeParamInClosure[C context.Context](ctx C, logger zerolog.Logger) {
+	func() {
+		logger.Info().Msg("type param ctx in closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+// A type parameter that may be another type is not a context.
+func evilAnyTypeParam[C any](ctx C, logger zerolog.Logger) {
+	logger.Info().Msg("any type param") // OK - not a context
+}
+
+func evilPointerCtxTypeParam[C *context.Context](ctx C, logger zerolog.Logger) {
+	logger.Info().Msg("pointer constraint type param") // OK - not named as *ctx
+}
+
+// =============================================================================
 // EVIL: CLOSURES IN PACKAGE-LEVEL VARIABLES
 // =============================================================================
 

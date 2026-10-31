@@ -172,6 +172,16 @@ func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 	return false
 }
 
+// loggerHasCtx traces a Logger value, the receiver of the direct logging
+// call at, such as Logger.Print, to check if the Logger carries a context.
+// Logger.Print builds its event from the Logger, as Logger.Info does, so
+// the event takes the Logger's context.
+//
+//declscope:shared // checker.go asks this of each direct logging call's receiver
+func (tr *tracer) loggerHasCtx(v ssa.Value, at ssa.Instruction) bool {
+	return tr.traceReceiver(v, at, tracerLogger, make(map[ssa.Value]bool))
+}
+
 // traceCtxSetAtReturns reports whether, on every path from d, a deferred
 // terminator on the event v, to a return, Event.Ctx is called on the event.
 // The deferred call runs at the return:

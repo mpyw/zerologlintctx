@@ -86,7 +86,9 @@ func (c *Checker) CheckFunction(fn *ssa.Function, ctxName string, report func(po
 // statement:
 //   - A terminator (Msg, Msgf, MsgFunc, Send) is reported unless its Event
 //     chain has context set
-//   - Direct logging (Logger.Print*, log.Print*) is always reported
+//   - Direct logging (Logger.Print*, log.Print*) is reported unless its
+//     Logger carries context. The global Logger of log.Print* is not traced,
+//     so those are always reported
 func (c *Checker) checkCall(call ssa.CallInstruction) {
 	cc := call.Common()
 	pos := cc.Pos()
@@ -100,7 +102,11 @@ func (c *Checker) checkCall(call ssa.CallInstruction) {
 			c.reportOnce(pos, checkerMissingCtx)
 		}
 	case callee.logsDirectly():
-		c.reportOnce(pos, checkerDirectLogging)
+		// A Print function of zerolog/log logs through the global Logger,
+		// which is not traced
+		if callee.recv == nil || !c.tracer.loggerHasCtx(callee.recv, call) {
+			c.reportOnce(pos, checkerDirectLogging)
+		}
 	}
 }
 

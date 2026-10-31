@@ -117,9 +117,40 @@ func ReturnsVoid(sig *types.Signature) bool {
 // Context Type Checking
 // =============================================================================
 
-// IsContextType checks if the type is context.Context.
+// IsContextType checks if the type is context.Context, or a pointer to it.
+// A type parameter counts when its constraint is, or embeds,
+// context.Context, as for C in func f[C context.Context](ctx C).
 func IsContextType(t types.Type) bool {
+	if tp, ok := types.Unalias(unwrapPointer(t)).(*types.TypeParam); ok {
+		return constrainsToContext(tp.Constraint(), make(map[types.Type]bool))
+	}
 	return isNamedType(t, contextPkgPath, "Context")
+}
+
+// constrainsToContext reports whether the constraint c is context.Context, or
+// an interface that embeds it at any depth. A pointer, as in
+// func f[C *context.Context](ctx C), does not count: ctx is not a context.
+func constrainsToContext(c types.Type, seen map[types.Type]bool) bool {
+	if seen[c] {
+		return false
+	}
+	seen[c] = true
+	if _, isPtr := types.Unalias(c).(*types.Pointer); isPtr {
+		return false
+	}
+	if isNamedType(c, contextPkgPath, "Context") {
+		return true
+	}
+	iface, ok := c.Underlying().(*types.Interface)
+	if !ok {
+		return false
+	}
+	for e := range iface.EmbeddedTypes() {
+		if constrainsToContext(e, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // =============================================================================

@@ -37,11 +37,13 @@ zerologlintctx/
 | Pattern | Condition | Message |
 |---------|-----------|---------|
 | Event chain missing `.Ctx()` | `IsEvent(recv) && ReturnsVoid(sig)` | `zerolog call chain missing .Ctx(ctx)` |
-| Direct logging on Logger | `IsLogger(recv) && ReturnsVoid(sig) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+| Direct logging on Logger without context | `IsLogger(recv) && ReturnsVoid(sig) && hasPrefix("Print")`, and the Logger has no context | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
 | Direct logging via log package | `IsZerologLogPkg(pkg) && ReturnsVoid(sig) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
 
 The message names the first usable `context.Context` parameter, or `*name`
-for a `*context.Context` one. A closure without one of its own takes the name
+for a `*context.Context` one. A parameter whose type is a type parameter
+counts when the constraint is, or embeds, `context.Context`, as for
+`func f[C context.Context](ctx C)`. A closure without one of its own takes the name
 from the function it is declared in. Where that name means something else at
 the call, such as a parameter of the closure or a local variable that shadows
 it, the context cannot be passed there, and nothing is reported.
@@ -99,6 +101,19 @@ logger.UpdateContext(...)  // Configuration, not logging
 ```
 
 This is necessary because `UpdateContext` also returns void but is not a logging method.
+
+`Logger.Print` builds its event from the Logger, as `Logger.Info` does, so the
+event takes the Logger's context. The receiver is traced with `tracerLogger`
+(`loggerHasCtx`), and the call is reported only when the Logger has no
+context:
+
+```go
+l := base.With().Ctx(ctx).Logger()
+l.Print("x") // OK
+```
+
+The `Print` functions of `zerolog/log` use the global Logger. It is not
+traced, so they are always reported.
 
 ## SSA Tracing
 

@@ -174,15 +174,21 @@ func handler(ctx context.Context, log zerolog.Logger) {
 
 ### Direct Logging Methods
 
-Detects direct logging calls that bypass the Event chain and cannot propagate context:
+Detects direct logging calls (`Print`, `Printf`, `Println`) on a logger that does not carry the context. These calls take no `.Ctx(ctx)`, so the event gets only the logger's own context:
 
 ```go
 func handler(ctx context.Context, log zerolog.Logger) {
-    // Bad: bypasses Event chain, context cannot be set
+    // Bad: the logger has no context
     log.Print("hello")
     log.Printf("hello %s", name)
+
+    // Good: the logger carries the context
+    l := log.With().Ctx(ctx).Logger()
+    l.Print("hello")
 }
 ```
+
+The `Print` functions of `github.com/rs/zerolog/log` use the global logger, which is not traced. They are always reported.
 
 The analyzer uses SSA (Static Single Assignment) form to track Event values through variable assignments, conditionals, and closures, ensuring accurate detection even in complex code patterns.
 
