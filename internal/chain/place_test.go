@@ -178,3 +178,31 @@ func TestValueSelAndLoad(t *testing.T) {
 		t.Errorf("got %d fields and %d elements of values, want 2 and 1", fields, indexes)
 	}
 }
+
+func TestPlaceOverlaps(t *testing.T) {
+	addrs := placeStores(placeFunc(t))
+	inB, _ := placeOf(addrs[0])
+	arr1, _ := placeOf(addrs[2])
+	arrI, _ := placeOf(addrs[4])
+	param, _ := placeOf(addrs[6])
+	for _, tt := range []struct {
+		name string
+		p, q place
+		want bool
+	}{
+		{"the same place", inB, inB, true},
+		{"o and o.in.b", inB.prefix(0), inB, true},
+		{"o.in.b and o", inB, inB.prefix(0), true},
+		{"o.in.b and o.arr[1].a", inB, arr1, false},
+		{"o.arr[i].a and o.arr[1].a", arrI, arr1, true},
+		{"o.arr[1] and o.arr[i]", arr1.prefix(2), arrI.prefix(2), true},
+		{"o.in.b and o.arr[i].a", inB, arrI, false},
+		{"different roots", inB, param, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.p.overlaps(tt.q); got != tt.want {
+				t.Errorf("overlaps = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
