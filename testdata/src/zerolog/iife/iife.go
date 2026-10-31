@@ -414,6 +414,58 @@ func goodRecursiveFuncLiteralStructParam(ctx context.Context, logger zerolog.Log
 	walk(iifeLoggerHolder{l: logger.With().Ctx(ctx).Logger()}, n)
 }
 
+// A pointer parameter traced as a value, here through a Phi, has what the
+// calls pass for it.
+
+func badIIFEPointerParamPicked(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger
+	other := logger.With().Ctx(ctx).Logger()
+	func(p *zerolog.Logger) {
+		q := p
+		if cond {
+			q = &other
+		}
+		q.Info().Msg("pointer param picked") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}(&l)
+}
+
+func goodIIFEPointerParamPicked(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger.With().Ctx(ctx).Logger()
+	other := logger.With().Ctx(ctx).Logger()
+	func(p *zerolog.Logger) {
+		q := p
+		if cond {
+			q = &other
+		}
+		q.Info().Msg("pointer param picked") // OK - both have ctx
+	}(&l)
+}
+
+// A recursive func literal whose result is its own call's result returns
+// what its other returns give.
+
+func goodRecursiveFuncLiteralResult(ctx context.Context, logger zerolog.Logger, n int) {
+	var f func(n int) *zerolog.Event
+	f = func(n int) *zerolog.Event {
+		if n > 0 {
+			return f(n - 1)
+		}
+		return logger.Info().Ctx(ctx)
+	}
+	f(n).Msg("recursive result") // OK - the only other return has ctx
+}
+
+func badRecursiveFuncLiteralResult(ctx context.Context, logger zerolog.Logger, n int) {
+	var f func(n int) *zerolog.Event
+	f = func(n int) *zerolog.Event {
+		if n > 0 {
+			return f(n - 1)
+		}
+		return logger.Info()
+	}
+	f(n).Msg("recursive result") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A recursive call that passes an event parameter on, updated or not, keeps
 // the event it had (#171).
 

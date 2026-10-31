@@ -6,7 +6,6 @@ package chain
 
 import (
 	"go/types"
-	"slices"
 
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
@@ -134,51 +133,61 @@ func contextParamName(fn *ssa.Function) string {
 //
 //declscope:shared // tracing.go does not count a Ctx call given one
 func isFreshContext(v ssa.Value, positions instrPositions) bool {
-	return contextIsFresh(v, positions, make(map[ssa.Value]bool))
+	return contextIsFresh(v, positions, make(map[ssa.Value]verdict)) == yes
 }
 
-// contextIsFresh does the work of isFreshContext. A value in seen is an edge
-// of a Phi that leads back to it, or a store in a loop that reaches itself,
-// which adds no other value.
-func contextIsFresh(v ssa.Value, positions instrPositions, seen map[ssa.Value]bool) bool {
-	if seen[v] {
-		return true
+// contextIsFresh does the work of isFreshContext: yes for a fresh context,
+// and no for any other. done holds the verdict of each value already asked
+// about. A value still being worked out is neutral: it is reached again only
+// through an edge of a Phi that leads back to it, or a store in a loop that
+// reaches itself, which adds no other value.
+func contextIsFresh(v ssa.Value, positions instrPositions, done map[ssa.Value]verdict) verdict {
+	if found, ok := done[v]; ok {
+		return found
 	}
-	seen[v] = true
+	done[v] = neutral
+	found := contextTraceFresh(v, positions, done)
+	done[v] = found
+	return found
+}
+
+// contextTraceFresh does the work of contextIsFresh for a value not asked
+// about yet.
+func contextTraceFresh(v ssa.Value, positions instrPositions, done map[ssa.Value]verdict) verdict {
 	switch val := v.(type) {
 	case *ssa.Call:
 		sfn := val.Call.StaticCallee()
 		if sfn == nil {
-			return false
+			return no
 		}
 		fn, ok := sfn.Object().(*types.Func)
-		return ok && zerologapi.MakesFreshContext(fn)
+		return verdictOf(ok && zerologapi.MakesFreshContext(fn))
 	case *ssa.Phi:
-		return contextAllFresh(val.Edges, positions, seen)
+		return contextAllFresh(val.Edges, positions, done)
 	case *ssa.ChangeType:
-		return contextIsFresh(val.X, positions, seen)
+		return contextIsFresh(val.X, positions, done)
 	case *ssa.UnOp:
 		if _, isLoad := asLoad(val); !isLoad {
-			return false
+			return no
 		}
 		// The stores that reach the load must be known from the function
 		// alone. A global can be changed anywhere
 		if _, tracked := placeOf(val.X); !tracked {
-			return false
+			return no
 		}
 		stored, ok := storesReaching(val.X, val, positions)
 		if !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0 {
-			return false
+			return no
 		}
-		return contextAllFresh(stored.values, positions, seen)
+		return contextAllFresh(stored.values, positions, done)
 	}
-	return false
+	return no
 }
 
-// contextAllFresh reports whether values has a value, and every one is fresh,
-// as contextIsFresh judges it.
-func contextAllFresh(values []ssa.Value, positions instrPositions, seen map[ssa.Value]bool) bool {
-	return len(values) > 0 && !slices.ContainsFunc(values, func(v ssa.Value) bool {
-		return !contextIsFresh(v, positions, seen)
-	})
+// contextAllFresh combines the verdicts of values, as contextIsFresh judges
+// each: every one must be fresh.
+func contextAllFresh(values []ssa.Value, positions instrPositions, done map[ssa.Value]verdict) verdict {
+	return all(verdictsOf(values, func(v ssa.Value) verdict {
+		return contextIsFresh(v, positions, done)
+	}))
 }

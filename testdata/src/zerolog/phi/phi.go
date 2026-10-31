@@ -141,6 +141,32 @@ func evilLoopBuildingContextWithCtx(ctx context.Context, logger zerolog.Logger, 
 	derived.Info().Msg("loop built context with ctx") // OK
 }
 
+// An event made on a branch in a loop, and updated after the branch, reaches
+// the update through the loop's Phi as well. The edge that leads back is
+// neutral, and the event made on the branch still counts.
+
+func evilLoopBranchThenUpdate(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for i := 0; i < n; i++ {
+		if cond {
+			e = logger.Warn()
+		}
+		e = e.Str("k", "v")
+	}
+	e.Msg("loop branch then update") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLoopBranchThenUpdateWithCtx(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for i := 0; i < n; i++ {
+		if cond {
+			e = logger.Warn().Ctx(ctx)
+		}
+		e = e.Str("k", "v")
+	}
+	e.Msg("loop branch then update with ctx") // OK
+}
+
 // ===== CONDITIONAL EVENT CREATION (PHI NODES) =====
 
 func badConditionalEvent(ctx context.Context, logger zerolog.Logger, flag bool) {

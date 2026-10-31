@@ -16,8 +16,9 @@ zerologlintctx/
 │   │   ├── callee.go          # Resolves and classifies the function a call runs
 │   │   ├── context.go         # Which functions have a context in scope
 │   │   ├── tracing.go         # Trace states, value tracing
+│   │   ├── verdict.go         # Yes, no or neutral, and how they combine
+│   │   ├── memo.go            # The verdict of each value, and the traces in progress
 │   │   ├── closure.go         # Index of closures and func literals
-│   │   ├── phi.go             # Phi nodes and edges that lead back to them
 │   │   ├── store.go           # Values stored at an address
 │   │   ├── aggregate.go       # The copies of a struct or array
 │   │   ├── match.go           # Whether two addresses are the same
@@ -157,12 +158,60 @@ traced, so they are always reported.
 ## SSA Tracing
 
 The tracing system follows SSA values backwards to find if context was set.
-The `tracer` type in `internal/chain/tracing.go` does it. Phi nodes are in
-`phi.go`, and the stores behind a load are found by `store.go`.
+The `tracer` type in `internal/chain/tracing.go` does it, and the stores
+behind a load are found by `store.go`.
 
-One tracer serves a whole package. It keeps each value it found to have
-context, so it is not worked out again for the next call that reaches it,
+One tracer serves a whole package. It keeps the verdict of each value it
+traced, so it is not worked out again for the next call that reaches it,
 or for a closure that reaches a value of the function it is declared in.
+
+### Verdicts
+
+A trace answers with a `verdict`, in `verdict.go`:
+
+| Verdict | Meaning |
+|---------|---------|
+| `yes` | The value has context |
+| `no` | The value has no context, or it is not known |
+| `neutral` | The value adds no source: a nil event, which logs nothing, or a value whose trace is in progress |
+
+A value that may be one of several sources, such as a Phi, the stores that
+reach a load, or the calls of a func literal, combines them with `all`:
+
+| Sources | `all` |
+|---------|-------|
+| One is `no` | `no`, and the rest are not traced |
+| At least one `yes`, the rest `neutral` | `yes` |
+| None, or all `neutral` | `neutral` |
+
+`some` is the other way round, for ways to find the same value, any of which
+will do: the closures that may bind a free variable, or the value an IIFE
+returns and the argument it stands for. At the terminator, only `yes` counts.
+
+#### Cycles
+
+A value reached again while its trace is in progress is `neutral`, whatever
+reaches it: an edge of a Phi in a loop, a store in a loop that reaches
+itself, or a recursive call of a func literal. The edge that leads back adds
+no source that the trace in progress does not see on its own:
+
+```go
+e := logger.Info().Ctx(ctx)
+for range n {
+    if cond {
+        e = logger.Warn() // traced: no context
+    }
+    e = e.Str("k", "v")   // leads back to the loop's Phi: neutral there
+}
+e.Msg("x") // reported
+```
+
+`traceMemo` in `memo.go` keeps the verdicts, and marks the values in
+progress, per trace state. A verdict that depends on a value in progress,
+which is `neutral` only for now, is kept with the frame of that value, and
+used again only while the frame is on the stack: a loop of many Phis is then
+traced once, not once per path. A verdict that depends on no value in
+progress below its own frame, `yes` or `no`, is kept for good.
 
 ### Walking the Control Flow
 
@@ -306,8 +355,8 @@ path stops can be what the read sees, and every one must have context:
 A store whose value loads from the same address, such as
 `l = l.With().Str("k", "v").Logger()`, is an update. It is traced like any
 other value: its load is a read, with stores of its own that reach it. An
-update in a loop reaches itself, and is skipped there, as a Phi edge that
-leads back to the Phi is.
+update in a loop reaches itself, and is `neutral` there, as a Phi edge that
+leads back to the Phi is (see [Cycles](#cycles)).
 
 | Where a path stops | What it carries |
 |--------------------|-----------------|
