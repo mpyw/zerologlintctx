@@ -31,6 +31,9 @@ go vet -vettool=./bin/zerologlintctx ./...
 
 # Run golangci-lint
 golangci-lint run ./...
+
+# Diff the diagnostics on real modules against testdata/corpus/
+scripts/corpus.sh
 ```
 
 > [!IMPORTANT]
@@ -55,6 +58,27 @@ Validate config changes with `goreleaser check`, and dry-run with `goreleaser re
   - `===== SHOULD REPORT =====` - Cases that should trigger warnings
   - `===== SHOULD NOT REPORT =====` - Negative cases
   - `===== EDGE CASES =====` - Corner cases
+
+### Corpus Golden Test
+
+`scripts/corpus.sh` builds the analyzer, runs it over pinned commits of real modules that use zerolog heavily, and diffs the result against `testdata/corpus/<name>.txt`.
+
+> [!IMPORTANT]
+> A refactor that claims no change in behavior must keep the corpus diff empty, as well as `./test_all.sh`.
+
+| Command | What it does |
+|---|---|
+| `scripts/corpus.sh` | Check every module; exits 1 and prints a unified diff on a change |
+| `scripts/corpus.sh -update` | Rewrite the golden files; commit them with an intended change |
+| `scripts/corpus.sh reva topaz` | Only the named modules |
+
+- The modules and their commits are pinned in the `corpus` list at the top of the script: autobrr, cloudflared, fleet-server, reva, topaz.
+- A golden line is `relative/file.go:line:col: message`, sorted and deduplicated. Paths are relative to the module root.
+- Only diagnostics are compared. Packages that fail to load are skipped by the analyzer, and their errors are dropped.
+- The analysis runs with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`, so every host analyzes the same files. Only the root module of each repository is analyzed.
+- Clones are cached in `${XDG_CACHE_HOME:-~/.cache}/zerologlintctx-corpus` (override with `ZEROLOGLINTCTX_CORPUS_DIR`). The first run downloads the modules and their dependencies; a run with a warm cache takes about 1.5 minutes.
+- CI runs it in `corpus.yml` on pull requests that change Go code, `go.mod`, `go.sum` or the corpus files, and on manual dispatch.
+- Requires git, go and jq. Go must be at least the highest `go` directive in the corpus (1.27.3).
 
 ### Testdata Organization
 
