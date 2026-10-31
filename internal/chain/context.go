@@ -5,7 +5,6 @@
 package chain
 
 import (
-	"go/token"
 	"go/types"
 	"slices"
 
@@ -159,14 +158,13 @@ func contextIsFresh(v ssa.Value, positions instrPositions, seen map[ssa.Value]bo
 	case *ssa.ChangeType:
 		return contextIsFresh(val.X, positions, seen)
 	case *ssa.UnOp:
-		if val.Op != token.MUL {
+		if _, isLoad := asLoad(val); !isLoad {
 			return false
 		}
-		switch aggregateRoot(val.X).(type) {
-		case *ssa.Alloc, *ssa.Parameter, *ssa.FreeVar:
-			// The stores that reach the load are known from the function alone
-		default:
-			return false // A global, which can be changed anywhere
+		// The stores that reach the load must be known from the function
+		// alone. A global can be changed anywhere
+		if _, tracked := placeOf(val.X); !tracked {
+			return false
 		}
 		stored, ok := storesReaching(val.X, val, positions)
 		if !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0 {

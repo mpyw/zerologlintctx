@@ -288,7 +288,7 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 	calls := make(map[ssa.Instruction]bool)
 	makes := make(map[ssa.Instruction]bool) // Where another event is in v on the path
 	def, made := v.(ssa.Instruction)        // A parameter or a free variable is not made, but given at the entry
-	if load, ok := v.(*ssa.UnOp); ok && load.Op == token.MUL && parentFunc(load.X) == fn {
+	if load, ok := asLoad(v); ok && parentFunc(load.X) == fn {
 		// An event in memory, read by a load of its own at each use. A Ctx call
 		// on any load of the same address counts, unless another event is
 		// stored there in between.
@@ -297,7 +297,8 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 				tr.traceCtxCalls(other, fn, calls, make(map[ssa.Value]bool))
 			}
 			makes = overwrites
-			_, local := aggregateRoot(load.X).(*ssa.Alloc)
+			at, _ := placeOf(load.X)
+			_, local := at.root.(*ssa.Alloc)
 			made = local
 		}
 	}
@@ -556,24 +557,22 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState, visited map[ssa.Value]
 // ok is false when the value it selects from is not loaded from an address
 // whose stores storesReachingAt can find.
 func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState, visited map[ssa.Value]bool) (found, ok bool) {
-	var selections []ssa.Value
+	var selections []sel
 	for {
-		inner := unwrapInner(v)
-		switch v.(type) {
-		case *ssa.Field, *ssa.Index:
-			selections = append(selections, v)
-			v = inner
-			continue
+		from, s, ok := valueSel(v)
+		if !ok {
+			break
 		}
-		break
+		selections = append(selections, s)
+		v = from
 	}
-	load, isLoad := v.(*ssa.UnOp)
-	if !isLoad || load.Op != token.MUL {
+	load, isLoad := asLoad(v)
+	if !isLoad {
 		return false, false
 	}
 	slices.Reverse(selections)
-	root, path := aggregatePath(load.X)
-	stored, ok := storesReachingAt(root, append(path, selections...), load, tr.positions)
+	at, _ := placeOf(load.X)
+	stored, ok := storesReachingAt(at.with(selections...), load, tr.positions)
 	if !ok {
 		return false, false
 	}
@@ -696,16 +695,16 @@ func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp st
 	switch {
 	case !pp.pointer:
 		// A struct or array passed by value is loaded from where it is
-		load, ok := arg.(*ssa.UnOp)
-		if !ok || load.Op != token.MUL {
+		load, ok := asLoad(arg)
+		if !ok {
 			return false
 		}
 		addr, read = load.X, load
 	case len(pp.path) == 0:
 		return tr.traceReceiver(arg, call, st, visited)
 	}
-	root, path := aggregatePath(addr)
-	stored, ok := storesReachingAt(root, append(path, pp.path...), read, tr.positions)
+	at, _ := placeOf(addr)
+	stored, ok := storesReachingAt(at.with(pp.path...), read, tr.positions)
 	return ok && tr.traceStored(stored, st, visited)
 }
 
@@ -793,7 +792,7 @@ func traceFuncLiteralCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bo
 	vars := make(map[ssa.Value]bool) // The variables that may hold fn
 	phis := make(map[ssa.Value]bool) // The Phis that may be fn
 	mayBeFn := func(v ssa.Value) bool {
-		if load, ok := v.(*ssa.UnOp); ok && load.Op == token.MUL {
+		if load, ok := asLoad(v); ok {
 			return vars[load.X]
 		}
 		return phis[v] || traceIsFuncValue(v, fn)
@@ -1058,7 +1057,7 @@ func traceIsFuncValue(v ssa.Value, fn *ssa.Function) bool {
 
 // traceFreeVar traces a FreeVar back to the variable bound in MakeClosure, at
 // path, the selections from it: nil for the variable itself.
-func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []sel, st traceState, visited map[ssa.Value]bool) bool {
 	fn := fv.Parent()
 	if fn == nil {
 		return false
@@ -1098,7 +1097,7 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []ssa.Value, st traceState,
 //	l.Debug().Ctx(ctx).Msg("start") // reads base, before the closure is made
 //	l = l.With().Ctx(ctx).Logger()
 //	defer func() { l.Info().Msg("end") }()
-func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []sel, st traceState, visited map[ssa.Value]bool) bool {
 	stored := storesReachingClosure(mc.Bindings[idx], path, mc, tr.positions)
 	return tr.traceStored(stored, st, visited)
 }
@@ -1141,8 +1140,8 @@ func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, st trace
 	if !ok {
 		return false
 	}
-	root, path := aggregatePath(addr)
-	return tr.traceEmbeddedAt(root, path, typ, c.embedded, read, call, st, visited)
+	at, _ := placeOf(addr)
+	return tr.traceEmbeddedAt(at, typ, c.embedded, read, call, st, visited)
 }
 
 // traceEmbeddedStart returns where the struct c.recv is, for c, a method
@@ -1153,15 +1152,15 @@ func traceEmbeddedStart(c callee, call ssa.Instruction) (addr ssa.Value, typ typ
 	if ptr, isPtr := c.recv.Type().Underlying().(*types.Pointer); isPtr {
 		return c.recv, ptr.Elem(), call, true
 	}
-	load, isLoad := c.recv.(*ssa.UnOp)
-	if !isLoad || load.Op != token.MUL {
+	load, isLoad := asLoad(c.recv)
+	if !isLoad {
 		return nil, nil, nil, false
 	}
 	return load.X, c.recv.Type(), load, true
 }
 
 // traceEmbeddedAt traces the receiver at the embedded fields of the struct of
-// type typ that path selects from root, as read reads it. call is the call
+// type typ at the address at, as read reads it. call is the call
 // of the method expression.
 //
 // An embedded field but the last may be a pointer. The receiver is then at
@@ -1172,16 +1171,15 @@ func traceEmbeddedStart(c callee, call ssa.Instruction) (addr ssa.Value, typ typ
 //	o := outer{&inner{e}}  // t3 = new inner ; *&t3.Event = e ; *&t1.inner = t3
 //	outer.Msg(o, "x")      // reads t1.inner, then t3.Event
 func (tr *tracer) traceEmbeddedAt(
-	root ssa.Value,
-	path []ssa.Value,
+	at place,
 	typ types.Type,
 	embedded []int,
 	read, call ssa.Instruction,
 	st traceState,
 	visited map[ssa.Value]bool,
 ) bool {
-	path, n, field := traceEmbeddedPath(typ, path, embedded)
-	stored, ok := storesReachingAt(root, path, read, tr.positions)
+	at, n, field := traceEmbeddedPath(typ, at, embedded)
+	stored, ok := storesReachingAt(at, read, tr.positions)
 	if n == len(embedded) {
 		return ok && tr.traceStored(stored, st, visited)
 	}
@@ -1193,9 +1191,9 @@ func (tr *tracer) traceEmbeddedAt(
 		if isNilConst(v) {
 			continue // A nil pointer has no event to log
 		}
-		next, nextPath := aggregatePath(v)
+		next, _ := placeOf(v)
 		elem := field.Underlying().(*types.Pointer).Elem()
-		if !tr.traceEmbeddedAt(next, nextPath, elem, embedded[n:], call, call, st, maps.Clone(visited)) {
+		if !tr.traceEmbeddedAt(next, elem, embedded[n:], call, call, st, maps.Clone(visited)) {
 			return false
 		}
 		found = true
@@ -1203,23 +1201,21 @@ func (tr *tracer) traceEmbeddedAt(
 	return found
 }
 
-// traceEmbeddedPath returns path with the embedded fields of the struct of type
-// typ appended, one after another, up to the first that is a pointer to a
-// struct, which is a field but the last. n is how many it appended, and field
-// is the type of the last of them.
-func traceEmbeddedPath(typ types.Type, path []ssa.Value, embedded []int) (_ []ssa.Value, n int, field types.Type) {
-	path = slices.Clone(path)
+// traceEmbeddedPath returns at, the address of a struct of type typ, with the
+// embedded fields selected from it, one after another, up to the first that
+// is a pointer to a struct, which is a field but the last. n is how many it
+// selected, and field is the type of the last of them.
+func traceEmbeddedPath(typ types.Type, at place, embedded []int) (_ place, n int, field types.Type) {
+	at = at.with()
 	for i, index := range embedded {
 		// Each embedded field but the last is a struct or a pointer to one
 		typ = typ.Underlying().(*types.Struct).Field(index).Type()
-		// A selection that no instruction makes: a path is only compared by
-		// the field each step picks
-		path = append(path, &ssa.Field{Field: index})
+		at.path = append(at.path, sel{field: index})
 		if _, isPtr := typ.Underlying().(*types.Pointer); isPtr && i < len(embedded)-1 {
-			return path, i + 1, typ
+			return at, i + 1, typ
 		}
 	}
-	return path, len(embedded), typ
+	return at, len(embedded), typ
 }
 
 // traceEmbeddedCtxSetInPlace reports whether Event.Ctx is called in place,
@@ -1240,26 +1236,26 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 	if !ok {
 		return false
 	}
-	root, base := aggregatePath(addr)
-	path, n, _ := traceEmbeddedPath(typ, base, c.embedded)
+	base, _ := placeOf(addr)
+	at, n, _ := traceEmbeddedPath(typ, base, c.embedded)
 	if n < len(c.embedded) {
 		return false // Reading past a pointer is a load, which a path does not take
 	}
-	_, overwrites, ok := storeLoadsAt(root, path)
+	_, overwrites, ok := storeLoadsAt(at)
 	if !ok {
 		return false
 	}
 	fn := call.Parent()
 	calls := make(map[ssa.Instruction]bool)
-	for k := len(base); k <= len(path); k++ {
-		loads, _, _ := storeLoadsAt(root, path[:k])
+	for k := len(base.path); k <= len(at.path); k++ {
+		loads, _, _ := storeLoadsAt(at.prefix(k))
 		for _, load := range loads {
-			for _, ev := range traceEmbeddedSelections(load, c.embedded[k-len(base):]) {
+			for _, ev := range traceEmbeddedSelections(load, c.embedded[k-len(base.path):]) {
 				tr.traceCtxCalls(ev, fn, calls, make(map[ssa.Value]bool))
 			}
 		}
 	}
-	_, local := root.(*ssa.Alloc)
+	_, local := at.root.(*ssa.Alloc)
 	before := tracePoint{block: call.Block(), index: tr.positions.of(call)}
 	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, before)
 }

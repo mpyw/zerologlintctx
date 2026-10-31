@@ -17,8 +17,8 @@ import (
 //declscope:shared // store.go asks this of a load
 func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
 	isLoadFromAddr := func(v ssa.Value) bool {
-		unop, ok := v.(*ssa.UnOp)
-		return ok && unop.Op == token.MUL && addressesMatch(unop.X, addr)
+		load, ok := asLoad(v)
+		return ok && addressesMatch(load.X, addr)
 	}
 	return derivesFrom(v, isLoadFromAddr, unOpOperand, make(map[ssa.Value]bool))
 }
@@ -32,22 +32,18 @@ func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
 //	t1 = &t0.inner ; t2 = &t1.event ; *t2 = v   // write
 //	t3 = &t0.inner ; t4 = &t3.event ; ... = *t4 // read, t3 != t1
 //
+// Two selections match as sel.same says, so an element whose index is not a
+// constant matches only through the same instruction, which a == b catches.
+//
 //declscope:shared // store.go and aggregate.go both compare addresses
 func addressesMatch(a, b ssa.Value) bool {
 	if a == b {
 		return true
 	}
 
-	fa1, ok1 := a.(*ssa.FieldAddr)
-	fa2, ok2 := b.(*ssa.FieldAddr)
-	if ok1 && ok2 {
-		return fa1.Field == fa2.Field && addressesMatch(fa1.X, fa2.X)
-	}
-
-	ia1, ok1 := a.(*ssa.IndexAddr)
-	ia2, ok2 := b.(*ssa.IndexAddr)
-	if ok1 && ok2 {
-		return constIndexesMatch(ia1.Index, ia2.Index) && addressesMatch(ia1.X, ia2.X)
+	if xa, sa, ok := addrSel(a); ok {
+		xb, sb, ok := addrSel(b)
+		return ok && sa.same(sb) && addressesMatch(xa, xb)
 	}
 
 	// A pointer is loaded again for each use of it, as a captured receiver
@@ -65,20 +61,17 @@ func addressesMatch(a, b ssa.Value) bool {
 	//
 	//	*t0 = a ; t1 = *t0 ; t2 = &t1.log ; *t2 = v
 	//	*t0 = b ; t8 = *t0 ; t9 = &t8.log ; ... = *t9 // reads b.log
-	l1, ok1 := a.(*ssa.UnOp)
-	l2, ok2 := b.(*ssa.UnOp)
-	if ok1 && ok2 {
-		return l1.Op == token.MUL && l2.Op == token.MUL && addressesMatch(l1.X, l2.X) &&
+	if l1, ok := a.(*ssa.UnOp); ok {
+		l2, ok := b.(*ssa.UnOp)
+		return ok && l1.Op == token.MUL && l2.Op == token.MUL && addressesMatch(l1.X, l2.X) &&
 			maps.Equal(matchReachingStores(l1), matchReachingStores(l2))
 	}
 
+	// An element of an array value is not matched, only a field of a struct
+	// value
 	f1, ok1 := a.(*ssa.Field)
 	f2, ok2 := b.(*ssa.Field)
-	if ok1 && ok2 {
-		return f1.Field == f2.Field && addressesMatch(f1.X, f2.X)
-	}
-
-	return false
+	return ok1 && ok2 && f1.Field == f2.Field && addressesMatch(f1.X, f2.X)
 }
 
 // matchReachingStores returns the instructions after which the value that load
@@ -128,31 +121,13 @@ func matchReachingStores(load *ssa.UnOp) map[ssa.Instruction]bool {
 // variable addr is in.
 func matchOverwrites(instr ssa.Instruction, addr ssa.Value) bool {
 	store, isStore := instr.(*ssa.Store)
-	for x := addr; x != nil; {
+	for x, ok := addr, true; ok; x, _, ok = addrSel(x) {
 		if isStore && addressesMatch(store.Addr, x) {
 			return true
 		}
 		if alloc, isAlloc := x.(*ssa.Alloc); isAlloc && instr == alloc {
 			return true
 		}
-		switch sel := x.(type) {
-		case *ssa.FieldAddr:
-			x = sel.X
-		case *ssa.IndexAddr:
-			x = sel.X
-		default:
-			x = nil
-		}
 	}
 	return false
-}
-
-// constIndexesMatch reports whether two index operands are equal constants.
-// Non-constant indexes never match, since they may denote different elements.
-//
-//declscope:shared // aggregate.go compares two index selections
-func constIndexesMatch(a, b ssa.Value) bool {
-	c1, ok1 := a.(*ssa.Const)
-	c2, ok2 := b.(*ssa.Const)
-	return ok1 && ok2 && c1.Value == c2.Value
 }
