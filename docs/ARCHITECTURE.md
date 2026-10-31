@@ -16,6 +16,7 @@ zerologlintctx/
 │   │   ├── callee.go          # Resolves and classifies the function a call runs
 │   │   ├── context.go         # Which functions have a context in scope
 │   │   ├── tracing.go         # Trace states, value tracing
+│   │   ├── closure.go         # Index of closures and func literals
 │   │   ├── phi.go             # Phi nodes and edges that lead back to them
 │   │   ├── store.go           # Values stored at an address
 │   │   ├── aggregate.go       # The copies of a struct or array
@@ -161,6 +162,28 @@ The `tracer` type in `internal/chain/tracing.go` does it. Phi nodes are in
 One tracer serves a whole package. It keeps each value it found to have
 context, so it is not worked out again for the next call that reaches it,
 or for a closure that reaches a value of the function it is declared in.
+
+### Closures and Func Literals
+
+The tracer also keeps a `closures` index, in `closure.go`. It indexes the tree
+of an outermost function, the function and the func literals declared in it at
+any depth, the first time a query reaches it, and keeps each answer:
+
+| Query | Answer |
+|-------|--------|
+| `makersOf(fn)` | The `MakeClosure` instructions of `fn` in the function it is declared in |
+| `bindingOf(fv)` | The value bound to a free variable where its closure is made |
+| `aliasesOf(alloc)` | A local variable, and the free variables that stand for it in the closures that capture it, at any depth |
+| `callsOf(fn)` | Every call, go and defer statement that may run a func literal, through variables and Phis, or not ok when it may run where it cannot be seen |
+| `funcsHeldBy(v)` | The values stored to a variable that is only stored to, loaded and captured |
+
+SSA makes a func literal once, where it is written, so `makersOf` gives at
+most one. `bindingOf` takes the last, and tracing a free variable tries each.
+The two rules agree as long as that holds.
+
+`store.go` asks only how a closure that captures an address runs where it is
+made, `closureRunsOf`: the calls, go and defer statements of it, without
+following it through a variable.
 
 ### Trace State
 

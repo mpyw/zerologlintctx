@@ -3,7 +3,6 @@ package chain
 import (
 	"go/token"
 	"go/types"
-	"iter"
 	"maps"
 	"slices"
 
@@ -98,13 +97,17 @@ type tracer struct {
 	//
 	//declscope:private
 	positions instrPositions
+	// closures indexes the closures and func literals of the package.
+	//
+	//declscope:private
+	closures *closures
 }
 
 // newTracer creates a tracer with nothing found yet.
 //
 //declscope:shared // checker.go creates one per package
 func newTracer() *tracer {
-	return &tracer{hasCtx: make(map[tracedValue]bool), positions: make(instrPositions)}
+	return &tracer{hasCtx: make(map[tracedValue]bool), positions: make(instrPositions), closures: newClosures()}
 }
 
 // tracedValue is a value traced in one state.
@@ -155,7 +158,7 @@ func (tr *tracer) loggerHasCtx(v ssa.Value, at ssa.Instruction) bool {
 func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
 	calls := make(map[ssa.Instruction]bool)
 	defs := make(map[ssa.Instruction]bool) // Where the event is made, which starts another one in a loop
-	for w := v; w != nil; w = traceEventReceiver(w) {
+	for w := v; w != nil; w = sameEventCalleeRecv(w) {
 		tr.traceCtxCalls(w, d.Parent(), calls, make(map[ssa.Value]bool))
 		if def, ok := w.(ssa.Instruction); ok {
 			defs[def] = true
@@ -193,21 +196,6 @@ func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
 		}
 	}
 	return true
-}
-
-// traceEventReceiver returns the event that v, a call of an event method
-// that returns the event it runs on, runs on, or nil for any other value.
-// Event.CreateDict returns another event, so it is not followed back.
-func traceEventReceiver(v ssa.Value) ssa.Value {
-	call, ok := v.(*ssa.Call)
-	if !ok {
-		return nil
-	}
-	c, ok := calleeOf(&call.Call)
-	if !ok || c.recv == nil || c.embedded != nil || !c.returnsSameEvent() {
-		return nil
-	}
-	return c.recv
 }
 
 // tracePoint is a point in a function: before the instruction at index of
@@ -248,7 +236,7 @@ func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before tracePoint, done map[tr
 	done[key] = true
 	found := tr.traceCtxCalledBefore(v, before)
 	if !found {
-		if recv := traceEventReceiver(v); recv != nil {
+		if recv := sameEventCalleeRecv(v); recv != nil {
 			found = tr.traceCtxSetInPlace(recv, before, done)
 		} else if phi, ok := v.(*ssa.Phi); ok {
 			found = tr.traceCtxSetOnEdges(phi, done)
@@ -675,7 +663,7 @@ func (tr *tracer) traceParamPath(pp storeParamPath, st traceState, visited map[s
 	}
 	visited[pp.param] = true
 	fn := pp.param.Parent()
-	calls, ok := traceFuncLiteralCalls(fn)
+	calls, ok := tr.closures.callsOf(fn)
 	if !ok || len(calls) == 0 {
 		return false
 	}
@@ -737,13 +725,13 @@ func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, st traceS
 //	}(logger.Info().Ctx(ctx))
 func (tr *tracer) traceArguments(param *ssa.Parameter, st traceState, visited map[ssa.Value]bool) bool {
 	fn := param.Parent()
-	calls, ok := traceFuncLiteralCalls(fn)
+	calls, ok := tr.closures.callsOf(fn)
 	if !ok || len(calls) == 0 {
 		return false
 	}
 	idx := slices.Index(fn.Params, param)
 	passesOn := func(arg ssa.Value) bool {
-		for v := arg; v != nil; v = traceEventReceiver(v) {
+		for v := arg; v != nil; v = sameEventCalleeRecv(v) {
 			if v == param {
 				return true
 			}
@@ -764,131 +752,6 @@ func (tr *tracer) traceArguments(param *ssa.Parameter, st traceState, visited ma
 	return found
 }
 
-// traceFuncLiteralCalls finds every call that may run fn, a func literal. ok
-// is false when fn is a declared function, or may be called where it cannot
-// be seen.
-//
-// A func literal can only be used inside the function it is written in, and
-// the closures declared there. It may be kept in a variable on the way, and a
-// closure that calls it captures that variable:
-//
-//	t2 = new func(e *Event) (logIt)  // a variable that may hold fn
-//	*t2 = f$1
-//	t3 = *t2                         // may be fn
-//	t4 = t3(t6)                      // a call that may run fn
-//	t8 = make closure f$2 [t2]       // logIt is a free variable of f$2
-//
-// A value that may be fn is fn, a closure of it, a load of such a variable,
-// or a Phi with such an edge. It may only be called, stored to a local
-// variable, or merged in a Phi. Such a variable may only be stored to,
-// loaded, or captured. Any other use passes fn on, to be called with anything.
-// A call that may run another func too still counts: every call that may
-// run fn must pass an argument with context.
-func traceFuncLiteralCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
-	parent := fn.Parent()
-	if parent == nil {
-		return nil, false // A declared function can be called from anywhere
-	}
-	vars := make(map[ssa.Value]bool) // The variables that may hold fn
-	phis := make(map[ssa.Value]bool) // The Phis that may be fn
-	mayBeFn := func(v ssa.Value) bool {
-		if load, ok := asLoad(v); ok {
-			return vars[load.X]
-		}
-		return phis[v] || traceIsFuncValue(v, fn)
-	}
-	for changed := true; changed; {
-		changed = false
-		for instr := range traceInstrsInScope(parent) {
-			switch in := instr.(type) {
-			case *ssa.Store:
-				if _, isLocal := in.Addr.(*ssa.Alloc); isLocal && mayBeFn(in.Val) && !vars[in.Addr] {
-					vars[in.Addr], changed = true, true
-				}
-			case *ssa.Phi:
-				if !phis[in] && slices.ContainsFunc(in.Edges, mayBeFn) {
-					phis[in], changed = true, true
-				}
-			case *ssa.MakeClosure:
-				closure, _ := in.Fn.(*ssa.Function)
-				for i, b := range in.Bindings {
-					if vars[b] && closure != nil && !vars[closure.FreeVars[i]] {
-						vars[closure.FreeVars[i]], changed = true, true
-					}
-				}
-			}
-		}
-	}
-	for instr := range traceInstrsInScope(parent) {
-		if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == fn {
-			continue // Where the closure is made
-		}
-		for _, op := range instr.Operands(nil) {
-			switch {
-			case mayBeFn(*op):
-				if !traceUsesFuncValue(instr, op, vars) {
-					return nil, false // The func is passed on, and may be called where it cannot be seen
-				}
-				if call, isCall := instr.(ssa.CallInstruction); isCall {
-					calls = append(calls, call)
-				}
-			case vars[*op]:
-				if !traceUsesFuncVar(instr) {
-					return nil, false
-				}
-			}
-		}
-	}
-	return calls, true
-}
-
-// traceUsesFuncValue reports whether instr uses op, a value that may be a
-// func literal, in a way that keeps it from being called where it cannot be
-// seen: a call of it, a store of it to a local variable in vars, or a Phi.
-func traceUsesFuncValue(instr ssa.Instruction, op *ssa.Value, vars map[ssa.Value]bool) bool {
-	switch in := instr.(type) {
-	case ssa.CallInstruction:
-		return op == &in.Common().Value
-	case *ssa.Store:
-		return op == &in.Val && vars[in.Addr]
-	case *ssa.Phi:
-		return true
-	}
-	return false
-}
-
-// traceUsesFuncVar reports whether instr, a use of a variable that may hold a
-// func literal, keeps it from being called where it cannot be seen: a store
-// to it, a load, or a capture by a closure.
-func traceUsesFuncVar(instr ssa.Instruction) bool {
-	switch in := instr.(type) {
-	case *ssa.Store, *ssa.MakeClosure:
-		return true
-	case *ssa.UnOp:
-		return in.Op == token.MUL
-	}
-	return false
-}
-
-// traceInstrsInScope yields every instruction of fn, and of the func literals
-// declared in it, at any depth.
-func traceInstrsInScope(fn *ssa.Function) iter.Seq[ssa.Instruction] {
-	return func(yield func(ssa.Instruction) bool) {
-		for instr := range instrsIn(fn) {
-			if !yield(instr) {
-				return
-			}
-		}
-		for _, anon := range fn.AnonFuncs {
-			for instr := range traceInstrsInScope(anon) {
-				if !yield(instr) {
-					return
-				}
-			}
-		}
-	}
-}
-
 // traceFuncLiteralResult reports whether the result idx of call has context,
 // when call runs a func literal: one called on the spot as an IIFE
 // (Immediately Invoked Function Expression), through a variable, or one of
@@ -896,7 +759,7 @@ func traceInstrsInScope(fn *ssa.Function) iter.Seq[ssa.Instruction] {
 // function itself, not as a closure. ok is false when call runs no func
 // literal that is known.
 func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState, visited map[ssa.Value]bool) (found, ok bool) {
-	fns, ok := traceFuncLiteralsOf(call.Call.Value, make(map[ssa.Value]bool))
+	fns, ok := tr.closures.funcLiteralsOf(call.Call.Value, make(map[ssa.Value]bool))
 	if sfn := call.Call.StaticCallee(); sfn != nil {
 		fns, ok = []*ssa.Function{sfn}, sfn.Parent() != nil
 	}
@@ -917,7 +780,7 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState,
 //	a := id(logger.Info().Ctx(ctx)) // a is this argument
 //	b := id(logger.Info())          // and b this one
 func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args []ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
-	for v := result; v != nil; v = traceEventReceiver(v) {
+	for v := result; v != nil; v = sameEventCalleeRecv(v) {
 		param, ok := v.(*ssa.Parameter)
 		if !ok {
 			continue
@@ -928,165 +791,21 @@ func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args
 	return false
 }
 
-// traceFuncLiteralsOf returns the func literals that v can be, when it is a
-// func literal or a closure of one, a Phi of such values, or a load of a
-// variable that only such values are stored to:
-//
-//	ev := func() *zerolog.Event { return logger.Info().Ctx(ctx) }
-//	if debug {
-//	    ev = func() *zerolog.Event { return logger.Debug().Ctx(ctx) }
-//	}
-//	ev().Msg("x")           // ev is a Phi of the two
-func traceFuncLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.Function, bool) {
-	if mc, ok := v.(*ssa.MakeClosure); ok {
-		v = mc.Fn
-	}
-	if fn, ok := v.(*ssa.Function); ok {
-		return []*ssa.Function{fn}, fn.Parent() != nil
-	}
-	if seen[v] {
-		return nil, true // A loop, which adds nothing new
-	}
-	seen[v] = true
-	var values []ssa.Value
-	switch val := v.(type) {
-	case *ssa.Phi:
-		values = val.Edges
-	case *ssa.UnOp:
-		stored, ok := traceStoredFuncs(val)
-		if !ok {
-			return nil, false
-		}
-		values = stored
-	default:
-		return nil, false
-	}
-	var fns []*ssa.Function
-	for _, value := range values {
-		more, ok := traceFuncLiteralsOf(value, seen)
-		if !ok {
-			return nil, false
-		}
-		fns = append(fns, more...)
-	}
-	return fns, true
-}
-
-// traceStoredFuncs returns the values stored to the variable that load reads,
-// when it is a local variable, or one a closure captures, whose address is
-// only stored to, loaded and captured, in the function that declares it and
-// the closures declared there:
-//
-//	f := func() *zerolog.Event { return logger.Warn() }
-//	func() { _ = f }()      // f is kept in memory, and loaded to be called
-//	f().Msg("x")
-func traceStoredFuncs(load *ssa.UnOp) ([]ssa.Value, bool) {
-	if load.Op != token.MUL {
-		return nil, false
-	}
-	v := load.X
-	for fv, ok := v.(*ssa.FreeVar); ok; fv, ok = v.(*ssa.FreeVar) {
-		v = traceFreeVarBinding(fv)
-	}
-	alloc, ok := v.(*ssa.Alloc)
-	if !ok {
-		return nil, false // Not a local variable, or its binding is not found
-	}
-	aliases := map[ssa.Value]bool{alloc: true}
-	scope := alloc.Parent()
-	for changed := true; changed; {
-		changed = false
-		for instr := range traceInstrsInScope(scope) {
-			mc, ok := instr.(*ssa.MakeClosure)
-			if !ok {
-				continue
-			}
-			closure, _ := mc.Fn.(*ssa.Function)
-			for i, b := range mc.Bindings {
-				if aliases[b] && closure != nil && !aliases[closure.FreeVars[i]] {
-					aliases[closure.FreeVars[i]], changed = true, true
-				}
-			}
-		}
-	}
-	var stored []ssa.Value
-	for instr := range traceInstrsInScope(scope) {
-		for _, op := range instr.Operands(nil) {
-			if !aliases[*op] {
-				continue
-			}
-			switch in := instr.(type) {
-			case *ssa.Store:
-				if op != &in.Addr {
-					return nil, false // The address itself is stored
-				}
-				stored = append(stored, in.Val)
-			case *ssa.UnOp, *ssa.MakeClosure:
-				// A load of the variable, or a capture of it
-			default:
-				return nil, false // The address is passed on
-			}
-		}
-	}
-	return stored, true
-}
-
-// traceFreeVarBinding returns the value bound to fv where its closure is
-// made, or nil when that is not found.
-func traceFreeVarBinding(fv *ssa.FreeVar) ssa.Value {
-	fn := fv.Parent()
-	idx := slices.Index(fn.FreeVars, fv)
-	var binding ssa.Value
-	if parent := fn.Parent(); parent != nil { // Not a wrapper, such as a method value
-		for instr := range instrsIn(parent) {
-			if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == fn {
-				binding = mc.Bindings[idx]
-			}
-		}
-	}
-	return binding
-}
-
-// traceIsFuncValue reports whether v is fn, or a closure of it.
-func traceIsFuncValue(v ssa.Value, fn *ssa.Function) bool {
-	if mc, ok := v.(*ssa.MakeClosure); ok {
-		return mc.Fn == fn
-	}
-	return v == fn
-}
-
 // traceFreeVar traces a FreeVar back to the variable bound in MakeClosure, at
-// path, the selections from it: nil for the variable itself.
+// path, the selections from it: nil for the variable itself. Any MakeClosure
+// of its closure whose binding has context will do (see closures.makersOf).
 func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []sel, st traceState, visited map[ssa.Value]bool) bool {
 	fn := fv.Parent()
 	if fn == nil {
 		return false
 	}
-
 	idx := slices.Index(fn.FreeVars, fv)
 	if idx < 0 {
 		return false
 	}
-
-	parent := fn.Parent()
-	if parent == nil {
-		return false
-	}
-
-	for instr := range instrsIn(parent) {
-		mc, ok := instr.(*ssa.MakeClosure)
-		if !ok {
-			continue
-		}
-		closureFn, ok := mc.Fn.(*ssa.Function)
-		if !ok || closureFn != fn {
-			continue
-		}
-		if idx < len(mc.Bindings) && tr.traceBinding(mc, idx, path, st, visited) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tr.closures.makersOf(fn), func(mc *ssa.MakeClosure) bool {
+		return idx < len(mc.Bindings) && tr.traceBinding(mc, idx, path, st, visited)
+	})
 }
 
 // traceBinding traces what is at path in the variable that mc binds as its
@@ -1136,27 +855,12 @@ func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, st traceSt
 // The struct must be loaded from an address, or be a pointer, whose stores
 // storesReachingAt can find. Otherwise nothing is found.
 func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, st traceState, visited map[ssa.Value]bool) bool {
-	addr, typ, read, ok := traceEmbeddedStart(c, call)
+	addr, typ, read, ok := c.embeddedStart(call)
 	if !ok {
 		return false
 	}
 	at, _ := placeOf(addr)
 	return tr.traceEmbeddedAt(at, typ, c.embedded, read, call, st, visited)
-}
-
-// traceEmbeddedStart returns where the struct c.recv is, for c, a method
-// expression of a promoted method that call runs: the address the struct is
-// at, its type, and the instruction that reads it there. ok is false when the
-// struct is a value that is not loaded from an address.
-func traceEmbeddedStart(c callee, call ssa.Instruction) (addr ssa.Value, typ types.Type, read ssa.Instruction, ok bool) {
-	if ptr, isPtr := c.recv.Type().Underlying().(*types.Pointer); isPtr {
-		return c.recv, ptr.Elem(), call, true
-	}
-	load, isLoad := asLoad(c.recv)
-	if !isLoad {
-		return nil, nil, nil, false
-	}
-	return load.X, c.recv.Type(), load, true
 }
 
 // traceEmbeddedAt traces the receiver at the embedded fields of the struct of
@@ -1178,7 +882,7 @@ func (tr *tracer) traceEmbeddedAt(
 	st traceState,
 	visited map[ssa.Value]bool,
 ) bool {
-	at, n, field := traceEmbeddedPath(typ, at, embedded)
+	at, n, field := at.withEmbedded(typ, embedded)
 	stored, ok := storesReachingAt(at, read, tr.positions)
 	if n == len(embedded) {
 		return ok && tr.traceStored(stored, st, visited)
@@ -1201,23 +905,6 @@ func (tr *tracer) traceEmbeddedAt(
 	return found
 }
 
-// traceEmbeddedPath returns at, the address of a struct of type typ, with the
-// embedded fields selected from it, one after another, up to the first that
-// is a pointer to a struct, which is a field but the last. n is how many it
-// selected, and field is the type of the last of them.
-func traceEmbeddedPath(typ types.Type, at place, embedded []int) (_ place, n int, field types.Type) {
-	at = at.with()
-	for i, index := range embedded {
-		// Each embedded field but the last is a struct or a pointer to one
-		typ = typ.Underlying().(*types.Struct).Field(index).Type()
-		at.path = append(at.path, sel{field: index})
-		if _, isPtr := typ.Underlying().(*types.Pointer); isPtr && i < len(embedded)-1 {
-			return at, i + 1, typ
-		}
-	}
-	return at, len(embedded), typ
-}
-
 // traceEmbeddedCtxSetInPlace reports whether Event.Ctx is called in place,
 // with its result unused or not, on the event at the embedded fields of
 // c.recv before call reads it, as traceCtxCalledBefore does for an event in
@@ -1232,12 +919,12 @@ func traceEmbeddedPath(typ types.Type, at place, embedded []int) (_ place, n int
 //
 // Each embedded field but the last must be a struct, not a pointer to one.
 func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) bool {
-	addr, typ, _, ok := traceEmbeddedStart(c, call)
+	addr, typ, _, ok := c.embeddedStart(call)
 	if !ok {
 		return false
 	}
 	base, _ := placeOf(addr)
-	at, n, _ := traceEmbeddedPath(typ, base, c.embedded)
+	at, n, _ := base.withEmbedded(typ, c.embedded)
 	if n < len(c.embedded) {
 		return false // Reading past a pointer is a load, which a path does not take
 	}
@@ -1250,7 +937,7 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 	for k := len(base.path); k <= len(at.path); k++ {
 		loads, _, _ := storeLoadsAt(at.prefix(k))
 		for _, load := range loads {
-			for _, ev := range traceEmbeddedSelections(load, c.embedded[k-len(base.path):]) {
+			for _, ev := range selectedFields(load, c.embedded[k-len(base.path):]) {
 				tr.traceCtxCalls(ev, fn, calls, make(map[ssa.Value]bool))
 			}
 		}
@@ -1258,25 +945,6 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 	_, local := at.root.(*ssa.Alloc)
 	before := tracePoint{block: call.Block(), index: tr.positions.of(call)}
 	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, before)
-}
-
-// traceEmbeddedSelections returns the Field instructions that select the embedded
-// fields from the struct value v, one after another: each value of the last
-// field the function selects from v, or v itself when there are none.
-func traceEmbeddedSelections(v ssa.Value, embedded []int) []ssa.Value {
-	values := []ssa.Value{v}
-	for _, index := range embedded {
-		var next []ssa.Value
-		for _, w := range values {
-			for _, ref := range *w.Referrers() {
-				if f, ok := ref.(*ssa.Field); ok && f.X == w && f.Field == index {
-					next = append(next, f)
-				}
-			}
-		}
-		values = next
-	}
-	return values
 }
 
 // traceReceiver traces recv, the receiver of call, a method call. It is the
