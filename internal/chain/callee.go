@@ -117,3 +117,37 @@ func calleeReceiver(cc *ssa.CallCommon) ssa.Value {
 func (c callee) returnsSameEvent() bool {
 	return c.api.Recv == zerologapi.TypeEvent && c.api.SameAsRecv
 }
+
+// sameEventCalleeRecv returns the event that v, a call of an event method that
+// returns the event it runs on, runs on, or nil for any other value.
+// Event.CreateDict returns another event, so it is not followed back.
+//
+//declscope:shared // tracing.go follows a chain of methods on one event back by it
+func sameEventCalleeRecv(v ssa.Value) ssa.Value {
+	call, ok := v.(*ssa.Call)
+	if !ok {
+		return nil
+	}
+	c, ok := calleeOf(&call.Call)
+	if !ok || c.recv == nil || c.embedded != nil || !c.returnsSameEvent() {
+		return nil
+	}
+	return c.recv
+}
+
+// embeddedStart returns where the struct c.recv is, for c, a method
+// expression of a promoted method that call runs: the address the struct is
+// at, its type, and the instruction that reads it there. ok is false when the
+// struct is a value that is not loaded from an address.
+//
+//declscope:shared // tracing.go reads the embedded receiver from there
+func (c callee) embeddedStart(call ssa.Instruction) (addr ssa.Value, typ types.Type, read ssa.Instruction, ok bool) {
+	if ptr, isPtr := c.recv.Type().Underlying().(*types.Pointer); isPtr {
+		return c.recv, ptr.Elem(), call, true
+	}
+	load, isLoad := asLoad(c.recv)
+	if !isLoad {
+		return nil, nil, nil, false
+	}
+	return load.X, c.recv.Type(), load, true
+}

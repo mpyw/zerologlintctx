@@ -167,3 +167,22 @@ func instrsIn(fn *ssa.Function) iter.Seq[ssa.Instruction] {
 		}
 	}
 }
+
+// selectedFields returns the Field instructions that select fields from the
+// struct value v, one after another: each value of the last field the
+// function selects from v, or v itself when fields is empty.
+func selectedFields(v ssa.Value, fields []int) []ssa.Value {
+	values := []ssa.Value{v}
+	for _, index := range fields {
+		var next []ssa.Value
+		for _, w := range values {
+			for _, ref := range *w.Referrers() {
+				if f, ok := ref.(*ssa.Field); ok && f.X == w && f.Field == index {
+					next = append(next, f)
+				}
+			}
+		}
+		values = next
+	}
+	return values
+}

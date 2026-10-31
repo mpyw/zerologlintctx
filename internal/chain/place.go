@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"go/constant"
 	"go/token"
+	"go/types"
 	"slices"
 	"strings"
 
@@ -25,6 +26,8 @@ import (
 // array, through an address or of a value.
 type sel struct {
 	// field is the index of the field, for a field.
+	//
+	//declscope:private
 	field int
 	// index is the index of the element, when it is a constant. It is nil
 	// for a field, and for an element whose index is not a constant.
@@ -190,4 +193,21 @@ func elemSel(index ssa.Value) sel {
 func asLoad(v ssa.Value) (*ssa.UnOp, bool) {
 	load, ok := v.(*ssa.UnOp)
 	return load, ok && load.Op == token.MUL
+}
+
+// withEmbedded returns at, the address of a struct of type typ, with the
+// embedded fields selected from it, one after another, up to the first that
+// is a pointer to a struct, which is a field but the last. n is how many it
+// selected, and field is the type of the last of them.
+func (at place) withEmbedded(typ types.Type, embedded []int) (_ place, n int, field types.Type) {
+	at = at.with()
+	for i, index := range embedded {
+		// Each embedded field but the last is a struct or a pointer to one
+		typ = typ.Underlying().(*types.Struct).Field(index).Type()
+		at.path = append(at.path, sel{field: index})
+		if _, isPtr := typ.Underlying().(*types.Pointer); isPtr && i < len(embedded)-1 {
+			return at, i + 1, typ
+		}
+	}
+	return at, len(embedded), typ
 }
