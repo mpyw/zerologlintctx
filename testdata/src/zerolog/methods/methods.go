@@ -51,6 +51,15 @@ func goodInfoMethodExpression(ctx context.Context, base zerolog.Logger) {
 	info(&l).Msg("method expression") // OK
 }
 
+// A method expression read from a map is not known statically. Its first
+// argument is traced as what the event is made from, and that Logger is made
+// from a Context with Ctx.
+func goodInfoMethodExpressionFromMap(ctx context.Context, base zerolog.Logger, level string) {
+	levels := map[string]func(*zerolog.Logger) *zerolog.Event{"info": (*zerolog.Logger).Info}
+	l := base.With().Ctx(ctx).Logger()
+	levels[level](&l).Msg("method expression from a map") // OK
+}
+
 func goodWithMethodValue(ctx context.Context, base zerolog.Logger) {
 	with := base.With
 	l := with().Ctx(ctx).Logger()

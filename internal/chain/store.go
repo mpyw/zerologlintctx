@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
+
+	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
 // storesReaching finds the values that can be at addr when read runs: the
@@ -791,7 +793,7 @@ func storeReadsOf(addr, root ssa.Value, path []ssa.Value) (reads, escapes []ssa.
 				reads = append(reads, r)
 			}
 		case *ssa.Call:
-			if c, ok := calleeOf(&r.Call); !ok || !c.updatesLoggerContext() || !matches(c.recv) {
+			if c, ok := calleeOf(&r.Call); !ok || c.api.Kind != zerologapi.KindInPlaceUpdate || !matches(c.recv) {
 				reads = append(reads, r)
 			}
 		default:

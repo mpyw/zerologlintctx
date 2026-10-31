@@ -15,8 +15,8 @@ import (
 // Cyclic edges and nil constants are skipped.
 //
 //declscope:shared // tracing.go hands each Phi to it
-func (tr *tracer) tracePhi(phi *ssa.Phi, t tracerType, visited map[ssa.Value]bool) bool {
-	valid, ok := tr.tracePhiEdges(phi, phi, t, visited, make(map[*ssa.Phi]bool))
+func (tr *tracer) tracePhi(phi *ssa.Phi, st traceState, visited map[ssa.Value]bool) bool {
+	valid, ok := tr.tracePhiEdges(phi, phi, st, visited, make(map[*ssa.Phi]bool))
 	return ok && valid
 }
 
@@ -36,7 +36,7 @@ func (tr *tracer) tracePhi(phi *ssa.Phi, t tracerType, visited map[ssa.Value]boo
 //	}
 func (tr *tracer) tracePhiEdges(
 	phi, origin *ssa.Phi,
-	t tracerType,
+	st traceState,
 	visited map[ssa.Value]bool,
 	seen map[*ssa.Phi]bool,
 ) (valid, ok bool) {
@@ -50,7 +50,7 @@ func (tr *tracer) tracePhiEdges(
 				continue
 			}
 			seen[inner] = true
-			innerValid, innerOK := tr.tracePhiEdges(inner, origin, t, visited, seen)
+			innerValid, innerOK := tr.tracePhiEdges(inner, origin, st, visited, seen)
 			if !innerOK {
 				return false, false
 			}
@@ -60,7 +60,7 @@ func (tr *tracer) tracePhiEdges(
 
 		// Clone visited for independent tracing of each branch, unless the
 		// edge was found to have context before
-		if !tr.foundBefore(edge, t) && !tr.traceValue(edge, t, maps.Clone(visited)) {
+		if !tr.foundBefore(edge, st) && !tr.traceValue(edge, st, maps.Clone(visited)) {
 			return false, false
 		}
 		valid = true

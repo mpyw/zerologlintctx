@@ -12,7 +12,7 @@ import (
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
 
-	"github.com/mpyw/zerologlintctx/internal/typeutil"
+	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
 // ContextNames maps each source function of the package that has a
@@ -106,7 +106,7 @@ func contextParamName(fn *ssa.Function) string {
 	}
 	for param := range params.Variables() {
 		name := param.Name()
-		if name == "" || name == "_" || !typeutil.IsContextType(param.Type()) {
+		if name == "" || name == "_" || !zerologapi.IsContextType(param.Type()) {
 			continue
 		}
 		if _, isPtr := param.Type().Underlying().(*types.Pointer); isPtr {
@@ -153,10 +153,7 @@ func contextIsFresh(v ssa.Value, positions instrPositions, seen map[ssa.Value]bo
 			return false
 		}
 		fn, ok := sfn.Object().(*types.Func)
-		if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "context" {
-			return false
-		}
-		return fn.Name() == "Background" || fn.Name() == "TODO"
+		return ok && zerologapi.MakesFreshContext(fn)
 	case *ssa.Phi:
 		return contextAllFresh(val.Edges, positions, seen)
 	case *ssa.ChangeType:

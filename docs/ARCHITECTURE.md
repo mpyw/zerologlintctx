@@ -15,7 +15,7 @@ zerologlintctx/
 │   │   ├── checker.go         # Checker: checks each call, go and defer
 │   │   ├── callee.go          # Resolves and classifies the function a call runs
 │   │   ├── context.go         # Which functions have a context in scope
-│   │   ├── tracing.go         # Tracer types, handoffs, value tracing
+│   │   ├── tracing.go         # Trace states, value tracing
 │   │   ├── phi.go             # Phi nodes and edges that lead back to them
 │   │   ├── store.go           # Values stored at an address
 │   │   ├── aggregate.go       # Paths into a struct or array, and its copies
@@ -23,8 +23,8 @@ zerologlintctx/
 │   │   └── value.go           # SSA plumbing the other files stand on
 │   ├── directive/             # Comment directive handling
 │   │   └── ignore.go          # //zerologlintctx:ignore parsing, directive problems
-│   └── typeutil/              # Type checking utilities
-│       └── zerolog.go         # Zerolog type and signature predicates
+│   └── zerologapi/            # What each zerolog function and method does
+│       └── zerologapi.go      # Classify, the exceptions, context types
 ├── testdata/src/              # Test fixtures and library stubs
 ├── analyzer.go                # Public analyzer, directive reporting
 └── analyzer_test.go           # Integration tests
@@ -36,9 +36,9 @@ zerologlintctx/
 
 | Pattern | Condition | Message |
 |---------|-----------|---------|
-| Event chain missing `.Ctx()` | `IsEvent(recv) && ReturnsVoid(sig)` | `zerolog call chain missing .Ctx(ctx)` |
-| Direct logging on Logger without context | `IsLogger(recv) && ReturnsVoid(sig) && hasPrefix("Print")`, and the Logger has no context | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
-| Direct logging via log package | `IsZerologLogPkg(pkg) && ReturnsVoid(sig) && hasPrefix("Print")` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+| Event chain missing `.Ctx()` | `KindTerminator`: a method of Event that returns nothing | `zerolog call chain missing .Ctx(ctx)` |
+| Direct logging on Logger without context | `KindDirectLog` on a Logger, and the Logger has no context | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+| Direct logging via log package | `KindDirectLog` on a function of `zerolog/log` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
 
 The message names the first usable `context.Context` parameter, or `*name`
 for a `*context.Context` one. A parameter whose type is a type parameter
@@ -75,28 +75,46 @@ A conversion between types with the same underlying type, such as
 `zerolog.Logger(d)` for `type definedLogger zerolog.Logger`, keeps the value,
 and tracing goes on through it.
 
-### Type-Based Analysis
+### The zerolog API
 
-The analyzer uses **return type checking** instead of method name hardcoding for most detection:
+`zerologapi.Classify` tells what a zerolog function or method does. The tracer
+and the checker ask it, and match no names of their own. It returns a
+`Method`:
 
-| Transition | Detection Method | Examples |
-|------------|------------------|----------|
-| Logger → Event | `ReturnsEvent(sig)` | `Info()`, `Debug()`, `Err()`, `WithLevel()` |
-| Logger → Context | `ReturnsContext(sig)` | `With()` |
-| Context → Logger | `ReturnsLogger(sig)` | `Logger()` |
-| Event → Event | receiver is the traced type | `Str()`, `Int()`, `Ctx()`, etc. |
-| Context → Context | receiver is the traced type | `Str()`, `Int()`, `Ctx()`, etc. |
-| Logger → Logger | receiver is the traced type | `Level()`, `Sample()`, `Hook()`, `Output()` |
+| Field | Meaning |
+|-------|---------|
+| `Kind` | What a call does (see below) |
+| `Recv` | The zerolog type of the receiver: Event, Logger, Context, or none |
+| `Result` | The zerolog type of the only result, or none |
+| `Keeps` | The sources of the receiver's context that the result still has |
+| `SameAsRecv` | The result is the receiver itself, not a value made from it |
+| `Source` | The context a `KindSource` sets |
 
-This approach automatically handles new zerolog methods without code changes.
+Most of it comes from the signature:
 
-Two methods are known by name, since zerolog's source, not their signature,
-tells what they do with the context (`callee.go`):
+| Kind | Rule | Examples |
+|------|------|----------|
+| `KindTerminator` | A method of Event that returns nothing | `Msg`, `Msgf`, `MsgFunc`, `Send` |
+| `KindDirectLog` | A `Print*` method of Logger, or function of `zerolog/log`, that returns nothing | `Print`, `Printf`, `Println` |
+| `KindChain` | A method that returns its receiver's type | `Event.Str`, `Context.Str`, `Logger.Level` |
+| `KindHandoff` | A method that returns another zerolog type | `Logger.Info`, `Logger.With`, `Context.Logger` |
+| `KindOther` | Anything else: a function, or a method that returns another type | `zerolog.New`, `log.Info`, `Logger.GetLevel` |
 
-| Method | What it does | How tracing takes it |
-|--------|--------------|----------------------|
-| `Event.CreateDict()` | Returns a new event for a dict, not its receiver | A `Ctx` call on the dict does not count for the parent (`returnsSameEvent`) |
-| `Logger.Output(w)` | Builds a new logger with `zerolog.New(w)`, and drops the context `Context.Ctx` set | Tracing goes on past it with a detached tracer (`dropsLoggerContext`) |
+A method of Event that returns an event returns its receiver. The methods of
+Logger and Context have a value receiver, and return a copy.
+
+A small table of exceptions holds what zerolog's source, not the signature,
+tells. Each row cites zerolog v1.35.1, and `zerologapi_test.go` tests each:
+
+| Function or method | Kind | Why |
+|--------------------|------|-----|
+| `Event.Ctx(ctx)` | `KindSource`, `SourceEvent` | Sets the context of the event, and returns it |
+| `Context.Ctx(ctx)` | `KindSource`, `SourceContext` | Sets the context of the Logger the Context builds |
+| `zerolog.Ctx(ctx)`, `log.Ctx(ctx)` | `KindSource`, `SourceStored` | Returns the Logger stored in `ctx` |
+| `Event.CreateDict()` | `KindChain`, not `SameAsRecv` | Returns a new event for a dict, with the context of its receiver |
+| `Context.CreateDict()` | `KindOther` | Returns a dict event. Tracing does not follow it back (a limitation) |
+| `Logger.Output(w)` | `KindChain`, keeps `SourceStored` only | Builds a new Logger with `zerolog.New(w)`, and drops the context `Context.Ctx` set |
+| `Logger.UpdateContext(fn)` | `KindInPlaceUpdate` | Changes the fields of the Logger in place, but not its context |
 
 Type identity checks resolve aliases (`types.Unalias`) before comparing the
 package path and type name, since go/types represents every alias declaration
@@ -106,7 +124,7 @@ unchecked.
 
 ### Exception: Direct Logging
 
-For Logger's direct logging methods, we use a **name prefix check**:
+For direct logging, `Classify` uses a **name prefix check**:
 
 ```go
 // Detected (Print* prefix + void return)
@@ -121,7 +139,7 @@ logger.UpdateContext(...)  // Configuration, not logging
 This is necessary because `UpdateContext` also returns void but is not a logging method.
 
 `Logger.Print` builds its event from the Logger, as `Logger.Info` does, so the
-event takes the Logger's context. The receiver is traced with `tracerLogger`
+event takes the Logger's context. The receiver is traced in the `traceLogger` state
 (`loggerHasCtx`), and the call is reported only when the Logger has no
 context:
 
@@ -143,33 +161,50 @@ One tracer serves a whole package. It keeps each value it found to have
 context, so it is not worked out again for the next call that reaches it,
 or for a closure that reaches a value of the function it is declared in.
 
+### Trace State
+
+A value is traced in a `traceState`: its zerolog type, and the sources of
+context that still count for it. Tracing starts in one of two states:
+
+| State | Starts at | Sources that count |
+|-------|-----------|--------------------|
+| `traceEvent` | The receiver of a terminator | All |
+| `traceLogger` | The receiver of a direct logging call (`loggerHasCtx`) | All |
+
+At a call of a declared function, tracing asks `Classify`, then:
+
+| The call | What tracing does |
+|----------|-------------------|
+| A `KindSource` whose source counts | Found, unless the context is fresh (see below) |
+| A method of the traced type | Goes on from the receiver, in the same state. A `KindChain` keeps only the sources its result keeps |
+| A `KindHandoff` that returns the traced type | Goes on from the receiver, as the receiver's type |
+| For an event, a `KindHandoff` that returns a Logger | The same. This is for a value of another type, as below |
+| Anything else | Not found |
+
+`Logger.Output` keeps only `SourceStored`. So past it, a context that
+`Context.Ctx` set does not count, and a Logger from `zerolog.Ctx(ctx)` still
+does. The set stays narrowed through the handoffs between Logger and Context.
+
+The first argument of an unknown function is traced in the state of the
+function's result. A method expression read from a map is one:
+
+```go
+levels := map[string]func(*zerolog.Logger) *zerolog.Event{"info": (*zerolog.Logger).Info}
+l := base.With().Ctx(ctx).Logger()
+levels[level](&l).Msg("x") // OK: l is traced as an event
 ```
-┌──────────────┐     ┌──────────────┐     ┌────────────────┐
-│ tracerEvent  │────▶│ tracerLogger │────▶│ tracerContext  │
-│   (Event)    │◀────│   (Logger)   │◀────│   (Context)    │
-└──────────────┘     └──────────────┘     └────────────────┘
-        │                    │                     │
-        └────────────────────┴─────────────────────┘
-                             │
-                      ┌──────▼──────┐
-                      │ traceCommon │
-                      └─────────────┘
-```
 
-### Context Checking
+`l` is a Logger, traced as an event. An event is made from a Logger, so
+`Context.Logger()` is followed back to the Context. A Logger and a Context
+need no such case. The handoff that makes either one is a method of the
+other, and tracing follows a method of the traced type anyway.
 
-Each tracer type knows the calls that set its context (`isCtxSetBy`):
+> [!NOTE]
+> `zerolog.Ctx(ctx)` returns the logger stored in `ctx`. It does not attach
+> `ctx` to the events of that logger. The analyzer still accepts it: the code
+> took its logger from the context, which is a deliberate use of it.
 
-| Tracer | Context set by |
-|--------|----------------|
-| `tracerEvent` | `Event.Ctx(ctx)`, `Context.Ctx(ctx)`, `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
-| `tracerLogger` | `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
-| `tracerContext` | `Context.Ctx(ctx)` |
-| `tracerLoggerDetached`, `tracerContextDetached` | `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
-
-The detached tracers trace a Logger, and the Context it is built from, past
-`Logger.Output`. Only a logger taken from a context counts there, as the note
-below says. They follow the same handoffs between Logger and Context.
+### Fresh Contexts and Ctx in Place
 
 A `Ctx` call given a fresh `context.Background()` or `context.TODO()` does not
 set the context. It replaces the context in scope, so tracing stops there and
@@ -179,11 +214,6 @@ two. It sees through a Phi and a conversion. For a load, every store that
 reaches it must be fresh. This holds for a local variable, a pointer
 parameter, and a field of one. A global is not followed. A context derived from one, such as
 `context.WithoutCancel(context.Background())`, is not fresh.
-
-> [!NOTE]
-> `zerolog.Ctx(ctx)` returns the logger stored in `ctx`. It does not attach
-> `ctx` to the events of that logger. The analyzer still accepts it: the code
-> took its logger from the context, which is a deliberate use of it.
 
 `Event.Ctx` sets the context on the event it runs on, and returns that same
 event. So an event whose chain has no `Ctx` call is still accepted when one
@@ -199,18 +229,6 @@ e.Msg("x") // OK
 A deferred terminator runs at each return after the `defer` statement, so for
 one a `Ctx` call that runs on every path from the `defer` to a return counts
 too.
-
-A call that turns one zerolog type into another is a handoff. Tracing goes on
-from the call's receiver, with the receiver's tracer. Each handoff is declared
-once, and `tracerHandoffs` lists which ones each tracer follows:
-
-| Handoff | Call | Followed by |
-|---------|------|-------------|
-| `traceLoggerOfEvent` | `Logger.Info()`, `Logger.Debug()`, ... | `tracerEvent` |
-| `traceContextOfLogger` | `Context.Logger()` | `tracerEvent`, `tracerLogger` |
-| `traceLoggerOfContext` | `Logger.With()` | `tracerLogger`, `tracerContext` |
-| `traceDetachedContextOfLogger` | `Context.Logger()` past `Output` | `tracerLoggerDetached` |
-| `traceDetachedLoggerOfContext` | `Logger.With()` past `Output` | `tracerLoggerDetached`, `tracerContextDetached` |
 
 ### Common SSA Patterns
 
