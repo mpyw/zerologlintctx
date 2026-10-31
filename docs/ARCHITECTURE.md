@@ -62,6 +62,11 @@ method can take:
 Tracing resolves each call in the chain the same way, so `info := l.Info;
 info()` is traced back to `l`.
 
+A method expression of a method promoted through an embedded field, such as
+`myEvent.Msg(me, "x")` for `type myEvent struct{ *zerolog.Event }`, passes
+the struct in `Args[0]`. `calleeOf` records the embedded fields that lead to
+the receiver, and tracing reads it from the stores to those fields.
+
 A conversion between types with the same underlying type, such as
 `zerolog.Logger(d)` for `type definedLogger zerolog.Logger`, keeps the value,
 and tracing goes on through it.
@@ -226,6 +231,18 @@ This holds for a local variable, a pointer parameter, a captured variable, and
 a field or constant element of one, wherever the read runs. A field of a
 global, or of a struct reached through a pointer the function loads, can be
 changed elsewhere. For those, every store in the function must have context.
+Each load of the same pointer, such as a receiver that a closure captures,
+which is loaded again at each use, is taken for the same pointer, and so is
+each read of the same pointer field of a struct value, such as `h.m`.
+
+A field read through a Phi of pointers, such as `h.l` after
+`h := &holder{...}; if cond { h = &holder{...} }`, with no store through the
+Phi itself, has what each variable the Phi may point to holds there. Each one
+is walked from the read along the paths on which the Phi points to it: at the
+top of the block of the Phi, the walk goes on through the edges that hold it
+only. Every value that reaches the read must have context. A Phi that may
+point to more than a few variables, or to anything but a variable, a pointer
+parameter or a captured variable, is not walked.
 
 When the read is not known, such as for an address that a Phi picks, every
 read of the address counts. An instruction that passes the address on, such

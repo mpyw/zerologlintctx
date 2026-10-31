@@ -17,8 +17,19 @@ import (
 //
 //declscope:shared // checker.go classifies each call by it
 type callee struct {
-	// recv is the receiver the method runs on, or nil for a function.
+	// recv is the receiver the method runs on, or nil for a function. For a
+	// method expression of a promoted method, it is the struct the receiver
+	// is embedded in, or a pointer to it, and embedded is set.
 	recv ssa.Value
+	// embedded are the indexes of the fields, one per embedded struct, that
+	// lead from recv to the receiver, for a method expression of a promoted
+	// method:
+	//
+	//	type myEvent struct{ *zerolog.Event }
+	//	myEvent.Msg(me, "x") // (myEvent).Msg$thunk(me, "x"): embedded [0]
+	//
+	// It is nil for any other call.
+	embedded []int
 	// fn is the declared function or method. For a method value or a method
 	// expression, it is the method, not the wrapper SSA calls.
 	//
@@ -38,6 +49,9 @@ type callee struct {
 //	m("x")           // t0("x")
 //	f := (*Event).Msg
 //	f(e, "x")        // (*Event).Msg$thunk(e, "x")  receiver in Args[0]
+//
+// A method expression of a method promoted through an embedded field passes
+// the struct that embeds the receiver, and embedded leads to it.
 //
 //declscope:shared // checker.go resolves every call through it
 func calleeOf(cc *ssa.CallCommon) (callee, bool) {
@@ -64,7 +78,22 @@ func calleeOf(cc *ssa.CallCommon) (callee, bool) {
 		return callee{}, false
 	}
 	c.recv = cc.Args[0]
+	c.embedded = calleeEmbedded(c.recv.Type(), fn)
 	return c, true
+}
+
+// calleeEmbedded returns the indexes of the embedded fields that lead from a
+// value of type recv to the receiver of fn, when fn is a method promoted to
+// recv, or nil when recv is the receiver type of fn itself.
+func calleeEmbedded(recv types.Type, fn *types.Func) []int {
+	if types.Identical(recv, fn.Signature().Recv().Type()) {
+		return nil
+	}
+	obj, index, _ := types.LookupFieldOrMethod(recv, false, fn.Pkg(), fn.Name())
+	if obj != fn || len(index) < 2 {
+		return nil
+	}
+	return index[:len(index)-1]
 }
 
 // calleeReceiver returns the value a call runs on, as tracing follows it: the

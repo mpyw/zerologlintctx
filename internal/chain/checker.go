@@ -98,7 +98,7 @@ func (c *Checker) checkCall(call ssa.CallInstruction) {
 	}
 	switch {
 	case callee.endsEventChain():
-		if !c.tracer.eventHasCtx(callee.recv, call) {
+		if !c.tracer.receiverHasCtx(callee, call) {
 			c.reportOnce(pos, checkerMissingCtx)
 		}
 	case callee.logsDirectly():

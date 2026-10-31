@@ -155,8 +155,6 @@ type tracedValue struct {
 
 // eventHasCtx traces an Event value, the receiver of the terminator at, to
 // check if .Ctx() was called.
-//
-//declscope:shared // checker.go asks this of each terminator's receiver
 func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 	if tr.traceValue(v, tracerEvent, make(map[ssa.Value]bool)) {
 		return true
@@ -245,7 +243,7 @@ func traceEventReceiver(v ssa.Value) ssa.Value {
 		return nil
 	}
 	c, ok := calleeOf(&call.Call)
-	if !ok || c.recv == nil || !tracerEvent.isTracedType(c.recvType()) {
+	if !ok || c.recv == nil || c.embedded != nil || !tracerEvent.isTracedType(c.recvType()) {
 		return nil
 	}
 	return c.recv
@@ -420,7 +418,7 @@ func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Ins
 				continue
 			}
 			c, ok := calleeOf(&call.Call)
-			if !ok || c.recv != v || !tracerEvent.isTracedType(c.recvType()) {
+			if !ok || c.recv != v || c.embedded != nil || !tracerEvent.isTracedType(c.recvType()) {
 				continue
 			}
 			if c.isCtx() {
@@ -507,12 +505,12 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 		return true
 	}
 	if next, ok := t.handoffAt(c); ok {
-		return tr.traceReceiver(c.recv, call, next, visited)
+		return tr.traceCalleeReceiver(c, call, next, visited)
 	}
 
 	// Continue tracing through receiver if type matches
 	if recv := c.recvType(); recv != nil && t.isTracedType(recv) {
-		return tr.traceReceiver(c.recv, call, t, visited)
+		return tr.traceCalleeReceiver(c, call, t, visited)
 	}
 
 	return false
@@ -1121,6 +1119,69 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []ssa.Value, t tracerType, 
 func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []ssa.Value, t tracerType, visited map[ssa.Value]bool) bool {
 	stored := storesReachingClosure(mc.Bindings[idx], path, mc, tr.positions)
 	return tr.traceStored(stored, t, visited)
+}
+
+// receiverHasCtx reports whether the event c runs on, the receiver of the
+// terminator at, has context, as eventHasCtx does. For a method expression of
+// a promoted method, the event is read from the struct it is embedded in,
+// and only the context of its own counts.
+//
+//declscope:shared // checker.go asks this of each terminator
+func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
+	if c.embedded != nil {
+		return tr.traceEmbeddedReceiver(c, at, tracerEvent, make(map[ssa.Value]bool))
+	}
+	return tr.eventHasCtx(c.recv, at)
+}
+
+// traceCalleeReceiver traces the receiver of c, which call runs, as
+// traceReceiver does, or through the struct it is embedded in.
+func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, t tracerType, visited map[ssa.Value]bool) bool {
+	if c.embedded != nil {
+		return tr.traceEmbeddedReceiver(c, call, t, visited)
+	}
+	return tr.traceReceiver(c.recv, call, t, visited)
+}
+
+// traceEmbeddedReceiver traces the receiver of c, a method expression of a
+// promoted method, which call runs. c.recv is the struct the receiver is
+// embedded in, or a pointer to it, and the receiver is what the stores that
+// reach call left at the embedded fields of it:
+//
+//	t5 = *t1                               // the struct, loaded
+//	t6 = (myEvent).Msg$thunk(t5, "x")      // reads t1.Event
+//
+// The struct must be loaded from an address, or be a pointer, whose stores
+// storesReachingAt can find, and each embedded field but the last must be
+// a struct, not a pointer to one. Otherwise nothing is found.
+func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, t tracerType, visited map[ssa.Value]bool) bool {
+	addr, read := c.recv, call
+	typ := c.recv.Type()
+	if ptr, isPtr := typ.Underlying().(*types.Pointer); isPtr {
+		typ = ptr.Elem()
+	} else {
+		load, ok := c.recv.(*ssa.UnOp)
+		if !ok || load.Op != token.MUL {
+			return false
+		}
+		addr, read = load.X, load
+	}
+	root, path := aggregatePath(addr)
+	for i, index := range c.embedded {
+		st, ok := typ.Underlying().(*types.Struct)
+		if !ok {
+			return false
+		}
+		typ = st.Field(index).Type()
+		if _, isPtr := typ.Underlying().(*types.Pointer); isPtr && i < len(c.embedded)-1 {
+			return false // Reading past it is a load, which a path does not take
+		}
+		// A selection that no instruction makes: a path is only compared by
+		// the field each step picks
+		path = append(path, &ssa.Field{Field: index})
+	}
+	stored, ok := storesReachingAt(root, path, read, tr.positions)
+	return ok && tr.traceStored(stored, t, visited)
 }
 
 // traceReceiver traces recv, the receiver of call, a method call. It is the
