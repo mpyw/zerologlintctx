@@ -3,7 +3,6 @@ package chain
 import (
 	"go/token"
 	"go/types"
-	"maps"
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
@@ -20,7 +19,7 @@ import (
 // context that Context.Ctx sets, so past it only a logger stored in a
 // context, from zerolog.Ctx(ctx), counts.
 //
-//declscope:shared // phi.go traces each edge of a Phi in the Phi's state
+//declscope:shared // memo.go keys each trace by it
 type traceState struct {
 	// typ is the zerolog type of the value traced.
 	//
@@ -85,13 +84,13 @@ func (st traceState) receiverState(m zerologapi.Method) (traceState, bool) {
 //
 //declscope:shared // checker.go holds one per checked function
 type tracer struct {
-	// hasCtx remembers each value found to have context, per trace state.
-	// Only found results are kept: a value not found may have been cut short
-	// by a cycle, and found elsewhere. Without it, a chain of Phis whose edges
-	// all lead to the previous one is traced once per path, 2^n times in all.
+	// memo keeps the verdict of each value traced, per trace state, so that
+	// it is not worked out again for the next call that reaches it. Without
+	// it, a chain of Phis whose edges all lead to the previous one is traced
+	// once per path, 2^n times in all.
 	//
 	//declscope:private
-	hasCtx map[tracedValue]bool
+	memo traceMemo
 	// positions finds where each instruction is in its block, for
 	// storesReaching, which walks back from a read once per trace of it.
 	//
@@ -107,23 +106,17 @@ type tracer struct {
 //
 //declscope:shared // checker.go creates one per package
 func newTracer() *tracer {
-	return &tracer{hasCtx: make(map[tracedValue]bool), positions: make(instrPositions), closures: newClosures()}
-}
-
-// tracedValue is a value traced in one state.
-type tracedValue struct {
-	v  ssa.Value
-	st traceState
+	return &tracer{memo: newTraceMemo(), positions: make(instrPositions), closures: newClosures()}
 }
 
 // eventHasCtx traces an Event value, the receiver of the terminator at, to
 // check if .Ctx() was called.
 func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
-	if tr.traceValue(v, traceEvent, make(map[ssa.Value]bool)) {
+	if tr.traceValue(v, traceEvent) == yes {
 		return true
 	}
-	done := make(map[tracePointValue]bool)
-	if tr.traceCtxSetInPlace(v, walkPointBefore(at, tr.positions), done) {
+	done := make(map[tracePointValue]verdict)
+	if tr.traceCtxSetInPlace(v, walkPointBefore(at, tr.positions), done) == yes {
 		return true
 	}
 	if d, deferred := at.(*ssa.Defer); deferred {
@@ -139,7 +132,7 @@ func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 //
 //declscope:shared // checker.go asks this of each direct logging call's receiver
 func (tr *tracer) loggerHasCtx(v ssa.Value, at ssa.Instruction) bool {
-	return tr.traceReceiver(v, at, traceLogger, make(map[ssa.Value]bool))
+	return tr.traceReceiver(v, at, traceLogger) == yes
 }
 
 // traceCtxSetAtReturns reports whether, on every path from d, a deferred
@@ -198,19 +191,19 @@ type tracePointValue struct {
 // Ctx call on any value of the chain counts. For a Phi, each edge must have one before the
 // end of the block it comes from.
 //
-// done holds the result for each value already asked about. A value still
-// being worked out is taken to have context: it is reached again only through
-// an edge of a Phi that leads back to it, which carries the same event. done is
-// worked out for each terminator, and not kept, since a call before one
-// terminator may come after another.
-func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before walkPoint, done map[tracePointValue]bool) bool {
+// done holds the verdict for each value already asked about. A value still
+// being worked out is neutral: it is reached again only through an edge of a
+// Phi that leads back to it, which carries the same event. done is worked out
+// for each terminator, and not kept, since a call before one terminator may
+// come after another.
+func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before walkPoint, done map[tracePointValue]verdict) verdict {
 	key := tracePointValue{v: v, point: before}
 	if found, ok := done[key]; ok {
 		return found
 	}
-	done[key] = true
-	found := tr.traceCtxCalledBefore(v, before)
-	if !found {
+	done[key] = neutral
+	found := verdictOf(tr.traceCtxCalledBefore(v, before))
+	if found == no {
 		if recv := sameEventCalleeRecv(v); recv != nil {
 			found = tr.traceCtxSetInPlace(recv, before, done)
 		} else if phi, ok := v.(*ssa.Phi); ok {
@@ -223,22 +216,23 @@ func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before walkPoint, done map[tra
 
 // traceCtxSetOnEdges reports whether each edge of phi, apart from nil, has
 // Event.Ctx called on it before the end of the block it comes from, or has
-// context of its own.
-func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool) bool {
-	found := false
-	for i, edge := range phi.Edges {
-		if isNilConst(edge) {
-			continue
+// context of its own. An edge that leads back to phi is neutral.
+func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]verdict) verdict {
+	return all(func(yield func(verdict) bool) {
+		for i, edge := range phi.Edges {
+			if isNilConst(edge) {
+				continue
+			}
+			pred := phi.Block().Preds[i]
+			found := tr.traceCtxSetInPlace(edge, walkPoint{block: pred, index: len(pred.Instrs)}, done)
+			if found == no {
+				found = tr.traceValue(edge, traceEvent) // An edge with context of its own needs no Ctx call in place
+			}
+			if !yield(found) {
+				return
+			}
 		}
-		pred := phi.Block().Preds[i]
-		// An edge with context of its own needs no Ctx call in place
-		if !tr.traceCtxSetInPlace(edge, walkPoint{block: pred, index: len(pred.Instrs)}, done) &&
-			!tr.traceValue(edge, traceEvent, make(map[ssa.Value]bool)) {
-			return false
-		}
-		found = true
-	}
-	return found
+	})
 }
 
 // traceCtxCalledBefore reports whether, on every path from v to before,
@@ -312,7 +306,7 @@ func (tr *tracer) traceCtxCalledOnEveryPath(
 //	}
 func (tr *tracer) traceStoredEventHasCtx(instr ssa.Instruction) bool {
 	store, ok := instr.(*ssa.Store)
-	return ok && zerologapi.TypeOf(store.Val.Type()) == zerologapi.TypeEvent && tr.traceValue(store.Val, traceEvent, make(map[ssa.Value]bool))
+	return ok && zerologapi.TypeOf(store.Val.Type()) == zerologapi.TypeEvent && tr.traceValue(store.Val, traceEvent) == yes
 }
 
 // traceCtxCalls adds to calls the Event.Ctx calls in fn on the event v,
@@ -351,14 +345,6 @@ func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Ins
 	}
 }
 
-// foundBefore reports whether v was found to have context before, in the
-// state st, so that a caller can skip the copy of visited it would trace v with.
-//
-//declscope:shared // phi.go skips the copy for an edge found before
-func (tr *tracer) foundBefore(v ssa.Value, st traceState) bool {
-	return tr.hasCtx[tracedValue{v: v, st: st}]
-}
-
 // traceValue traces an SSA value backwards to find if context was set.
 //
 // Tracing flow:
@@ -368,8 +354,8 @@ func (tr *tracer) foundBefore(v ssa.Value, st traceState) bool {
 //	│                                                                  │
 //	│  Input: ssa.Value                                                │
 //	│     │                                                            │
-//	│     ├─ Already visited? → return false (cycle detection)        │
-//	│     ├─ Found before? → return true (cached)                     │
+//	│     ├─ In progress? → neutral (a cycle adds no source)          │
+//	│     ├─ Traced before? → the verdict kept (see traceMemo)        │
 //	│     │                                                            │
 //	│     ├─ Is *ssa.Call?                                             │
 //	│     │     │                                                      │
@@ -377,60 +363,46 @@ func (tr *tracer) foundBefore(v ssa.Value, st traceState) bool {
 //	│     │     │                                                      │
 //	│     │     ├─ Func literal? → trace return values                │
 //	│     │     │                                                      │
-//	│     │     ├─ Sets context? → return true                        │
+//	│     │     ├─ Sets context? → yes                                │
 //	│     │     ├─ Handoff? → trace receiver with its own tracer      │
 //	│     │     └─ Receiver of the traced type? → trace receiver      │
 //	│     │                                                            │
 //	│     └─ Not a Call → traceCommon (Phi, UnOp, Alloc, etc.)        │
 //	└─────────────────────────────────────────────────────────────────┘
-//
-//declscope:shared // phi.go traces each edge of a Phi
-func (tr *tracer) traceValue(v ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
-	if visited[v] {
-		return false
-	}
-	key := tracedValue{v: v, st: st}
-	if tr.hasCtx[key] {
-		return true
-	}
-	visited[v] = true
-
-	if !tr.traceUncached(v, st, visited) {
-		return false
-	}
-	tr.hasCtx[key] = true
-	return true
+func (tr *tracer) traceValue(v ssa.Value, st traceState) verdict {
+	return tr.memo.trace(memoKey{v: v, st: st}, true, func() verdict {
+		return tr.traceUncached(v, st)
+	})
 }
 
-// traceUncached does the work of traceValue for a value not yet found to
-// have context.
-func (tr *tracer) traceUncached(v ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
+// traceUncached does the work of traceValue for a value not traced yet.
+func (tr *tracer) traceUncached(v ssa.Value, st traceState) verdict {
 	call, ok := v.(*ssa.Call)
 	if !ok {
-		return tr.traceCommon(v, st, visited)
+		return tr.traceCommon(v, st)
 	}
 
 	c, declared := calleeOf(&call.Call)
 	if !declared {
-		if found, ok := tr.traceFuncLiteralResult(call, 0, st, visited); ok {
+		if found, ok := tr.traceFuncLiteralResult(call, 0, st); ok {
 			return found
 		}
 		if call.Call.StaticCallee() != nil || len(call.Call.Args) == 0 {
-			return false
+			return no
 		}
 		// Dynamic dispatch: the method is not known
-		return tr.traceReceiver(call.Call.Args[0], call, st, visited)
+		return tr.traceReceiver(call.Call.Args[0], call, st)
 	}
 
 	if st.setsCtx(c.api) {
 		// A fresh context.Background() or TODO() given in place of the one in
 		// scope replaces what the chain had
-		return !tr.givesFreshContext(&call.Call)
+		return verdictOf(!tr.givesFreshContext(&call.Call))
 	}
 	if next, ok := st.receiverState(c.api); ok {
-		return tr.traceCalleeReceiver(c, call, next, visited)
+		return tr.traceCalleeReceiver(c, call, next)
 	}
-	return false
+	return no
 }
 
 // givesFreshContext reports whether cc, a call of a Ctx of zerolog, gives it
@@ -440,52 +412,68 @@ func (tr *tracer) givesFreshContext(cc *ssa.CallCommon) bool {
 	return len(cc.Args) > 0 && isFreshContext(cc.Args[len(cc.Args)-1], tr.positions)
 }
 
+// traceSource traces v, one of the values something can be, such as an edge
+// of a Phi or a value stored. A nil event logs nothing, so it is neutral.
+func (tr *tracer) traceSource(v ssa.Value, st traceState) verdict {
+	if isNilConst(v) {
+		return neutral
+	}
+	return tr.traceValue(v, st)
+}
+
 // =============================================================================
 // Common SSA Value Handling
 // =============================================================================
 
 // traceCommon handles common SSA value types (Phi, UnOp, FreeVar, etc.).
-func (tr *tracer) traceCommon(v ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 	switch val := v.(type) {
 	case *ssa.Field, *ssa.Index:
-		if found, ok := tr.traceSelectedValue(v, st, visited); ok {
+		if found, ok := tr.traceSelectedValue(v, st); ok {
 			return found
 		}
 	case *ssa.Extract:
 		if call, ok := val.Tuple.(*ssa.Call); ok {
-			if found, ok := tr.traceFuncLiteralResult(call, val.Index, st, visited); ok {
+			if found, ok := tr.traceFuncLiteralResult(call, val.Index, st); ok {
 				return found
 			}
 		}
-		return tr.traceValue(val.Tuple, st, visited)
+		return tr.traceValue(val.Tuple, st)
 	case *ssa.Phi:
-		return tr.tracePhi(val, st, visited)
+		// Every edge must have context. One that leads back to the Phi, as an
+		// update in a loop does, is neutral there
+		return all(verdictsOf(val.Edges, func(edge ssa.Value) verdict {
+			return tr.traceSource(edge, st)
+		}))
 	case *ssa.UnOp:
-		return tr.traceUnOp(val, st, visited)
+		return tr.traceUnOp(val, st)
 	case *ssa.Alloc:
-		return tr.traceAlloc(val, st, visited)
+		return tr.traceAlloc(val, st)
 	case *ssa.FreeVar:
-		return tr.traceFreeVar(val, nil, st, visited)
+		return tr.traceFreeVar(val, nil, st)
 	case *ssa.Parameter:
 		// A pointer parameter can be updated in place; see storesReaching.
-		if found, _ := tr.traceAddressAt(val, nil, st, visited); found {
-			return true
+		// Otherwise, or failing that, the arguments give it
+		found, ok := tr.traceAddressAt(val, nil, st)
+		if !ok {
+			return tr.traceArguments(val, st)
 		}
-		return tr.traceArguments(val, st, visited)
+		return found.or(func() verdict { return tr.traceArguments(val, st) })
 	case *ssa.FieldAddr, *ssa.IndexAddr:
 		// The address of a field or element is itself the receiver of a
-		// pointer method, such as Logger.Info on s.log.
-		if found, _ := tr.traceStoredValues(val, nil, st, visited); found {
-			return true
+		// pointer method, such as Logger.Info on s.log. Failing that, the
+		// value it is the address in may have context
+		if found, ok := tr.traceStoredValues(val, nil, st); ok {
+			return found.or(func() verdict { return tr.traceValue(unwrapInner(v), st) })
 		}
 	}
 
 	// Handle simple wrapper types that just need inner value tracing
 	if inner := unwrapInner(v); inner != nil {
-		return tr.traceValue(inner, st, visited)
+		return tr.traceValue(inner, st)
 	}
 
-	return false
+	return no
 }
 
 // traceSelectedValue traces v, a field of a struct value or an element of an
@@ -497,7 +485,7 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState, visited map[ssa.Value]
 //
 // ok is false when the value it selects from is not loaded from an address
 // whose stores storesReachingAt can find.
-func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState, visited map[ssa.Value]bool) (found, ok bool) {
+func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState) (found verdict, ok bool) {
 	var selections []sel
 	for {
 		from, s, ok := valueSel(v)
@@ -509,15 +497,15 @@ func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState, visited map[ssa
 	}
 	load, isLoad := asLoad(v)
 	if !isLoad {
-		return false, false
+		return no, false
 	}
 	slices.Reverse(selections)
 	at, _ := placeOf(load.X)
 	stored, ok := storesReachingAt(at.with(selections...), load, tr.positions)
 	if !ok {
-		return false, false
+		return no, false
 	}
-	return tr.traceStored(stored, st, visited), true
+	return tr.traceStored(stored, st), true
 }
 
 // =============================================================================
@@ -526,19 +514,19 @@ func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState, visited map[ssa
 
 // traceUnOp handles SSA unary operations, especially pointer dereferences.
 // A load reads what the stores that reach it left at its address.
-func (tr *tracer) traceUnOp(unop *ssa.UnOp, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceUnOp(unop *ssa.UnOp, st traceState) verdict {
 	if unop.Op == token.MUL {
-		if found, ok := tr.traceStoredValues(unop.X, unop, st, visited); ok {
+		if found, ok := tr.traceStoredValues(unop.X, unop, st); ok {
 			return found
 		}
 	}
-	return tr.traceValue(unop.X, st, visited)
+	return tr.traceValue(unop.X, st)
 }
 
 // traceAlloc handles SSA Alloc nodes (local variable allocation), reached
 // where the read that uses it is not known, such as an edge of a Phi.
-func (tr *tracer) traceAlloc(alloc *ssa.Alloc, st traceState, visited map[ssa.Value]bool) bool {
-	found, _ := tr.traceStoredValues(alloc, nil, st, visited)
+func (tr *tracer) traceAlloc(alloc *ssa.Alloc, st traceState) verdict {
+	found, _ := tr.traceStoredValues(alloc, nil, st) // no when it knows nothing of alloc
 	return found
 }
 
@@ -547,56 +535,38 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, st traceState, visited map[ssa.Va
 // knows nothing of addr.
 //
 // Like the edges of a Phi, every value must have context, and a value that
-// is already being traced is skipped: it is an update in a loop, which keeps
+// is already being traced is neutral: it is an update in a loop, which keeps
 // the context of the value before it.
-func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, st traceState, visited map[ssa.Value]bool) (found, ok bool) {
+func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, st traceState) (found verdict, ok bool) {
 	stored, ok := storesReaching(addr, read, tr.positions)
 	if !ok {
-		return false, false
+		return no, false
 	}
-	return tr.traceStored(stored, st, visited), true
+	return tr.traceStored(stored, st), true
 }
 
-// traceStored reports whether what storesReaching found can be at an
-// address has context, on every path, and on some path at all.
-func (tr *tracer) traceStored(stored storeReaching, st traceState, visited map[ssa.Value]bool) bool {
+// traceStored combines the verdicts of what storesReaching found can be at an
+// address: the variable a closure captures, the parameters of a func
+// literal, and the values stored. Every one must have context.
+func (tr *tracer) traceStored(stored storeReaching, st traceState) verdict {
 	if stored.unknown {
-		return false
+		return no
 	}
-	found := false
-	if stored.captured != nil {
-		if !tr.traceFreeVar(stored.captured, stored.capturedPath, st, maps.Clone(visited)) {
-			return false
+	return all(func(yield func(verdict) bool) {
+		if stored.captured != nil && !yield(tr.traceFreeVar(stored.captured, stored.capturedPath, st)) {
+			return
 		}
-		found = true
-	}
-	for _, pp := range stored.params {
-		if !tr.traceParamPath(pp, st, maps.Clone(visited)) {
-			return false
+		for _, pp := range stored.params {
+			if !yield(tr.traceParamPath(pp, st)) {
+				return
+			}
 		}
-		found = true
-	}
-	for _, v := range stored.values {
-		if visited[v] || isNilConst(v) {
-			continue // A nil event logs nothing, as for an edge of a Phi
+		for _, v := range stored.values {
+			if !yield(tr.traceSource(v, st)) {
+				return
+			}
 		}
-		if tr.foundBefore(v, st) {
-			found = true // With no need to copy visited for it
-			continue
-		}
-		// Each store is traced on its own copy of visited, unless it is the
-		// only one: copying on every step of a long chain of updates would
-		// take time quadratic in its length.
-		edgeVisited := visited
-		if len(stored.values) > 1 {
-			edgeVisited = maps.Clone(visited)
-		}
-		if !tr.traceValue(v, st, edgeVisited) {
-			return false
-		}
-		found = true
-	}
-	return found
+	})
 }
 
 // traceParamPath traces the value at pp, in a parameter of a func literal,
@@ -608,65 +578,63 @@ func (tr *tracer) traceStored(stored storeReaching, st traceState, visited map[s
 //	}(&l)
 //
 // A call that passes the parameter on, as a recursive call does, reaches the
-// same parameter again. It is skipped there, as an update in a loop is: the
+// same parameter again. It is neutral there, as an update in a loop is: the
 // other calls give the value.
-func (tr *tracer) traceParamPath(pp storeParamPath, st traceState, visited map[ssa.Value]bool) bool {
-	if visited[pp.param] {
-		return true
-	}
-	visited[pp.param] = true
-	fn := pp.param.Parent()
-	calls, ok := tr.closures.callsOf(fn)
-	if !ok || len(calls) == 0 {
-		return false
-	}
-	idx := slices.Index(fn.Params, pp.param)
-	for _, call := range calls {
-		if !tr.traceArgumentAt(call.Common().Args[idx], call, pp, st, maps.Clone(visited)) {
-			return false
+func (tr *tracer) traceParamPath(pp storeParamPath, st traceState) verdict {
+	return tr.memo.trace(memoKey{v: pp.param, st: st, param: true}, false, func() verdict {
+		fn := pp.param.Parent()
+		calls, ok := tr.closures.callsOf(fn)
+		if !ok || len(calls) == 0 {
+			return no
 		}
-	}
-	return true
+		idx := slices.Index(fn.Params, pp.param)
+		return all(verdictsOf(calls, func(call ssa.CallInstruction) verdict {
+			return tr.traceArgumentAt(call.Common().Args[idx], call, pp, st)
+		}))
+	})
 }
 
 // traceArgumentAt traces the value at the selections of pp from arg, which
 // call passes for the parameter of pp.
-func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceArgumentAt(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, st traceState) verdict {
 	addr, read := arg, ssa.Instruction(call)
 	switch {
 	case !pp.pointer:
 		// A struct or array passed by value is loaded from where it is
 		load, ok := asLoad(arg)
 		if !ok {
-			return false
+			return no
 		}
 		addr, read = load.X, load
 	case len(pp.path) == 0:
-		return tr.traceReceiver(arg, call, st, visited)
+		return tr.traceReceiver(arg, call, st)
 	}
 	at, _ := placeOf(addr)
 	stored, ok := storesReachingAt(at.with(pp.path...), read, tr.positions)
-	return ok && tr.traceStored(stored, st, visited)
+	if !ok {
+		return no
+	}
+	return tr.traceStored(stored, st)
 }
 
 // traceAddressAt traces addr, an address that read uses, such as the
 // receiver of Logger.Info, which has a pointer receiver. A nil read stands
 // for every read of addr. ok is false when addr is not one whose stores
 // storesReaching can find.
-func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, st traceState, visited map[ssa.Value]bool) (found, ok bool) {
+func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, st traceState) (found verdict, ok bool) {
 	if zerologapi.TypeOf(addr.Type()) == zerologapi.TypeEvent {
-		return false, false // A *zerolog.Event is the value itself, not a variable it is read from
+		return no, false // A *zerolog.Event is the value itself, not a variable it is read from
 	}
 	switch a := addr.(type) {
 	case *ssa.Alloc, *ssa.FieldAddr, *ssa.IndexAddr, *ssa.FreeVar:
 	case *ssa.Parameter:
 		if _, isPtr := a.Type().Underlying().(*types.Pointer); !isPtr {
-			return false, false
+			return no, false
 		}
 	default:
-		return false, false
+		return no, false
 	}
-	return tr.traceStoredValues(addr, read, st, visited)
+	return tr.traceStoredValues(addr, read, st)
 }
 
 // traceArguments traces the arguments passed for param, when its function is
@@ -676,89 +644,81 @@ func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, st traceS
 //	func(e *zerolog.Event) {
 //	    e.Msg("x")              // e is the argument below
 //	}(logger.Info().Ctx(ctx))
-func (tr *tracer) traceArguments(param *ssa.Parameter, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceArguments(param *ssa.Parameter, st traceState) verdict {
 	fn := param.Parent()
 	calls, ok := tr.closures.callsOf(fn)
 	if !ok || len(calls) == 0 {
-		return false
+		return no
 	}
 	idx := slices.Index(fn.Params, param)
-	passesOn := func(arg ssa.Value) bool {
-		for v := arg; v != nil; v = sameEventCalleeRecv(v) {
-			if v == param {
-				return true
-			}
-		}
-		return false
-	}
-	found := false
-	for _, call := range calls {
-		arg := call.Common().Args[idx]
-		if passesOn(arg) {
-			continue // Passed on by a recursive call, as an update in a loop is
-		}
-		if !tr.traceValue(arg, st, maps.Clone(visited)) {
-			return false
-		}
-		found = true
-	}
-	return found
+	// An argument passed on by a recursive call, or a chain of event methods
+	// on it, leads back to param, and is neutral as an update in a loop is
+	return all(verdictsOf(calls, func(call ssa.CallInstruction) verdict {
+		return tr.traceValue(call.Common().Args[idx], st)
+	}))
 }
 
-// traceFuncLiteralResult reports whether the result idx of call has context,
-// when call runs a func literal: one called on the spot as an IIFE
-// (Immediately Invoked Function Expression), through a variable, or one of
-// several a variable can hold. One that captures nothing is called as the
-// function itself, not as a closure. ok is false when call runs no func
-// literal that is known.
-func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState, visited map[ssa.Value]bool) (found, ok bool) {
+// traceFuncLiteralResult traces the result idx of call, when call runs a
+// func literal: one called on the spot as an IIFE (Immediately Invoked
+// Function Expression), through a variable, or one of several a variable
+// can hold. One that captures nothing is called as the function itself, not
+// as a closure. Every func literal must return a value with context. ok is
+// false when call runs no func literal that is known.
+func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState) (found verdict, ok bool) {
 	fns, ok := tr.closures.funcLiteralsOf(call.Call.Value, make(map[ssa.Value]bool))
 	if sfn := call.Call.StaticCallee(); sfn != nil {
 		fns, ok = []*ssa.Function{sfn}, sfn.Parent() != nil
 	}
 	if !ok || len(fns) == 0 {
-		return false, false
+		return no, false
 	}
-	return !slices.ContainsFunc(fns, func(fn *ssa.Function) bool {
-		return !tr.traceReturns(fn, idx, call.Call.Args, st, maps.Clone(visited))
-	}), true
+	return all(verdictsOf(fns, func(fn *ssa.Function) verdict {
+		return tr.traceReturns(fn, idx, call.Call.Args, st)
+	})), true
 }
 
-// traceArgumentReturned reports whether result, returned by fn, is one of its
-// parameters, or a chain of event methods on one, and the argument that args
-// pass for it has context. The result of a call is what that call passes, not
-// what every call of fn does, which traceArguments asks:
+// traceArgumentReturned traces the argument that args pass for result,
+// returned by fn, when it is one of its parameters, or a chain of event
+// methods on one. The result of a call is what that call passes, not what
+// every call of fn does, which traceArguments asks:
 //
 //	id := func(e *zerolog.Event) *zerolog.Event { return e }
 //	a := id(logger.Info().Ctx(ctx)) // a is this argument
 //	b := id(logger.Info())          // and b this one
-func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args []ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
+//
+// It is neutral when result is not a parameter: there is no argument to
+// trace in place of it.
+func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args []ssa.Value, st traceState) verdict {
 	for v := result; v != nil; v = sameEventCalleeRecv(v) {
 		param, ok := v.(*ssa.Parameter)
 		if !ok {
 			continue
 		}
-		idx := slices.Index(fn.Params, param)
-		return idx >= 0 && idx < len(args) && tr.traceValue(args[idx], st, maps.Clone(visited))
+		if idx := slices.Index(fn.Params, param); idx >= 0 && idx < len(args) {
+			return tr.traceValue(args[idx], st)
+		}
+		return no
 	}
-	return false
+	return neutral
 }
 
 // traceFreeVar traces a FreeVar back to the variable bound in MakeClosure, at
 // path, the selections from it: nil for the variable itself. Any MakeClosure
 // of its closure whose binding has context will do (see closures.makersOf).
-func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []sel, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []sel, st traceState) verdict {
 	fn := fv.Parent()
 	if fn == nil {
-		return false
+		return no
 	}
 	idx := slices.Index(fn.FreeVars, fv)
-	if idx < 0 {
-		return false
+	makers := tr.closures.makersOf(fn)
+	if idx < 0 || len(makers) == 0 {
+		return no
 	}
-	return slices.ContainsFunc(tr.closures.makersOf(fn), func(mc *ssa.MakeClosure) bool {
-		return idx < len(mc.Bindings) && tr.traceBinding(mc, idx, path, st, visited)
-	})
+	// Each MakeClosure of fn binds every free variable of it
+	return some(verdictsOf(makers, func(mc *ssa.MakeClosure) verdict {
+		return tr.traceBinding(mc, idx, path, st)
+	}))
 }
 
 // traceBinding traces what is at path in the variable that mc binds as its
@@ -769,9 +729,9 @@ func (tr *tracer) traceFreeVar(fv *ssa.FreeVar, path []sel, st traceState, visit
 //	l.Debug().Ctx(ctx).Msg("start") // reads base, before the closure is made
 //	l = l.With().Ctx(ctx).Logger()
 //	defer func() { l.Info().Msg("end") }()
-func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []sel, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []sel, st traceState) verdict {
 	stored := storesReachingClosure(mc.Bindings[idx], path, mc, tr.positions)
-	return tr.traceStored(stored, st, visited)
+	return tr.traceStored(stored, st)
 }
 
 // receiverHasCtx reports whether the event c runs on, the receiver of the
@@ -782,7 +742,7 @@ func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []sel, st trac
 //declscope:shared // checker.go asks this of each terminator
 func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
 	if c.embedded != nil {
-		return tr.traceEmbeddedReceiver(c, at, traceEvent, make(map[ssa.Value]bool)) ||
+		return tr.traceEmbeddedReceiver(c, at, traceEvent) == yes ||
 			tr.traceEmbeddedCtxSetInPlace(c, at)
 	}
 	return tr.eventHasCtx(c.recv, at)
@@ -790,11 +750,11 @@ func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
 
 // traceCalleeReceiver traces the receiver of c, which call runs, as
 // traceReceiver does, or through the struct it is embedded in.
-func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, st traceState) verdict {
 	if c.embedded != nil {
-		return tr.traceEmbeddedReceiver(c, call, st, visited)
+		return tr.traceEmbeddedReceiver(c, call, st)
 	}
-	return tr.traceReceiver(c.recv, call, st, visited)
+	return tr.traceReceiver(c.recv, call, st)
 }
 
 // traceEmbeddedReceiver traces the receiver of c, a method expression of a
@@ -807,13 +767,13 @@ func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, st traceSt
 //
 // The struct must be loaded from an address, or be a pointer, whose stores
 // storesReachingAt can find. Otherwise nothing is found.
-func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, st traceState, visited map[ssa.Value]bool) bool {
+func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, st traceState) verdict {
 	addr, typ, read, ok := c.embeddedStart(call)
 	if !ok {
-		return false
+		return no
 	}
 	at, _ := placeOf(addr)
-	return tr.traceEmbeddedAt(at, typ, c.embedded, read, call, st, visited)
+	return tr.traceEmbeddedAt(at, typ, c.embedded, read, call, st)
 }
 
 // traceEmbeddedAt traces the receiver at the embedded fields of the struct of
@@ -833,29 +793,23 @@ func (tr *tracer) traceEmbeddedAt(
 	embedded []int,
 	read, call ssa.Instruction,
 	st traceState,
-	visited map[ssa.Value]bool,
-) bool {
+) verdict {
 	at, n, field := at.withEmbedded(typ, embedded)
 	stored, ok := storesReachingAt(at, read, tr.positions)
-	if n == len(embedded) {
-		return ok && tr.traceStored(stored, st, visited)
+	switch {
+	case n == len(embedded) && ok:
+		return tr.traceStored(stored, st)
+	case !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0:
+		return no
 	}
-	if !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0 {
-		return false
-	}
-	found := false
-	for _, v := range stored.values {
+	elem := field.Underlying().(*types.Pointer).Elem()
+	return all(verdictsOf(stored.values, func(v ssa.Value) verdict {
 		if isNilConst(v) {
-			continue // A nil pointer has no event to log
+			return neutral // A nil pointer has no event to log
 		}
 		next, _ := placeOf(v)
-		elem := field.Underlying().(*types.Pointer).Elem()
-		if !tr.traceEmbeddedAt(next, elem, embedded[n:], call, call, st, maps.Clone(visited)) {
-			return false
-		}
-		found = true
-	}
-	return found
+		return tr.traceEmbeddedAt(next, elem, embedded[n:], call, call, st)
+	}))
 }
 
 // traceEmbeddedCtxSetInPlace reports whether Event.Ctx is called in place,
@@ -903,37 +857,37 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 // first argument, or what a method value is bound to. A pointer receiver that
 // is a variable, or a field or element of one, holds what the stores that
 // reach the call left there.
-func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, st traceState, visited map[ssa.Value]bool) bool {
-	if found, ok := tr.traceAddressAt(recv, call, st, visited); ok {
+func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, st traceState) verdict {
+	if found, ok := tr.traceAddressAt(recv, call, st); ok {
 		return found
 	}
-	return tr.traceValue(recv, st, visited)
+	return tr.traceValue(recv, st)
 }
 
-// traceReturns reports whether the value at resultIndex from every return of
-// fn has context, as for an IIFE (Immediately Invoked Function Expression).
-// args are what the call whose result is traced passes, which a parameter
-// returned stands for.
-func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, args []ssa.Value, st traceState, visited map[ssa.Value]bool) bool {
-	// Find all return statements and trace their values. A result of
-	// another type, such as an interface, is traced through to the value it
-	// holds.
-	hasReturn := false
-	for instr := range instrsIn(fn) {
-		ret, ok := instr.(*ssa.Return)
-		if !ok {
-			continue
+// traceReturns traces the value at resultIndex from every return of fn, as
+// for an IIFE (Immediately Invoked Function Expression). Every one must have
+// context. args are what the call whose result is traced passes, which a
+// parameter returned stands for.
+func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, args []ssa.Value, st traceState) verdict {
+	// A result of another type, such as an interface, is traced through to
+	// the value it holds.
+	return all(func(yield func(verdict) bool) {
+		for instr := range instrsIn(fn) {
+			ret, ok := instr.(*ssa.Return)
+			if !ok {
+				continue
+			}
+			found := no
+			if resultIndex < len(ret.Results) {
+				// The value itself, or the argument passed for it, will do
+				result := ret.Results[resultIndex]
+				found = tr.traceValue(result, st).or(func() verdict {
+					return tr.traceArgumentReturned(result, fn, args, st)
+				})
+			}
+			if !yield(found) {
+				return
+			}
 		}
-		if len(ret.Results) <= resultIndex {
-			return false
-		}
-
-		hasReturn = true
-		result := ret.Results[resultIndex]
-		if !tr.traceValue(result, st, maps.Clone(visited)) && !tr.traceArgumentReturned(result, fn, args, st, visited) {
-			return false
-		}
-	}
-
-	return hasReturn
+	})
 }

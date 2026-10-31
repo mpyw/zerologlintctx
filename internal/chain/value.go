@@ -24,8 +24,6 @@ import (
 // unwrapInner extracts the inner value from SSA wrapper types.
 func unwrapInner(v ssa.Value) ssa.Value {
 	switch val := v.(type) {
-	case *ssa.Extract:
-		return val.Tuple
 	case *ssa.MakeInterface:
 		return val.X
 	case *ssa.ChangeType:
