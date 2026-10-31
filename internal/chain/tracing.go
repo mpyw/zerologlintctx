@@ -374,6 +374,20 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 		makes[def] = true
 	}
 	tr.traceCtxCalls(v, fn, calls, make(map[ssa.Value]bool))
+	return tr.traceCtxCalledOnEveryPath(calls, makes, made, before)
+}
+
+// traceCtxCalledOnEveryPath reports whether every path that leads to before
+// passes one of calls, the Event.Ctx calls on an event, after the last of
+// makes on it, where another event is in its place. Such an instruction that
+// stores an event with context of its own ends a path too. A path that leads
+// back to the entry of the function passes none of makes, and has the event
+// only when made is false: the event is given at the entry.
+func (tr *tracer) traceCtxCalledOnEveryPath(
+	calls, makes map[ssa.Instruction]bool,
+	made bool,
+	before tracePoint,
+) bool {
 	if len(calls) == 0 {
 		return false
 	}
@@ -1176,7 +1190,8 @@ func (tr *tracer) traceBinding(mc *ssa.MakeClosure, idx int, path []ssa.Value, t
 //declscope:shared // checker.go asks this of each terminator
 func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
 	if c.embedded != nil {
-		return tr.traceEmbeddedReceiver(c, at, tracerEvent, make(map[ssa.Value]bool))
+		return tr.traceEmbeddedReceiver(c, at, tracerEvent, make(map[ssa.Value]bool)) ||
+			tr.traceEmbeddedCtxSetInPlace(c, at)
 	}
 	return tr.eventHasCtx(c.recv, at)
 }
@@ -1199,36 +1214,152 @@ func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, t tracerTy
 //	t6 = (myEvent).Msg$thunk(t5, "x")      // reads t1.Event
 //
 // The struct must be loaded from an address, or be a pointer, whose stores
-// storesReachingAt can find, and each embedded field but the last must be
-// a struct, not a pointer to one. Otherwise nothing is found.
+// storesReachingAt can find. Otherwise nothing is found.
 func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, t tracerType, visited map[ssa.Value]bool) bool {
-	addr, read := c.recv, call
-	typ := c.recv.Type()
-	if ptr, isPtr := typ.Underlying().(*types.Pointer); isPtr {
-		typ = ptr.Elem()
-	} else {
-		load, ok := c.recv.(*ssa.UnOp)
-		if !ok || load.Op != token.MUL {
-			return false
-		}
-		addr, read = load.X, load
+	addr, typ, read, ok := embeddedStart(c, call)
+	if !ok {
+		return false
 	}
 	root, path := aggregatePath(addr)
-	for i, index := range c.embedded {
-		st, ok := typ.Underlying().(*types.Struct)
-		if !ok {
+	return tr.traceEmbeddedAt(root, path, typ, c.embedded, read, call, t, visited)
+}
+
+// embeddedStart returns where the struct c.recv is, for c, a method
+// expression of a promoted method that call runs: the address the struct is
+// at, its type, and the instruction that reads it there. ok is false when the
+// struct is a value that is not loaded from an address.
+func embeddedStart(c callee, call ssa.Instruction) (addr ssa.Value, typ types.Type, read ssa.Instruction, ok bool) {
+	if ptr, isPtr := c.recv.Type().Underlying().(*types.Pointer); isPtr {
+		return c.recv, ptr.Elem(), call, true
+	}
+	load, isLoad := c.recv.(*ssa.UnOp)
+	if !isLoad || load.Op != token.MUL {
+		return nil, nil, nil, false
+	}
+	return load.X, c.recv.Type(), load, true
+}
+
+// traceEmbeddedAt traces the receiver at the embedded fields of the struct of
+// type typ that path selects from root, as read reads it. call is the call
+// of the method expression.
+//
+// An embedded field but the last may be a pointer. The receiver is then at
+// the rest of the fields of what each pointer that can be stored there
+// points to, as call reads it, and every one must have context:
+//
+//	type outer struct{ *inner }
+//	o := outer{&inner{e}}  // t3 = new inner ; *&t3.Event = e ; *&t1.inner = t3
+//	outer.Msg(o, "x")      // reads t1.inner, then t3.Event
+func (tr *tracer) traceEmbeddedAt(
+	root ssa.Value,
+	path []ssa.Value,
+	typ types.Type,
+	embedded []int,
+	read, call ssa.Instruction,
+	t tracerType,
+	visited map[ssa.Value]bool,
+) bool {
+	path, n, field := embeddedPath(typ, path, embedded)
+	stored, ok := storesReachingAt(root, path, read, tr.positions)
+	if n == len(embedded) {
+		return ok && tr.traceStored(stored, t, visited)
+	}
+	if !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0 {
+		return false
+	}
+	found := false
+	for _, v := range stored.values {
+		if isNilConst(v) {
+			continue // A nil pointer has no event to log
+		}
+		next, nextPath := aggregatePath(v)
+		elem := field.Underlying().(*types.Pointer).Elem()
+		if !tr.traceEmbeddedAt(next, nextPath, elem, embedded[n:], call, call, t, maps.Clone(visited)) {
 			return false
 		}
-		typ = st.Field(index).Type()
-		if _, isPtr := typ.Underlying().(*types.Pointer); isPtr && i < len(c.embedded)-1 {
-			return false // Reading past it is a load, which a path does not take
-		}
+		found = true
+	}
+	return found
+}
+
+// embeddedPath returns path with the embedded fields of the struct of type
+// typ appended, one after another, up to the first that is a pointer to a
+// struct, which is a field but the last. n is how many it appended, and field
+// is the type of the last of them.
+func embeddedPath(typ types.Type, path []ssa.Value, embedded []int) (_ []ssa.Value, n int, field types.Type) {
+	path = slices.Clone(path)
+	for i, index := range embedded {
+		// Each embedded field but the last is a struct or a pointer to one
+		typ = typ.Underlying().(*types.Struct).Field(index).Type()
 		// A selection that no instruction makes: a path is only compared by
 		// the field each step picks
 		path = append(path, &ssa.Field{Field: index})
+		if _, isPtr := typ.Underlying().(*types.Pointer); isPtr && i < len(embedded)-1 {
+			return path, i + 1, typ
+		}
 	}
-	stored, ok := storesReachingAt(root, path, read, tr.positions)
-	return ok && tr.traceStored(stored, t, visited)
+	return path, len(embedded), typ
+}
+
+// traceEmbeddedCtxSetInPlace reports whether Event.Ctx is called in place,
+// with its result unused or not, on the event at the embedded fields of
+// c.recv before call reads it, as traceCtxCalledBefore does for an event in
+// memory. A Ctx call on any read of the event where the struct is counts,
+// unless another event is stored there in between: a load of the event, or
+// a selection of it from a load of the struct, or of a struct it is embedded
+// in, as each load of a struct value of a local variable is:
+//
+//	me := myEvent{logger.Info()}
+//	me.Ctx(ctx)            // t4 = *t1 ; t5 = t4.Event ; Ctx(t5, ctx)
+//	myEvent.Msg(me, "x")   // Msg$thunk(t4, "x") reads t4.Event
+//
+// Each embedded field but the last must be a struct, not a pointer to one.
+func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) bool {
+	addr, typ, _, ok := embeddedStart(c, call)
+	if !ok {
+		return false
+	}
+	root, base := aggregatePath(addr)
+	path, n, _ := embeddedPath(typ, base, c.embedded)
+	if n < len(c.embedded) {
+		return false // Reading past a pointer is a load, which a path does not take
+	}
+	_, overwrites, ok := storeLoadsAt(root, path)
+	if !ok {
+		return false
+	}
+	fn := call.Parent()
+	calls := make(map[ssa.Instruction]bool)
+	for k := len(base); k <= len(path); k++ {
+		loads, _, _ := storeLoadsAt(root, path[:k])
+		for _, load := range loads {
+			for _, ev := range embeddedSelections(load, c.embedded[k-len(base):]) {
+				tr.traceCtxCalls(ev, fn, calls, make(map[ssa.Value]bool))
+			}
+		}
+	}
+	_, local := root.(*ssa.Alloc)
+	before := tracePoint{block: call.Block(), index: tr.positions.of(call)}
+	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, before)
+}
+
+// embeddedSelections returns the Field instructions that select the embedded
+// fields from the struct value v, one after another: each value of the last
+// field the function selects from v, or v itself when there are none.
+func embeddedSelections(v ssa.Value, embedded []int) []ssa.Value {
+	values := []ssa.Value{v}
+	for _, index := range embedded {
+		var next []ssa.Value
+		for _, w := range values {
+			for _, ref := range *w.Referrers() {
+				if f, ok := ref.(*ssa.Field); ok && f.X == w && f.Field == index {
+					next = append(next, f)
+				}
+			}
+		}
+		values = next
+	}
+	return values
 }
 
 // traceReceiver traces recv, the receiver of call, a method call. It is the

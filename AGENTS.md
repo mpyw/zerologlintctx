@@ -95,7 +95,7 @@ testdata/src/zerolog/
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE is supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
-- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier load of it counts, unless another event is stored in between
+- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier load of it counts, unless another event is stored in between. For a method expression of a promoted method, one through an embedded pointer partway is not seen
 - **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Array elements with a variable index**: An element read with a variable index, as a range over an array reads it, is not matched to the stores of each element, so one stored with `.Ctx(ctx)` is still reported

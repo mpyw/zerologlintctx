@@ -65,7 +65,11 @@ info()` is traced back to `l`.
 A method expression of a method promoted through an embedded field, such as
 `myEvent.Msg(me, "x")` for `type myEvent struct{ *zerolog.Event }`, passes
 the struct in `Args[0]`. `calleeOf` records the embedded fields that lead to
-the receiver, and tracing reads it from the stores to those fields.
+the receiver, and tracing reads it from the stores to those fields. An
+embedded pointer partway, as in `type outer struct{ *myEvent }`, is followed
+to each struct that can be stored there. A `Ctx` call in place on the
+embedded event, such as `me.Ctx(ctx)` with its result unused, counts as it
+does for an event in memory.
 
 A conversion between types with the same underlying type, such as
 `zerolog.Logger(d)` for `type definedLogger zerolog.Logger`, keeps the value,
@@ -257,8 +261,10 @@ a field or constant element of one, wherever the read runs. A field of a
 global, or of a struct reached through a pointer the function loads, can be
 changed elsewhere. For those, every store in the function must have context.
 Each load of the same pointer, such as a receiver that a closure captures,
-which is loaded again at each use, is taken for the same pointer, and so is
-each read of the same pointer field of a struct value, such as `h.m`.
+which is loaded again at each use, is taken for the same pointer when the same
+stores to the pointer reach both loads, and so is each read of the same
+pointer field of a struct value, such as `h.m`. After `p = b`, a load of `p`
+is another pointer than the one before it.
 
 A field read through a Phi of pointers, such as `h.l` after
 `h := &holder{...}; if cond { h = &holder{...} }`, with no store through the
@@ -344,7 +350,7 @@ Due to SSA analysis constraints:
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE returns and arguments are supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
-- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier load of it counts, unless another event is stored in between
+- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier load of it counts, unless another event is stored in between. For a method expression of a promoted method, one through an embedded pointer partway is not seen
 - **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Array elements with a variable index**: An element read with a variable index, as a range over an array reads it, is not matched to the stores of each element, so one stored with `.Ctx(ctx)` is still reported
