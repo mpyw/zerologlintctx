@@ -13,9 +13,22 @@ import (
 	"github.com/mpyw/zerologlintctx"
 )
 
+// TestZerolog runs each fixture package under testdata/src/zerolog as its
+// own subtest, so a compile error in one leaves the others running.
 func TestZerolog(t *testing.T) {
 	testdata := analysistest.TestData()
-	analysistest.Run(t, testdata, zerologlintctx.Analyzer, "zerolog")
+	entries, err := os.ReadDir(filepath.Join(testdata, "src", "zerolog"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		t.Run(e.Name(), func(t *testing.T) {
+			analysistest.Run(t, testdata, zerologlintctx.Analyzer, "zerolog/"+e.Name())
+		})
+	}
 }
 
 func TestFileFilter(t *testing.T) {
