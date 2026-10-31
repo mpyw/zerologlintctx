@@ -22,6 +22,7 @@ package zerolog
 
 import (
 	"context"
+	"io"
 	"sync"
 
 	"github.com/rs/zerolog"
@@ -1616,6 +1617,32 @@ func badEmbeddedLoggerPointerMethodExpression(ctx context.Context, logger zerolo
 
 type embeddedLoggerPointer struct {
 	*zerolog.Logger
+}
+
+// A method expression of a promoted Output or Ctx follows the same rules as
+// a plain call: Output drops the context Context.Ctx set (#193), and a fresh
+// context does not count (#197).
+func badEmbeddedLoggerPointerOutputMethodExpression(ctx context.Context, logger zerolog.Logger, out io.Writer) {
+	l := logger.With().Ctx(ctx).Logger()
+	w := embeddedLoggerPointer{&l}
+	detached := embeddedLoggerPointer.Output(w, out)
+	detached.Info().Msg("Output via embedding") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEmbeddedZerologCtxOutputMethodExpression(ctx context.Context, out io.Writer) {
+	w := embeddedLoggerPointer{zerolog.Ctx(ctx)}
+	l := embeddedLoggerPointer.Output(w, out)
+	l.Info().Msg("logger from ctx, Output via embedding") // OK - the logger is from ctx
+}
+
+func badEmbeddedStructCtxBackgroundMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info()}
+	embeddedHolder.Ctx(h, context.Background()).Msg("Background via embedding") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEmbeddedStructCtxMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info()}
+	embeddedHolder.Ctx(h, ctx).Msg("ctx via embedding") // OK
 }
 
 func goodEmbeddedLoggerPointer(ctx context.Context, logger zerolog.Logger) {

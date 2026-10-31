@@ -82,8 +82,17 @@ The analyzer uses **return type checking** instead of method name hardcoding for
 | Context → Logger | `ReturnsLogger(sig)` | `Logger()` |
 | Event → Event | receiver is the traced type | `Str()`, `Int()`, `Ctx()`, etc. |
 | Context → Context | receiver is the traced type | `Str()`, `Int()`, `Ctx()`, etc. |
+| Logger → Logger | receiver is the traced type | `Level()`, `Sample()`, `Hook()`, `Output()` |
 
 This approach automatically handles new zerolog methods without code changes.
+
+Two methods are known by name, since zerolog's source, not their signature,
+tells what they do with the context (`callee.go`):
+
+| Method | What it does | How tracing takes it |
+|--------|--------------|----------------------|
+| `Event.CreateDict()` | Returns a new event for a dict, not its receiver | A `Ctx` call on the dict does not count for the parent (`returnsSameEvent`) |
+| `Logger.Output(w)` | Builds a new logger with `zerolog.New(w)`, and drops the context `Context.Ctx` set | Tracing goes on past it with a detached tracer (`dropsLoggerContext`) |
 
 Type identity checks resolve aliases (`types.Unalias`) before comparing the
 package path and type name, since go/types represents every alias declaration
@@ -152,6 +161,20 @@ Each tracer type knows the calls that set its context (`isCtxSetBy`):
 | `tracerEvent` | `Event.Ctx(ctx)`, `Context.Ctx(ctx)`, `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
 | `tracerLogger` | `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
 | `tracerContext` | `Context.Ctx(ctx)` |
+| `tracerLoggerDetached`, `tracerContextDetached` | `zerolog.Ctx(ctx)` / `log.Ctx(ctx)` |
+
+The detached tracers trace a Logger, and the Context it is built from, past
+`Logger.Output`. Only a logger taken from a context counts there, as the note
+below says. They follow the same handoffs between Logger and Context.
+
+A `Ctx` call given a fresh `context.Background()` or `context.TODO()` does not
+set the context. It replaces the context in scope, so tracing stops there and
+reports the chain. `isFreshContext` in `context.go` takes the semantics of
+goroutinectx: every value the argument can be must be a call of one of the
+two. It sees through a Phi and a conversion. For a load, every store that
+reaches it must be fresh. This holds for a local variable, a pointer
+parameter, and a field of one. A global is not followed. A context derived from one, such as
+`context.WithoutCancel(context.Background())`, is not fresh.
 
 > [!NOTE]
 > `zerolog.Ctx(ctx)` returns the logger stored in `ctx`. It does not attach
@@ -182,6 +205,8 @@ once, and `tracerHandoffs` lists which ones each tracer follows:
 | `traceLoggerOfEvent` | `Logger.Info()`, `Logger.Debug()`, ... | `tracerEvent` |
 | `traceContextOfLogger` | `Context.Logger()` | `tracerEvent`, `tracerLogger` |
 | `traceLoggerOfContext` | `Logger.With()` | `tracerLogger`, `tracerContext` |
+| `traceDetachedContextOfLogger` | `Context.Logger()` past `Output` | `tracerLoggerDetached` |
+| `traceDetachedLoggerOfContext` | `Logger.With()` past `Output` | `tracerLoggerDetached`, `tracerContextDetached` |
 
 ### Common SSA Patterns
 
@@ -324,6 +349,7 @@ Due to SSA analysis constraints:
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Array elements with a variable index**: An element read with a variable index, as a range over an array reads it, is not matched to the stores of each element, so one stored with `.Ctx(ctx)` is still reported
 - **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
+- **Fresh contexts not seen**: A fresh context given to `Ctx` in place, with its result unused, does not replace the context the event had. A fresh context in a variable a closure captures is not taken as fresh
 
 These are documented in test cases with `// LIMITATION` comments.
 

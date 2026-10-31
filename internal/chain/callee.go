@@ -153,6 +153,29 @@ func (c callee) isCtx() bool {
 	return c.fn.Name() == typeutil.CtxMethod && typeutil.IsZerologPkg(c.fn.Pkg())
 }
 
+// returnsSameEvent reports whether c is a method of *zerolog.Event that
+// returns the event it runs on. Every one that returns an event does, except
+// Event.CreateDict, which returns a new event for a dict.
+//
+//declscope:shared // tracing.go follows a chain of methods on one event by it
+func (c callee) returnsSameEvent() bool {
+	recv := c.recvType()
+	return recv != nil && typeutil.IsEvent(recv) && typeutil.ReturnsEvent(c.signature()) &&
+		c.fn.Name() != "CreateDict"
+}
+
+// dropsLoggerContext reports whether c is Logger.Output, which returns a
+// Logger built with zerolog.New. It keeps the level, sampler, stack, hooks
+// and fields, but not the context that Context.Ctx sets. Level, Sample and
+// Hook, the other methods of Logger that return a Logger, keep it.
+//
+//declscope:shared // tracing.go does not take the context of the receiver past it
+func (c callee) dropsLoggerContext() bool {
+	recv := c.recvType()
+	return recv != nil && typeutil.IsLogger(recv) && typeutil.ReturnsLogger(c.signature()) &&
+		c.fn.Name() == "Output"
+}
+
 // recvType returns the type of the receiver c is declared with, or nil for a
 // function.
 //

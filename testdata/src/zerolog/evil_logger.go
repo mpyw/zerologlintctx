@@ -46,6 +46,52 @@ func badChainedTransformations(ctx context.Context, logger zerolog.Logger) {
 	l.Warn().Msg("multi transform") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// Logger.Output builds its result with zerolog.New, and copies the level,
+// sampler, stack, hooks and fields, but not the context that Context.Ctx sets
+// (#193). Level, Sample and Hook keep it.
+func badCtxLoggerThenOutput(ctx context.Context, base zerolog.Logger, w io.Writer) {
+	l := base.With().Ctx(ctx).Logger().Output(w)
+	l.Info().Msg("ctx dropped by Output") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCtxLoggerThenOutputThenWith(ctx context.Context, base zerolog.Logger, w io.Writer) {
+	l := base.With().Ctx(ctx).Logger().Level(zerolog.InfoLevel).Output(w).With().Str("k", "v").Logger()
+	l.Info().Msg("ctx dropped by Output, before With") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCtxLoggerVariableThenOutput(ctx context.Context, base zerolog.Logger, w io.Writer) {
+	l := base.With().Ctx(ctx).Logger()
+	l = l.Output(w)
+	l.Info().Msg("ctx dropped by Output, on a variable") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodCtxLoggerAfterOutput(ctx context.Context, base zerolog.Logger, w io.Writer) {
+	l := base.Output(w).With().Ctx(ctx).Logger()
+	l.Info().Msg("ctx set after Output") // OK
+}
+
+func goodCtxLoggerThenLevelSampleHook(ctx context.Context, base zerolog.Logger, s zerolog.Sampler, h zerolog.Hook) {
+	l := base.With().Ctx(ctx).Logger().Level(zerolog.InfoLevel).Sample(s).Hook(h)
+	l.Info().Msg("Level, Sample and Hook keep ctx") // OK
+}
+
+func goodCtxEventOnOutputLogger(ctx context.Context, base zerolog.Logger, w io.Writer) {
+	l := base.With().Ctx(ctx).Logger().Output(w)
+	l.Info().Ctx(ctx).Msg("ctx on the event") // OK
+}
+
+// A logger taken from the context counts as a deliberate use of it, whatever
+// is done to it after, so it still counts past Output.
+func goodZerologCtxThenOutput(ctx context.Context, w io.Writer) {
+	l := zerolog.Ctx(ctx).Output(w)
+	l.Info().Msg("logger from ctx, then Output") // OK
+}
+
+func goodLogCtxThenWithThenOutput(ctx context.Context, w io.Writer) {
+	l := log.Ctx(ctx).With().Str("k", "v").Logger().Output(w)
+	l.Info().Msg("logger from ctx, then With and Output") // OK
+}
+
 // =============================================================================
 // zerolog.Ctx() VARIATIONS
 // =============================================================================
