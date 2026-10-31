@@ -119,6 +119,48 @@ func (p place) prefixOf(q place) bool {
 	return true
 }
 
+// placeCover is how much of a place a store to another place writes.
+type placeCover int
+
+const (
+	// coverNone is a store that writes none of the place.
+	coverNone placeCover = iota
+	// coverMay is a store that may write the place, or not: one to an
+	// element at an index that is not known to be the same.
+	coverMay
+	// coverMust is a store that writes the place, every time it runs.
+	coverMust
+)
+
+// covers tells how much of q a store to p writes. p must have the root of q,
+// and select no more than q does. Each selection of p is compared with the
+// one of q at the same depth:
+//
+//   - Two fields, or two constant elements, as sel.same compares them. Two
+//     that differ make it coverNone.
+//   - Two elements at an index that is not a constant, with the same operand,
+//     for which once holds: the operand has one value everywhere it is
+//     compared, so they are the same element.
+//   - Any other pair of elements, one of them at an index that is not a
+//     constant, may be the same element, or not. That makes it coverMay.
+func (p place) covers(q place, once func(index ssa.Value) bool) placeCover {
+	if p.root != q.root || len(p.path) > len(q.path) {
+		return coverNone
+	}
+	cover := coverMust
+	for i, s := range p.path {
+		o := q.path[i]
+		switch {
+		case s.variable() && s.operand == o.operand && once(s.operand):
+		case s.variable() || o.variable():
+			cover = coverMay
+		case !s.same(o):
+			return coverNone
+		}
+	}
+	return cover
+}
+
 // overlaps reports whether p and q have the same root, and may select memory
 // in common: the selections of one start with those of the other. An element
 // whose index is not a constant may be any element, so it may be the one the
@@ -134,11 +176,6 @@ func (p place) overlaps(q place) bool {
 		}
 	}
 	return true
-}
-
-// same reports whether p and q have the same root, and select the same.
-func (p place) same(q place) bool {
-	return len(p.path) == len(q.path) && p.prefixOf(q)
 }
 
 // placeOf returns the place of addr: the value it is in, after every field

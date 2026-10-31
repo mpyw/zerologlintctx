@@ -452,11 +452,18 @@ func badEmbeddedFieldOfCallResult(ctx context.Context, newHolder func() embedded
 	newHolder().Msg("embedded field of a call result") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-// LIMITATION(#138) (false positive): An element of an array read with a variable
-// index is not matched to the stores of each element.
-func limitationRangeOverArrayWithCtx(ctx context.Context, logger zerolog.Logger) {
+// A range over an array reads each element at a variable index, which may be
+// any element, so the store of each one reaches it (#138, #222).
+func goodRangeOverArrayWithCtx(ctx context.Context, logger zerolog.Logger) {
 	l := logger.With().Ctx(ctx).Logger()
 	for _, x := range [2]zerolog.Logger{l, l} {
+		x.Info().Msg("range over array") // OK - every element has ctx
+	}
+}
+
+func badRangeOverArrayOneElementLacksCtx(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	for _, x := range [2]zerolog.Logger{l, logger} {
 		x.Info().Msg("range over array") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}
 }
@@ -946,4 +953,179 @@ func badGlobalHoldersCopiedBothWays(ctx context.Context) {
 	globalEventHolderB = globalEventHolderA
 	globalEventHolderB.event.Msg("b") // want `zerolog call chain missing .Ctx\(ctx\)`
 	globalEventHolderA.event.Msg("a") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// ===== ELEMENT AT A VARIABLE INDEX =====
+
+// A store through an element at an index that is not a constant writes the
+// element read through the same index (#222). A store to an element at
+// another index may write it too, or not: it does not hide a store before it,
+// and what it stores must have context as well.
+
+func goodVariableIndexSameAddress(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	p := &arr[i]
+	*p = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("p carries ctx") // OK - the only store through p has ctx
+}
+
+func badVariableIndexSameAddress(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	p := &arr[i]
+	*p = base
+	p.Info().Msg("p lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodVariableIndexSameOperand(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	arr[i] = base.With().Ctx(ctx).Logger()
+	arr[i].Info().Msg("arr[i] carries ctx") // OK - the store to arr[i] has ctx
+}
+
+func goodVariableIndexOverwritesConstantIndex(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	arr[0] = base
+	p := &arr[i]
+	*p = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("the store through p comes last") // OK - it overwrites arr[0] when i is 0
+}
+
+func goodVariableIndexThenConstantIndexWithCtx(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	p := &arr[i]
+	*p = base.With().Ctx(ctx).Logger()
+	arr[0] = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("both stores carry ctx") // OK - arr[0] has ctx too
+}
+
+func badVariableIndexThenConstantIndexWithoutCtx(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	p := &arr[i]
+	*p = base.With().Ctx(ctx).Logger()
+	arr[0] = base
+	p.Info().Msg("arr[0] may be *p") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badVariableIndexConstantIndexOnly(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	arr[0] = base.With().Ctx(ctx).Logger()
+	arr[1] = base
+	arr[i].Info().Msg("arr[1] may be read") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodVariableIndexConstantIndexOnly(ctx context.Context, base zerolog.Logger, i int) {
+	arr := [2]zerolog.Logger{base.With().Ctx(ctx).Logger(), base.With().Ctx(ctx).Logger()}
+	arr[i].Info().Msg("every element carries ctx") // OK
+}
+
+func badVariableIndexOtherVariableIndex(ctx context.Context, base zerolog.Logger, i, j int) {
+	var arr [2]zerolog.Logger
+	arr[i] = base.With().Ctx(ctx).Logger()
+	arr[j] = base
+	arr[i].Info().Msg("j may be i") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badConstantIndexAfterVariableIndex(ctx context.Context, base zerolog.Logger, i int) {
+	var arr [2]zerolog.Logger
+	arr[0] = base.With().Ctx(ctx).Logger()
+	arr[i] = base
+	arr[0].Info().Msg("i may be 0") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodVariableIndexInLoop(ctx context.Context, base zerolog.Logger) {
+	var arr [2]zerolog.Logger
+	for i := range arr {
+		p := &arr[i]
+		*p = base.With().Ctx(ctx).Logger()
+		p.Info().Msg("each element carries ctx") // OK
+	}
+}
+
+func goodVariableIndexFilledInLoop(ctx context.Context, base zerolog.Logger) {
+	var arr [2]zerolog.Logger
+	for i := range arr {
+		arr[i] = base.With().Ctx(ctx).Logger()
+	}
+	for i := range arr {
+		arr[i].Info().Msg("filled with ctx") // OK
+	}
+}
+
+func badVariableIndexFilledInLoop(ctx context.Context, base zerolog.Logger) {
+	var arr [2]zerolog.Logger
+	for i := range arr {
+		arr[i] = base
+	}
+	for i := range arr {
+		arr[i].Info().Msg("filled without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+// LIMITATION (false positive): An index computed in a loop has another value
+// on each iteration, so a store at the same index is not taken to write the
+// same element. Each store at it may reach the read, and each one must have
+// context.
+func limitationVariableIndexStoredAfterReadInLoop(ctx context.Context, base zerolog.Logger) {
+	var arr [2]zerolog.Logger
+	for i := range arr {
+		arr[i] = base.With().Ctx(ctx).Logger()
+		arr[i].Info().Msg("arr[i] carries ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		arr[i] = base
+	}
+}
+
+func goodSliceVariableIndex(ctx context.Context, base zerolog.Logger, s []zerolog.Logger, i int) {
+	s[i] = base.With().Ctx(ctx).Logger()
+	s[i].Info().Msg("s[i] carries ctx") // OK - the store to s[i] has ctx
+}
+
+func badSliceVariableIndex(ctx context.Context, base zerolog.Logger, s []zerolog.Logger, i int) {
+	s[i] = base.With().Ctx(ctx).Logger()
+	s[0] = base
+	s[i].Info().Msg("s[0] may be s[i]") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): The same in a slice parameter. A store at an
+// index computed in a loop may be to another element, so the element the
+// caller passed may still be the one read.
+func limitationSliceVariableIndexInLoop(ctx context.Context, base zerolog.Logger, s []zerolog.Logger) {
+	for i := range s {
+		s[i] = base.With().Ctx(ctx).Logger()
+		s[i].Info().Msg("each element carries ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+func goodLocalSliceVariableIndex(ctx context.Context, base zerolog.Logger, i int) {
+	s := make([]zerolog.Logger, 2)
+	s[i] = base.With().Ctx(ctx).Logger()
+	s[i].Info().Msg("s[i] carries ctx") // OK
+}
+
+func badLocalSliceVariableIndex(ctx context.Context, base zerolog.Logger, i int) {
+	s := make([]zerolog.Logger, 2)
+	s[i] = base.With().Ctx(ctx).Logger()
+	s[1] = base
+	s[i].Info().Msg("s[1] may be s[i]") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodVariableIndexPickedDeferred(ctx context.Context, base zerolog.Logger, i, j int, cond bool) {
+	var arr [2]zerolog.Logger
+	arr[i] = base.With().Ctx(ctx).Logger()
+	arr[j] = base.With().Ctx(ctx).Logger()
+	p := &arr[i]
+	if cond {
+		p = &arr[j]
+	}
+	defer p.Print("deferred through a pointer picked on a branch") // OK - both elements have ctx
+}
+
+func badVariableIndexPickedDeferred(ctx context.Context, base zerolog.Logger, i, j int, cond bool) {
+	var arr [2]zerolog.Logger
+	arr[i] = base.With().Ctx(ctx).Logger()
+	arr[j] = base
+	p := &arr[i]
+	if cond {
+		p = &arr[j]
+	}
+	defer p.Print("deferred through a pointer picked on a branch") // want `zerolog direct logging bypasses context`
 }

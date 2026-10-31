@@ -57,6 +57,13 @@ func placeFunc(t *testing.T) *ssa.Function {
 	return ssaPkg.Func("f")
 }
 
+// samePlace reports whether p and q have the same root, and select the same
+// as prefixOf compares them, so that an element at a variable index is not
+// the same as any.
+func samePlace(p, q place) bool {
+	return len(p.path) == len(q.path) && p.prefixOf(q)
+}
+
 // placeStores returns the address of each store in fn, in order.
 func placeStores(fn *ssa.Function) []ssa.Value {
 	var addrs []ssa.Value
@@ -87,13 +94,13 @@ func TestPlaceOf(t *testing.T) {
 	if inB2.path[0].field != 1 || inB2.path[1].field != 1 {
 		t.Errorf("o.in.b selects fields %d and %d, want 1 and 1", inB2.path[0].field, inB2.path[1].field)
 	}
-	if addrs[0] == addrs[1] || !inB1.same(inB2) || inB1.key() != inB2.key() {
+	if addrs[0] == addrs[1] || !samePlace(inB1, inB2) || inB1.key() != inB2.key() {
 		t.Error("two accesses of o.in.b are not the same place")
 	}
 
 	arr1, _ := placeOf(addrs[2])
 	arrU1, _ := placeOf(addrs[3])
-	if !arr1.same(arrU1) {
+	if !samePlace(arr1, arrU1) {
 		t.Error("o.arr[1] and o.arr[uint8(1)] do not select the same")
 	}
 	if arr1.key() == arrU1.key() {
@@ -102,7 +109,7 @@ func TestPlaceOf(t *testing.T) {
 
 	arrI1, _ := placeOf(addrs[4])
 	arrI2, _ := placeOf(addrs[5])
-	if arrI1.same(arrI1) || arrI1.same(arrI2) || arrI1.same(arr1) {
+	if samePlace(arrI1, arrI1) || samePlace(arrI1, arrI2) || samePlace(arrI1, arr1) {
 		t.Error("an element with a variable index is the same as another selection")
 	}
 	if arrI1.key() != arrI2.key() {
@@ -119,7 +126,7 @@ func TestPlaceOf(t *testing.T) {
 	if _, isParam := param.root.(*ssa.Parameter); !isParam || !tracked {
 		t.Errorf("p.in.a: root %T, tracked %v, want a tracked Parameter", param.root, tracked)
 	}
-	if param.same(inB2) || param.key() == inB2.key() {
+	if samePlace(param, inB2) || param.key() == inB2.key() {
 		t.Error("places with different roots are the same")
 	}
 	if g, tracked := placeOf(addrs[7]); tracked {
@@ -140,7 +147,7 @@ func TestPlaceWith(t *testing.T) {
 	if base.path[0].field != 1 {
 		t.Error("with shares the path of the place it extends")
 	}
-	if !at.prefix(1).with(sel{field: 1}).same(at) {
+	if !samePlace(at.prefix(1).with(sel{field: 1}), at) {
 		t.Error("o.in with .b is not o.in.b")
 	}
 }
@@ -202,6 +209,40 @@ func TestPlaceOverlaps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.p.overlaps(tt.q); got != tt.want {
 				t.Errorf("overlaps = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlaceCovers(t *testing.T) {
+	addrs := placeStores(placeFunc(t))
+	inB, _ := placeOf(addrs[0])
+	arr1, _ := placeOf(addrs[2])
+	arrI1, _ := placeOf(addrs[4])
+	arrI2, _ := placeOf(addrs[5])
+	param, _ := placeOf(addrs[6])
+	once := func(ssa.Value) bool { return true }
+	again := func(ssa.Value) bool { return false }
+	for _, tt := range []struct {
+		name string
+		p, q place
+		once func(ssa.Value) bool
+		want placeCover
+	}{
+		{"the same place", inB, inB, once, coverMust},
+		{"o and o.in.b", inB.prefix(0), inB, once, coverMust},
+		{"o.in.b and o, which it selects from", inB, inB.prefix(0), once, coverNone},
+		{"o.in.b and o.arr[1].a", inB, arr1, once, coverNone},
+		{"o.arr[i].a and o.arr[i].a, i once", arrI1, arrI2, once, coverMust},
+		{"o.arr[i].a and o.arr[i].a, i again", arrI1, arrI2, again, coverMay},
+		{"o.arr[i] and o.arr[i].a", arrI1.prefix(2), arrI2, once, coverMust},
+		{"o.arr[1].a and o.arr[i].a", arr1, arrI1, once, coverMay},
+		{"o.arr[i].a and o.arr[1].a", arrI1, arr1, once, coverMay},
+		{"different roots", inB, param, once, coverNone},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.p.covers(tt.q, tt.once); got != tt.want {
+				t.Errorf("covers = %v, want %v", got, tt.want)
 			}
 		})
 	}

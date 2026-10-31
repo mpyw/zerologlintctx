@@ -390,7 +390,7 @@ leads back to the Phi is (see [Cycles](#cycles)).
 | The entry of a closure, for a variable it captures | What can be in the variable when the closure runs: what reaches the `make closure` and the stores after it, or what reaches the returns after a `defer` of it |
 
 This holds for a local variable, a pointer parameter, a captured variable, and
-a field or constant element of one, wherever the read runs. A field of a
+a field or element of one, wherever the read runs. A field of a
 global, or of a struct reached through a pointer the function loads, can be
 changed elsewhere. For those, every store in the function must have context.
 Each load of the same pointer, such as a receiver that a closure captures,
@@ -416,6 +416,50 @@ counts too. A closure that is only deferred runs at the returns after the
 closure that is only called runs at each call, and the stores that reach the
 calls count.
 
+#### Elements at a Variable Index
+
+An element at an index that is not a constant, such as `arr[i]`, may be any
+element. A store to an element, through another `IndexAddr` or the same, is
+one of three kinds for a read of `arr[i]` (`place.covers`):
+
+| Store before the read | Kind | What the walk does |
+|-----------------------|------|--------------------|
+| `arr[i] = v`, or `*p = v` with `p := &arr[i]`, when `i` has one value (below) | Must | Records `v` and stops the path |
+| `arr = [2]zerolog.Logger{a, b}`, a store of the whole array | Must | Follows the copy, at `[i]` of the array copied in |
+| `arr[0] = v`, `arr[j] = v`, or `arr[i] = v` with `i` computed in a loop | May | Records `v`, and goes on |
+| `arr[0] = v` for a read of `arr[1]` | None | Goes on |
+
+The same holds the other way: for a read of `arr[0]`, a store to `arr[i]` is
+a may store. A store that may write the element, or not, does not hide a
+store before it, since the value before may still be the one read. What it
+stores may be read too, so it must have context, like every other value that
+reaches the read. A store that writes the element on every run stops the
+path, as a store to a variable does:
+
+```go
+p := &arr[i]
+*p = base.With().Ctx(ctx).Logger() // must: reaches the read
+arr[0] = base                      // may: reaches it too, when i is 0
+p.Info().Msg("x")                  // reported: arr[0] lacks ctx
+```
+
+Two elements at the same index are the same element only when the index has
+one value wherever the walk meets it: a parameter, a free variable, or an
+instruction outside a loop (`storeWalk.indexOnce`). An index that a loop
+computes, such as the index of a `for i := range arr`, has another value on
+each iteration, so a store at it on an earlier iteration is to another
+element. Each store at it is a may store. A store on the same iteration is
+taken for one too, which loses precision, never a report (see
+[Known Limitations](#known-limitations)).
+
+A range over an array value reads each element at a variable index, from the
+array loaded before the loop. The store of each element is a may store, so
+every element must have context.
+
+For an address whose stores are not walked, such as an element of a slice
+that `make` returns, every store in the function to an element that may be
+the one read is taken too (`findStores`).
+
 `Logger.UpdateContext(fn)` neither stops a path nor reads the Logger.
 zerolog keeps only the fields `fn` writes, and drops the context
 `Context.Ctx` sets in it, so the Logger has the context it had before.
@@ -433,11 +477,18 @@ of an address. A selection is a `sel`:
 | An element at a constant index | `index`, the constant |
 | An element at any other index | `operand`, the index value, with no `index` |
 
-`sel.same` is the only test of whether two selections are the same. Two fields
-are the same when their numbers are. Two constant elements are the same when
-their values are, whatever the type of the constant. An element at a variable
-index may be any element, so it is the same as no selection, not even one at
-the same index.
+`sel.same` is the test of whether two selections are the same, on their own.
+Two fields are the same when their numbers are. Two constant elements are the
+same when their values are, whatever the type of the constant. An element at
+a variable index may be any element, so it is the same as no selection, not
+even one at the same index.
+
+`place.covers` tells how much of a place a store to another place writes:
+`coverMust`, `coverMay` or `coverNone`. It compares the selections as
+`sel.same` does, and takes two elements at the same index value for the same
+element when the caller says that the index has one value. Any other pair of
+elements, one of them at a variable index, is `coverMay`. See
+[Elements at a Variable Index](#elements-at-a-variable-index).
 
 `place.key` gives a place in a form that `==` can compare, for a map key. It
 spells each element by its operand: a constant by its value and type, and a
@@ -457,7 +508,8 @@ Addresses are compared structurally, not by identity: SSA emits a fresh
 nested access (`h.inner.event`) never share a value. `addressesMatch`
 compares each selection with `sel.same`, from the outermost in, and takes an
 instruction for the same as itself. So an element at a variable index matches
-only through the same `IndexAddr` instruction. Under the selections, two
+only through the same `IndexAddr` instruction. The walk of stores does not use
+it for an element; it uses `place.covers`. Under the selections, two
 loads of the same address, or two fields of the same struct value, match
 when the same stores reach them.
 
@@ -534,7 +586,7 @@ Due to SSA analysis constraints:
 - **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier load of it counts, unless another event is stored in between. For a method expression of a promoted method, one through an embedded pointer partway is not seen
 - **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
-- **Array elements with a variable index**: An element read with a variable index, as a range over an array reads it, is not matched to the stores of each element, so one stored with `.Ctx(ctx)` is still reported
+- **Elements at an index computed in a loop**: A store at the same index, on the same iteration, is not taken to write the element, so a store without `.Ctx(ctx)` on an earlier iteration, or the caller's value in a slice parameter, may still be what the read sees
 - **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
 - **Fresh contexts not seen**: A fresh context given to `Ctx` in place, with its result unused, does not replace the context the event had
 
