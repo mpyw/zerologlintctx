@@ -1567,6 +1567,53 @@ func goodEmbeddedStructWithCtx(ctx context.Context, logger zerolog.Logger) {
 	h.Msg("embedded with ctx") // OK - the embedded event has ctx
 }
 
+// A method expression of a promoted method takes the struct that embeds the
+// event, and reads the event from it (#195).
+func goodEmbeddedStructMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info().Ctx(ctx)}
+	embeddedHolder.Msg(h, "method expression via embedding") // OK - the embedded event has ctx
+}
+
+func badEmbeddedStructMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolder{logger.Info()}
+	embeddedHolder.Msg(h, "method expression via embedding") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEmbeddedStructPointerMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := &embeddedHolder{logger.Info().Ctx(ctx)}
+	(*embeddedHolder).Msg(h, "pointer method expression via embedding") // OK - the embedded event has ctx
+}
+
+func badEmbeddedStructPointerMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := &embeddedHolder{logger.Info()}
+	(*embeddedHolder).Msg(h, "pointer method expression via embedding") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+type embeddedHolderOfHolder struct {
+	embeddedHolder
+}
+
+func goodNestedEmbeddedStructMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderOfHolder{embeddedHolder{logger.Info().Ctx(ctx)}}
+	embeddedHolderOfHolder.Msg(h, "nested method expression via embedding") // OK - the embedded event has ctx
+}
+
+func badNestedEmbeddedStructMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderOfHolder{embeddedHolder{logger.Info()}}
+	embeddedHolderOfHolder.Msg(h, "nested method expression via embedding") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEmbeddedLoggerPointerMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	w := embeddedLoggerPointer{&l}
+	embeddedLoggerPointer.Info(w).Msg("logger method expression via embedding") // OK - the embedded logger has ctx
+}
+
+func badEmbeddedLoggerPointerMethodExpression(ctx context.Context, logger zerolog.Logger) {
+	w := embeddedLoggerPointer{&logger}
+	embeddedLoggerPointer.Info(w).Msg("logger method expression via embedding") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 type embeddedLoggerPointer struct {
 	*zerolog.Logger
 }
@@ -1630,6 +1677,52 @@ func (h *ptrHolder) log() {
 func limitationPtrReceiverMethod(ctx context.Context, logger zerolog.Logger) {
 	h := &ptrHolder{e: logger.Info()}
 	h.log() // LIMITATION: should report inside h.log() but doesn't
+}
+
+// ===== FIELD THROUGH SEPARATE LOADS OF A POINTER =====
+
+// A pointer loaded again for each use, as a receiver that a closure captures
+// is, or a pointer field read again from a struct value, is the same pointer
+// for each load. A field stored through one load and read through another is
+// matched (#200). Every store to it in the function must have context.
+
+type reloadedMonitor struct{ log zerolog.Logger }
+
+func (m *reloadedMonitor) goodRunWithCapture(ctx context.Context) {
+	m.log = zerolog.Ctx(ctx).With().Str("k", "v").Logger()
+	m.log.Info().Msg("captured receiver") // OK - the only store has ctx
+	go func() { _ = m }()
+}
+
+func (m *reloadedMonitor) badRunWithCapture(ctx context.Context, logger zerolog.Logger) {
+	m.log = logger.With().Str("k", "v").Logger()
+	m.log.Info().Msg("captured receiver") // want `zerolog call chain missing .Ctx\(ctx\)`
+	go func() { _ = m }()
+}
+
+func (m *reloadedMonitor) badRunWithCaptureOneStoreLacksCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	m.log = zerolog.Ctx(ctx).With().Logger()
+	if cond {
+		m.log = logger
+	}
+	m.log.Info().Msg("captured receiver, one store lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	go func() { _ = m }()
+}
+
+type reloadedMonitorHolder struct{ m *reloadedMonitor }
+
+func goodRunHolder(ctx context.Context, h reloadedMonitorHolder) {
+	h.m.log = zerolog.Nop().With().Ctx(ctx).Logger()
+	h.m.log.Info().Msg("pointer field of a struct value") // OK - the only store has ctx
+}
+
+func badRunHolder(ctx context.Context, h reloadedMonitorHolder) {
+	h.m.log = zerolog.Nop().With().Logger()
+	h.m.log.Info().Msg("pointer field of a struct value") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badRunHolderNoStore(ctx context.Context, h reloadedMonitorHolder) {
+	h.m.log.Info().Msg("pointer field of a struct value, not stored") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== WRITES THROUGH ANOTHER REFERENCE =====
@@ -2364,6 +2457,127 @@ func goodLoggerPointerPickedOnBranch(ctx context.Context, logger zerolog.Logger,
 		p = &b
 	}
 	p.Info().Msg("logger pointer picked on a branch") // OK - both loggers have ctx
+}
+
+// A field read through a struct pointer that a Phi picks has what each struct
+// the Phi may point to holds there (#192).
+
+type phiLoggerHolder struct{ l zerolog.Logger }
+
+type phiEventHolder struct{ e *zerolog.Event }
+
+func goodLoggerFieldThroughPointerPickedOnBranch(ctx context.Context, cond bool) {
+	h := &phiLoggerHolder{l: zerolog.Ctx(ctx).With().Logger()}
+	if cond {
+		h = &phiLoggerHolder{l: zerolog.Ctx(ctx).With().Str("k", "v").Logger()}
+	}
+	h.l.Info().Msg("both holders carry ctx") // OK - both loggers have ctx
+}
+
+func goodEventFieldThroughPointerPickedOnBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		h = &phiEventHolder{e: logger.Warn().Ctx(ctx)}
+	}
+	h.e.Msg("both events carry ctx") // OK - both events have ctx
+}
+
+func goodEventFieldThroughPointerSetAfterPick(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := &phiEventHolder{e: logger.Info()}
+	if cond {
+		h = &phiEventHolder{e: logger.Warn()}
+	}
+	h.e = logger.Error().Ctx(ctx)
+	h.e.Msg("set through the pointer after the pick") // OK - the event stored last has ctx
+}
+
+func goodLoggerFieldThroughPointerToVariablePickedOnBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	a := phiLoggerHolder{l: logger.With().Ctx(ctx).Logger()}
+	b := phiLoggerHolder{l: logger.With().Ctx(ctx).Str("k", "v").Logger()}
+	p := &a
+	if cond {
+		p = &b
+	}
+	p.l.Info().Msg("pointer to a variable picked on a branch") // OK - both loggers have ctx
+}
+
+func goodEventFieldThroughPointerPickedOnNestedBranches(ctx context.Context, logger zerolog.Logger, a, b bool) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if a {
+		h = &phiEventHolder{e: logger.Warn().Ctx(ctx)}
+	} else if b {
+		h = &phiEventHolder{e: logger.Error().Ctx(ctx)}
+	}
+	h.e.Msg("every holder carries ctx") // OK - every event has ctx
+}
+
+func badEventFieldThroughPointerPickedOnNestedBranches(ctx context.Context, logger zerolog.Logger, a, b bool) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if a {
+		h = &phiEventHolder{e: logger.Warn().Ctx(ctx)}
+	} else if b {
+		h = &phiEventHolder{e: logger.Error()}
+	}
+	h.e.Msg("one nested holder lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFieldThroughPointerPickedWithNil(ctx context.Context, logger zerolog.Logger, cond bool) {
+	var h *phiEventHolder
+	if cond {
+		h = &phiEventHolder{e: logger.Info()}
+	}
+	h.e.Msg("the only holder lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerFieldThroughPointerPickedOnBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := &phiLoggerHolder{l: logger.With().Ctx(ctx).Logger()}
+	if cond {
+		h = &phiLoggerHolder{l: logger}
+	}
+	h.l.Info().Msg("one holder lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFieldThroughPointerPickedOnBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		h = &phiEventHolder{e: logger.Warn()}
+	}
+	h.e.Msg("one event lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFieldThroughPointerToVariableChangedAfterPick(ctx context.Context, logger zerolog.Logger, cond bool) {
+	a := phiEventHolder{e: logger.Info().Ctx(ctx)}
+	b := phiEventHolder{e: logger.Warn().Ctx(ctx)}
+	p := &a
+	if cond {
+		p = &b
+	}
+	b.e = logger.Error()
+	p.e.Msg("one variable changed after the pick") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFieldThroughPointerPickedFromParam(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		h = q
+	}
+	h.e.Msg("one pointer is the caller's") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFieldThroughPointerPickedInLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	for range n {
+		h.e.Msg("one holder of the loop lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		h = &phiEventHolder{e: logger.Warn()}
+	}
+}
+
+func goodEventFieldThroughPointerPickedInLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	for range n {
+		h.e.Msg("every holder of the loop has ctx") // OK - both events have ctx
+		h = &phiEventHolder{e: logger.Warn().Ctx(ctx)}
+	}
 }
 
 // A closure that is only called runs at each call, and reads what reaches it

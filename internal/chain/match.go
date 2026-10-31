@@ -48,6 +48,26 @@ func addressesMatch(a, b ssa.Value) bool {
 		return constIndexesMatch(ia1.Index, ia2.Index) && addressesMatch(ia1.X, ia2.X)
 	}
 
+	// A pointer is loaded again for each use of it, as a captured receiver
+	// is, or read again from a struct value, as h.m is for a value h. Each
+	// load of the same address, or field of the same value, is taken for the
+	// same pointer. A store through any of them may then be what a read
+	// through another sees, which is why every store must have context.
+	//
+	//	t1 = *t0 ; t2 = &t1.log ; *t2 = v   // write
+	//	t8 = *t0 ; t9 = &t8.log ; ... = *t9 // read, t8 != t1
+	l1, ok1 := a.(*ssa.UnOp)
+	l2, ok2 := b.(*ssa.UnOp)
+	if ok1 && ok2 {
+		return l1.Op == token.MUL && l2.Op == token.MUL && addressesMatch(l1.X, l2.X)
+	}
+
+	f1, ok1 := a.(*ssa.Field)
+	f2, ok2 := b.(*ssa.Field)
+	if ok1 && ok2 {
+		return f1.Field == f2.Field && addressesMatch(f1.X, f2.X)
+	}
+
 	return false
 }
 

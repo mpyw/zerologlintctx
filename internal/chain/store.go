@@ -67,6 +67,9 @@ func storesReaching(
 		for _, store := range plain {
 			r.values = append(r.values, store.Val)
 		}
+		if phi, isPhi := root.(*ssa.Phi); isPhi && len(plain) == 0 {
+			return storesReachingPicked(phi, path, read, positions)
+		}
 		return r, len(plain) > 0
 	}
 
@@ -83,6 +86,136 @@ func storesReaching(
 		w.walkEscape(esc)
 	}
 	return r, true
+}
+
+// storePickedMax bounds the variables a Phi of pointers may point to that
+// storesReachingPicked walks for. A Phi that may point to more is not walked.
+const storePickedMax = 16
+
+// storesReachingPicked finds the values that can be at path, selections from
+// what phi points to, when read runs. phi picks one of several pointers to a
+// variable, and no store goes through phi itself:
+//
+//	h := &holder{l: a}      // edge t1
+//	if cond {
+//	    h = &holder{l: b}   // edge t5
+//	}
+//	h.l.Info()              // reads t1.l or t5.l: both a and b reach it
+//
+// Each variable is walked from read, as storesReaching walks one, along the
+// paths on which phi points to it: where the walk first reaches the top of
+// the block of phi, it goes on through the edges that hold the variable only.
+// An edge that is a Phi itself holds it when one of its own edges does. Every
+// value that reaches read must have context, as for the edges of a Phi.
+//
+// ok is false when an edge is not a pointer to a variable, a pointer
+// parameter or a captured variable, or a field or constant element of one,
+// when phi may point to more than storePickedMax of them, or when read is a
+// go or defer statement, which reads the address later.
+func storesReachingPicked(
+	phi *ssa.Phi,
+	path []ssa.Value,
+	read ssa.Instruction,
+	positions instrPositions,
+) (r storeReaching, ok bool) {
+	switch read.(type) {
+	case nil, *ssa.Defer, *ssa.Go:
+		return r, false
+	}
+	leaves, ok := storePickedLeaves(phi)
+	if !ok {
+		return r, false
+	}
+	for _, leaf := range leaves {
+		root, leafPath := aggregatePath(leaf)
+		switch root.(type) {
+		case *ssa.Alloc, *ssa.Parameter, *ssa.FreeVar:
+		default:
+			return storeReaching{}, false
+		}
+		var lr storeReaching
+		w := &storeWalk{
+			root:      root,
+			path:      append(slices.Clone(leafPath), path...),
+			positions: positions,
+			out:       &lr,
+			picked:    &storePick{phi: phi, leaf: leaf},
+		}
+		w.walkBefore(read)
+		r.merge(lr)
+	}
+	return r, true
+}
+
+// storePickedLeaves returns the values that phi may be, through the edges
+// that are Phis themselves, apart from nil. ok is false when there are more
+// than storePickedMax.
+func storePickedLeaves(phi *ssa.Phi) (leaves []ssa.Value, ok bool) {
+	seen := map[ssa.Value]bool{phi: true}
+	queue := []*ssa.Phi{phi}
+	for len(queue) > 0 {
+		p := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		for _, edge := range p.Edges {
+			if seen[edge] || isNilConst(edge) {
+				continue
+			}
+			seen[edge] = true
+			if inner, isPhi := edge.(*ssa.Phi); isPhi {
+				queue = append(queue, inner)
+				continue
+			}
+			if len(leaves) == storePickedMax {
+				return nil, false
+			}
+			leaves = append(leaves, edge)
+		}
+	}
+	return leaves, true
+}
+
+// storePick is a variable that a Phi of pointers points to, which a walk
+// looks for the stores to: the walk takes only the paths on which the Phi
+// points to it.
+type storePick struct {
+	phi  *ssa.Phi
+	leaf ssa.Value
+}
+
+// holds reports whether p, phi or a Phi that an edge of phi leads to, may be
+// the leaf, through edges that are Phis themselves.
+func (pk *storePick) holds(p *ssa.Phi) bool {
+	seen := make(map[*ssa.Phi]bool)
+	var holds func(*ssa.Phi) bool
+	holds = func(p *ssa.Phi) bool {
+		if seen[p] {
+			return false
+		}
+		seen[p] = true
+		return slices.ContainsFunc(p.Edges, func(edge ssa.Value) bool {
+			inner, isPhi := edge.(*ssa.Phi)
+			return edge == pk.leaf || isPhi && holds(inner)
+		})
+	}
+	return holds(p)
+}
+
+// merge adds what o found to r. Two different captured variables cannot be
+// told apart in one result, so that is unknown.
+func (r *storeReaching) merge(o storeReaching) {
+	r.values = append(r.values, o.values...)
+	r.params = append(r.params, o.params...)
+	r.unknown = r.unknown || o.unknown
+	if o.captured == nil {
+		return
+	}
+	if r.captured == nil {
+		r.captured, r.capturedPath = o.captured, o.capturedPath
+		return
+	}
+	if r.captured != o.captured || storePathKey(r.capturedPath) != storePathKey(o.capturedPath) {
+		r.unknown = true
+	}
 }
 
 // storesReachingClosure finds the values that can be at path, selections from
@@ -373,6 +506,10 @@ type storeWalk struct {
 	// copies holds the loads that copied walks have started from, with the
 	// path they look for, shared by every walk that copied starts.
 	copies map[storeCopy]bool
+	// picked, when not nil, is the Phi the address is read through, and the
+	// variable of root it points to. The walk takes only the paths on which
+	// the Phi points to it.
+	picked *storePick
 }
 
 // storeCopy is a load that a copied walk starts from, and the selections it
@@ -384,14 +521,27 @@ type storeCopy struct {
 
 // walkBefore walks every path that leads to instr, from the instruction
 // before it.
+//
+// When the walk has a picked variable, a step also holds the Phi that must
+// point to it where the step is, until the walk has passed the edge that
+// takes the variable itself. At the top of the block of that Phi, the walk
+// goes on through the edges that may hold the variable only.
 func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 	type step struct {
 		block *ssa.BasicBlock
-		from  int // Index of the last instruction of block to look at
+		from  int      // Index of the last instruction of block to look at
+		need  *ssa.Phi // The Phi that points to the picked variable here, if any
+	}
+	type visit struct {
+		block *ssa.BasicBlock
+		need  *ssa.Phi
 	}
 	b := instr.Block()
-	queue := []step{{b, w.positions.of(instr) - 1}}
-	seen := make(map[*ssa.BasicBlock]bool)
+	queue := []step{{b, w.positions.of(instr) - 1, nil}}
+	if w.picked != nil {
+		queue[0].need = w.picked.phi
+	}
+	seen := make(map[visit]bool)
 	for len(queue) > 0 {
 		s := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
@@ -402,13 +552,34 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 			w.reachEntry()
 			continue
 		}
-		for _, pred := range s.block.Preds {
-			if !seen[pred] {
-				seen[pred] = true
-				queue = append(queue, step{pred, len(pred.Instrs) - 1})
+		for i, pred := range s.block.Preds {
+			need := s.need
+			if need != nil && need.Block() == s.block {
+				var takes bool
+				if need, takes = w.pickedThrough(need.Edges[i]); !takes {
+					continue // The Phi does not point to the variable on this path
+				}
+			}
+			if v := (visit{pred, need}); !seen[v] {
+				seen[v] = true
+				queue = append(queue, step{pred, len(pred.Instrs) - 1, need})
 			}
 		}
 	}
+}
+
+// pickedThrough reports whether edge, of a Phi that points to the picked
+// variable, may be the variable, and returns the Phi that must point to it
+// before the edge: edge itself when it is a Phi, or nil when it is the
+// variable.
+func (w *storeWalk) pickedThrough(edge ssa.Value) (*ssa.Phi, bool) {
+	if edge == w.picked.leaf {
+		return nil, true
+	}
+	if inner, isPhi := edge.(*ssa.Phi); isPhi && w.picked.holds(inner) {
+		return inner, true
+	}
+	return nil, false
 }
 
 // reachEntry records a path that leads back to the entry of the function, or
