@@ -1,16 +1,14 @@
 // callee.go resolves the function a call runs, seen through method values and
-// method expressions, and classifies a callee by what it is where the
-// signature alone cannot tell: its name and its package.
+// method expressions, and what zerologapi tells of it.
 
 package chain
 
 import (
 	"go/types"
-	"strings"
 
 	"golang.org/x/tools/go/ssa"
 
-	"github.com/mpyw/zerologlintctx/internal/typeutil"
+	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
 // callee is the declared function or method a call runs.
@@ -30,11 +28,10 @@ type callee struct {
 	//
 	// It is nil for any other call.
 	embedded []int
-	// fn is the declared function or method. For a method value or a method
-	// expression, it is the method, not the wrapper SSA calls.
-	//
-	//declscope:private
-	fn *types.Func
+	// api is what the declared function or method does in a log chain. For a
+	// method value or a method expression, it is the method, not the wrapper
+	// SSA calls.
+	api zerologapi.Method
 }
 
 // calleeOf resolves the callee of a call, a go statement or a defer
@@ -63,7 +60,7 @@ func calleeOf(cc *ssa.CallCommon) (callee, bool) {
 	if !ok {
 		return callee{}, false
 	}
-	c := callee{fn: fn}
+	c := callee{api: zerologapi.Classify(fn)}
 	if fn.Signature().Recv() == nil {
 		return c, true
 	}
@@ -112,84 +109,11 @@ func calleeReceiver(cc *ssa.CallCommon) ssa.Value {
 	return nil
 }
 
-// endsEventChain reports whether c ends an Event chain: a method of
-// *zerolog.Event that returns nothing, such as Msg, Msgf, MsgFunc or Send.
-//
-//declscope:shared // checker.go traces the chain such a call ends
-func (c callee) endsEventChain() bool {
-	recv := c.fn.Signature().Recv()
-	return recv != nil && typeutil.IsEvent(recv.Type()) && typeutil.ReturnsVoid(c.fn.Signature())
-}
-
-// logsDirectly reports whether c logs without an Event chain: a Print method
-// of Logger, or a Print function of zerolog/log.
-//
-//declscope:shared // checker.go reports such a call
-func (c callee) logsDirectly() bool {
-	sig := c.fn.Signature()
-	if !strings.HasPrefix(c.fn.Name(), "Print") || !typeutil.ReturnsVoid(sig) {
-		return false
-	}
-	if recv := sig.Recv(); recv != nil {
-		return typeutil.IsLogger(recv.Type())
-	}
-	return typeutil.IsZerologLogPkg(c.fn.Pkg())
-}
-
-// updatesLoggerContext reports whether c is Logger.UpdateContext, which
-// changes the fields of the Logger it runs on in place, but not its context.
-//
-//declscope:shared // store.go does not take such a call for a read
-func (c callee) updatesLoggerContext() bool {
-	recv := c.fn.Signature().Recv()
-	return c.fn.Name() == "UpdateContext" && recv != nil && typeutil.IsLogger(recv.Type())
-}
-
-// isCtx reports whether c is zerolog.Ctx or log.Ctx, or a Ctx method
-// declared in zerolog.
-//
-//declscope:shared // tracing.go treats such a call as a context source
-func (c callee) isCtx() bool {
-	return c.fn.Name() == typeutil.CtxMethod && typeutil.IsZerologPkg(c.fn.Pkg())
-}
-
 // returnsSameEvent reports whether c is a method of *zerolog.Event that
 // returns the event it runs on. Every one that returns an event does, except
 // Event.CreateDict, which returns a new event for a dict.
 //
 //declscope:shared // tracing.go follows a chain of methods on one event by it
 func (c callee) returnsSameEvent() bool {
-	recv := c.recvType()
-	return recv != nil && typeutil.IsEvent(recv) && typeutil.ReturnsEvent(c.signature()) &&
-		c.fn.Name() != "CreateDict"
-}
-
-// dropsLoggerContext reports whether c is Logger.Output, which returns a
-// Logger built with zerolog.New. It keeps the level, sampler, stack, hooks
-// and fields, but not the context that Context.Ctx sets. Level, Sample and
-// Hook, the other methods of Logger that return a Logger, keep it.
-//
-//declscope:shared // tracing.go does not take the context of the receiver past it
-func (c callee) dropsLoggerContext() bool {
-	recv := c.recvType()
-	return recv != nil && typeutil.IsLogger(recv) && typeutil.ReturnsLogger(c.signature()) &&
-		c.fn.Name() == "Output"
-}
-
-// recvType returns the type of the receiver c is declared with, or nil for a
-// function.
-//
-//declscope:shared // tracing.go picks the tracer to go on with by it
-func (c callee) recvType() types.Type {
-	if recv := c.fn.Signature().Recv(); recv != nil {
-		return recv.Type()
-	}
-	return nil
-}
-
-// signature returns the signature c is declared with.
-//
-//declscope:shared // tracing.go reads what a handoff returns from it
-func (c callee) signature() *types.Signature {
-	return c.fn.Signature()
+	return c.api.Recv == zerologapi.TypeEvent && c.api.SameAsRecv
 }

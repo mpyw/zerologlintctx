@@ -33,7 +33,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"github.com/mpyw/zerologlintctx/internal/typeutil"
+	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
 // The messages of the two findings. Each takes the context name.
@@ -96,12 +96,12 @@ func (c *Checker) checkCall(call ssa.CallInstruction) {
 	if !ok {
 		return
 	}
-	switch {
-	case callee.endsEventChain():
+	switch callee.api.Kind {
+	case zerologapi.KindTerminator:
 		if !c.tracer.receiverHasCtx(callee, call) {
 			c.reportOnce(pos, checkerMissingCtx)
 		}
-	case callee.logsDirectly():
+	case zerologapi.KindDirectLog:
 		// A Print function of zerolog/log logs through the global Logger,
 		// which is not traced
 		if callee.recv == nil || !c.tracer.loggerHasCtx(callee.recv, call) {
@@ -136,7 +136,7 @@ func (c *Checker) ctxInScopeAt(pos token.Pos) bool {
 	name, deref := strings.CutPrefix(c.ctxName, "*")
 	_, obj := inner.LookupParent(name, pos)
 	v, ok := obj.(*types.Var)
-	if !ok || !typeutil.IsContextType(v.Type()) {
+	if !ok || !zerologapi.IsContextType(v.Type()) {
 		return false
 	}
 	// A *context.Context is named as *name, and a context.Context as name

@@ -121,8 +121,8 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 
 ## Key Design Decisions
 
-1. **Type-safe analysis**: Uses return types (`typeutil.ReturnsEvent`, `ReturnsLogger`, etc.) instead of method name hardcoding
-2. **SSA tracing**: One `tracer` with three tracer types (Event, Logger, Context), and a table of the handoffs between them
+1. **One description of the zerolog API**: `zerologapi.Classify` tells what each function and method does, from its signature and a small table of named exceptions. Code in `internal/chain` matches no zerolog names of its own
+2. **SSA tracing**: One `tracer`, which traces each value in a state: its zerolog type, and the sources of context that still count for it. `Logger.Output` narrows the sources
 3. **Zero false positives**: Prefer missing issues over false alarms
 
 ## Known Limitations
