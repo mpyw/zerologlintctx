@@ -172,6 +172,25 @@ func handler(ctx context.Context, log zerolog.Logger) {
 > [!NOTE]
 > [`zerolog.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Ctx) returns the logger stored in `ctx`. It does not attach `ctx` to the events of that logger. zerologlintctx accepts it anyway, since taking the logger from the context is a deliberate use of it. Add `.Ctx(ctx)` too if hooks need the context.
 
+Some calls do not pass on the context, so they do not count:
+
+| Call | Why it does not count |
+|------|-----------------------|
+| `.Ctx(context.Background())`, `zerolog.Ctx(context.TODO())` | A fresh context carries nothing of the caller's. A local variable that only holds such contexts is fresh too |
+| `.With().Ctx(ctx).Logger().Output(w)` | [`Logger.Output`](https://pkg.go.dev/github.com/rs/zerolog#Logger.Output) builds a new logger and drops the context. A logger from `zerolog.Ctx(ctx)` still counts after `Output` |
+| `e.CreateDict().Ctx(ctx)` | [`Event.CreateDict`](https://pkg.go.dev/github.com/rs/zerolog#Event.CreateDict) returns a new event. The context is set on the dict, not on `e` |
+
+```go
+func handler(ctx context.Context, log zerolog.Logger, w io.Writer) {
+    // Bad: a fresh context in place of ctx
+    log.Info().Ctx(context.Background()).Msg("hello")
+
+    // Bad: Output drops the context
+    l := log.With().Ctx(ctx).Logger().Output(w)
+    l.Info().Msg("hello")
+}
+```
+
 ### Direct Logging Methods
 
 Detects direct logging calls (`Print`, `Printf`, `Println`) on a logger that does not carry the context. These calls take no `.Ctx(ctx)`, so the event gets only the logger's own context:

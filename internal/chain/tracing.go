@@ -29,11 +29,30 @@ const (
 	tracerLogger
 	// tracerContext traces zerolog.Context values.
 	tracerContext
+	// tracerLoggerDetached traces zerolog.Logger values that Logger.Output is
+	// called on. Output drops the context that Context.Ctx sets, so only a
+	// logger stored in a context, from zerolog.Ctx(ctx), counts.
+	tracerLoggerDetached
+	// tracerContextDetached traces zerolog.Context values on the way to a
+	// Logger.Output call, as tracerLoggerDetached does.
+	tracerContextDetached
 )
+
+// tracedKind returns the tracer that traces the same zerolog type as t, with
+// every source of context counted.
+func (t tracerType) tracedKind() tracerType {
+	switch t {
+	case tracerLoggerDetached:
+		return tracerLogger
+	case tracerContextDetached:
+		return tracerContext
+	}
+	return t
+}
 
 // isTracedType reports whether typ is the zerolog type t traces.
 func (t tracerType) isTracedType(typ types.Type) bool {
-	switch t {
+	switch t.tracedKind() {
 	case tracerEvent:
 		return typeutil.IsEvent(typ)
 	case tracerLogger:
@@ -46,7 +65,7 @@ func (t tracerType) isTracedType(typ types.Type) bool {
 
 // isReturnedBy reports whether sig returns exactly the zerolog type t traces.
 func (t tracerType) isReturnedBy(sig *types.Signature) bool {
-	switch t {
+	switch t.tracedKind() {
 	case tracerEvent:
 		return typeutil.ReturnsEvent(sig)
 	case tracerLogger:
@@ -62,6 +81,7 @@ func (t tracerType) isReturnedBy(sig *types.Signature) bool {
 //   - Event tracer: Event.Ctx(ctx), Context.Ctx(ctx), zerolog.Ctx(ctx)
 //   - Logger tracer: zerolog.Ctx(ctx)
 //   - Context tracer: Context.Ctx(ctx)
+//   - Detached Logger and Context tracers: zerolog.Ctx(ctx)
 //
 // The Event and Logger tracers take any Ctx of zerolog, since a value they
 // trace only reaches one of the above.
@@ -69,9 +89,12 @@ func (t tracerType) isCtxSetBy(c callee) bool {
 	if !c.isCtx() {
 		return false
 	}
-	if t == tracerContext {
-		recv := c.recvType()
+	recv := c.recvType()
+	switch t {
+	case tracerContext:
 		return recv != nil && tracerContext.isTracedType(recv)
+	case tracerLoggerDetached, tracerContextDetached:
+		return recv == nil
 	}
 	return true
 }
@@ -94,13 +117,19 @@ var (
 	traceContextOfLogger = tracerHandoff{from: tracerContext, to: tracerLogger}
 	// traceLoggerOfContext follows Logger.With() back to the Logger.
 	traceLoggerOfContext = tracerHandoff{from: tracerLogger, to: tracerContext}
+	// traceDetachedContextOfLogger is traceContextOfLogger past Logger.Output.
+	traceDetachedContextOfLogger = tracerHandoff{from: tracerContextDetached, to: tracerLoggerDetached}
+	// traceDetachedLoggerOfContext is traceLoggerOfContext past Logger.Output.
+	traceDetachedLoggerOfContext = tracerHandoff{from: tracerLoggerDetached, to: tracerContextDetached}
 )
 
 // tracerHandoffs lists the handoffs each tracer follows, in the order tried.
 var tracerHandoffs = map[tracerType][]tracerHandoff{
-	tracerEvent:   {traceLoggerOfEvent, traceContextOfLogger},
-	tracerLogger:  {traceContextOfLogger, traceLoggerOfContext},
-	tracerContext: {traceLoggerOfContext},
+	tracerEvent:           {traceLoggerOfEvent, traceContextOfLogger},
+	tracerLogger:          {traceContextOfLogger, traceLoggerOfContext},
+	tracerContext:         {traceLoggerOfContext},
+	tracerLoggerDetached:  {traceDetachedContextOfLogger, traceDetachedLoggerOfContext},
+	tracerContextDetached: {traceDetachedLoggerOfContext},
 }
 
 // handoffAt returns the tracer to go on with from the receiver of a call to
@@ -235,15 +264,16 @@ func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
 	return true
 }
 
-// traceEventReceiver returns the event that v, a call of an event method,
-// runs on, or nil for any other value.
+// traceEventReceiver returns the event that v, a call of an event method
+// that returns the event it runs on, runs on, or nil for any other value.
+// Event.CreateDict returns another event, so it is not followed back.
 func traceEventReceiver(v ssa.Value) ssa.Value {
 	call, ok := v.(*ssa.Call)
 	if !ok {
 		return nil
 	}
 	c, ok := calleeOf(&call.Call)
-	if !ok || c.recv == nil || c.embedded != nil || !tracerEvent.isTracedType(c.recvType()) {
+	if !ok || c.recv == nil || c.embedded != nil || !c.returnsSameEvent() {
 		return nil
 	}
 	return c.recv
@@ -270,8 +300,8 @@ type tracePointValue struct {
 //	e.Ctx(ctx)              // sets the context of e
 //	e.Str("k", "v").Msg("x")
 //
-// Each method of the event returns the event it runs on, so a Ctx call on any
-// value of the chain counts. For a Phi, each edge must have one before the
+// Each method of the event but CreateDict returns the event it runs on, so a
+// Ctx call on any value of the chain counts. For a Phi, each edge must have one before the
 // end of the block it comes from.
 //
 // done holds the result for each value already asked about. A value still
@@ -400,7 +430,9 @@ func (tr *tracer) traceStoredEventHasCtx(instr ssa.Instruction) bool {
 
 // traceCtxCalls adds to calls the Event.Ctx calls in fn on the event v,
 // directly or through a method value, or on a value that a method of v
-// returns, which is the same event.
+// returns, which is the same event. A Ctx call given a fresh
+// context.Background() or TODO() does not count, nor does one on the event
+// Event.CreateDict returns, which is another one.
 func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Instruction]bool, seen map[ssa.Value]bool) {
 	refs := v.Referrers()
 	if seen[v] || refs == nil {
@@ -422,8 +454,10 @@ func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Ins
 				continue
 			}
 			if c.isCtx() {
-				calls[call] = true
-			} else if tracerEvent.isReturnedBy(c.signature()) {
+				if !tr.givesFreshContext(&call.Call) {
+					calls[call] = true
+				}
+			} else if c.returnsSameEvent() {
 				tr.traceCtxCalls(call, fn, calls, seen)
 			}
 		}
@@ -502,10 +536,16 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 	}
 
 	if t.isCtxSetBy(c) {
-		return true
+		// A fresh context.Background() or TODO() given in place of the one in
+		// scope replaces what the chain had
+		return !tr.givesFreshContext(&call.Call)
 	}
 	if next, ok := t.handoffAt(c); ok {
 		return tr.traceCalleeReceiver(c, call, next, visited)
+	}
+	if c.dropsLoggerContext() && t.isTracedType(c.recvType()) {
+		// Only a logger from zerolog.Ctx(ctx) keeps counting past Output
+		return tr.traceCalleeReceiver(c, call, tracerLoggerDetached, visited)
 	}
 
 	// Continue tracing through receiver if type matches
@@ -514,6 +554,13 @@ func (tr *tracer) traceUncached(v ssa.Value, t tracerType, visited map[ssa.Value
 	}
 
 	return false
+}
+
+// givesFreshContext reports whether cc, a call of a Ctx of zerolog, gives it
+// a fresh context.Background() or TODO() (see isFreshContext). The context is
+// the last argument in each form of the call.
+func (tr *tracer) givesFreshContext(cc *ssa.CallCommon) bool {
+	return len(cc.Args) > 0 && isFreshContext(cc.Args[len(cc.Args)-1], tr.positions)
 }
 
 // =============================================================================

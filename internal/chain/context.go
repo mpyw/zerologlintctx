@@ -1,10 +1,13 @@
 // context.go finds which functions have a context.Context in scope, and the
-// name it goes by there.
+// name it goes by there, and which context values are fresh ones that carry
+// nothing of the caller's.
 
 package chain
 
 import (
+	"go/token"
 	"go/types"
+	"slices"
 
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
@@ -112,4 +115,75 @@ func contextParamName(fn *ssa.Function) string {
 		return name
 	}
 	return ""
+}
+
+// isFreshContext reports whether every value v can be is a call of
+// context.Background or context.TODO: a context that carries nothing of the
+// caller's. A Ctx call given one does not pass on the context in scope. It
+// sees through a Phi, a conversion, and a load of a local variable, a pointer
+// parameter or a field of one, where only such calls reach it (see
+// storesReaching):
+//
+//	bg := context.Background()
+//	if debug {
+//	    bg = context.TODO()
+//	}
+//	l.Info().Ctx(bg).Msg("x")   // bg is fresh on both paths
+//
+// A value of any other kind, such as a parameter, a global, a variable a
+// closure captures, or a call of another function, is not fresh.
+//
+//declscope:shared // tracing.go does not count a Ctx call given one
+func isFreshContext(v ssa.Value, positions instrPositions) bool {
+	return contextIsFresh(v, positions, make(map[ssa.Value]bool))
+}
+
+// contextIsFresh does the work of isFreshContext. A value in seen is an edge
+// of a Phi that leads back to it, or a store in a loop that reaches itself,
+// which adds no other value.
+func contextIsFresh(v ssa.Value, positions instrPositions, seen map[ssa.Value]bool) bool {
+	if seen[v] {
+		return true
+	}
+	seen[v] = true
+	switch val := v.(type) {
+	case *ssa.Call:
+		sfn := val.Call.StaticCallee()
+		if sfn == nil {
+			return false
+		}
+		fn, ok := sfn.Object().(*types.Func)
+		if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "context" {
+			return false
+		}
+		return fn.Name() == "Background" || fn.Name() == "TODO"
+	case *ssa.Phi:
+		return contextAllFresh(val.Edges, positions, seen)
+	case *ssa.ChangeType:
+		return contextIsFresh(val.X, positions, seen)
+	case *ssa.UnOp:
+		if val.Op != token.MUL {
+			return false
+		}
+		switch aggregateRoot(val.X).(type) {
+		case *ssa.Alloc, *ssa.Parameter, *ssa.FreeVar:
+			// The stores that reach the load are known from the function alone
+		default:
+			return false // A global, which can be changed anywhere
+		}
+		stored, ok := storesReaching(val.X, val, positions)
+		if !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0 {
+			return false
+		}
+		return contextAllFresh(stored.values, positions, seen)
+	}
+	return false
+}
+
+// contextAllFresh reports whether values has a value, and every one is fresh,
+// as contextIsFresh judges it.
+func contextAllFresh(values []ssa.Value, positions instrPositions, seen map[ssa.Value]bool) bool {
+	return len(values) > 0 && !slices.ContainsFunc(values, func(v ssa.Value) bool {
+		return !contextIsFresh(v, positions, seen)
+	})
 }

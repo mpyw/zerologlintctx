@@ -142,6 +142,7 @@ func (e *Event) EmbedObject(obj LogObjectMarshaler) *Event        { return e }
 func (e *Event) Fields(fields any) *Event                         { return e }
 func (e *Event) Enabled() bool                                    { return true }
 func (e *Event) Discard() *Event                                  { return e }
+func (e *Event) CreateDict() *Event                               { return &Event{} }
 func (e *Event) Msg(msg string)                                   {}
 func (e *Event) Msgf(format string, v ...any)                     {}
 func (e *Event) MsgFunc(createMsg func() string)                  {}
