@@ -414,6 +414,52 @@ func badCapturedFieldOther(ctx context.Context, logger zerolog.Logger) {
 	}()
 }
 
+// A copy of a captured variable in the closure is what the variable holds as
+// the closure runs (#223), and a copy of one of two is either (#214).
+
+func goodCopyOfCapturedStruct(ctx context.Context, h capturedHolder) {
+	h.l = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		c := h
+		c.l.Info().Msg("copy of h carries ctx") // OK - h.l has ctx
+	}()
+}
+
+func goodCopyOfOneOfTwoCaptured(ctx context.Context, h, h2 capturedHolder, cond bool) {
+	h.l = zerolog.Ctx(ctx).With().Logger()
+	h2.l = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		c := h
+		if cond {
+			c = h2
+		}
+		c.l.Info().Msg("copy of h or h2") // OK - both have ctx
+	}()
+}
+
+func goodPointerToOneOfTwoCaptured(ctx context.Context, h, h2 capturedHolder, cond bool) {
+	h.l = zerolog.Ctx(ctx).With().Logger()
+	h2.l = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		p := &h
+		if cond {
+			p = &h2
+		}
+		p.l.Info().Msg("pointer to h or h2") // OK - both have ctx
+	}()
+}
+
+func badCopyOfOneOfTwoCaptured(ctx context.Context, h, h2 capturedHolder, cond bool) {
+	h.l = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		c := h
+		if cond {
+			c = h2
+		}
+		c.l.Info().Msg("copy of h or h2") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
 // ===== GOROUTINE USAGE =====
 
 func badGoroutineLog(ctx context.Context, logger zerolog.Logger) {

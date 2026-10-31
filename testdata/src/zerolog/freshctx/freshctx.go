@@ -142,11 +142,124 @@ func limitationEventCtxBackgroundInPlaceOverCtx(ctx context.Context, log zerolog
 	e.Msg("Background in place over ctx") // LIMITATION: should report but doesn't
 }
 
-// LIMITATION(#214) (false negative): A variable a closure captures is not
-// followed back to what is stored in it, so it is not taken as fresh.
-func limitationEventCtxBackgroundCaptured(ctx context.Context, log zerolog.Logger) {
+// ===== FRESH CONTEXTS IN CLOSURES AND FUNC LITERALS =====
+
+// A variable a closure captures holds what is stored to it before the
+// closure runs, and a parameter of a func literal what its calls pass (#214).
+
+func badEventCtxBackgroundCaptured(ctx context.Context, log zerolog.Logger) {
 	bg := context.Background()
 	func() {
-		log.Info().Ctx(bg).Msg("Background captured") // LIMITATION(#214): should report but doesn't
+		log.Info().Ctx(bg).Msg("Background captured") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
 }
+
+func badEventCtxBackgroundCapturedTwice(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	func() {
+		func() {
+			log.Info().Ctx(bg).Msg("Background captured twice") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func badEventCtxBackgroundCapturedByEscapingClosure(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	freshContextRun(func() {
+		log.Info().Ctx(bg).Msg("Background captured, run elsewhere") // want `zerolog call chain missing .Ctx\(ctx\)`
+	})
+}
+
+func badEventCtxBackgroundThroughFuncLiteralParam(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	f := func(p *context.Context) {
+		log.Info().Ctx(*p).Msg("Background through a parameter") // want `zerolog call chain missing .Ctx\(\*p\)`
+	}
+	f(&bg)
+}
+
+type freshContextCounted struct {
+	ctx context.Context
+	n   int
+}
+
+func badEventCtxBackgroundThroughRecursiveFuncLiteral(ctx context.Context, log zerolog.Logger) {
+	var f func(c freshContextCounted)
+	f = func(c freshContextCounted) {
+		log.Info().Ctx(c.ctx).Msg("Background passed on by a recursive call") // want `zerolog call chain missing .Ctx\(ctx\)`
+		if c.n > 0 {
+			c.n--
+			f(c)
+		}
+	}
+	f(freshContextCounted{ctx: context.Background(), n: 2})
+}
+
+func goodEventCtxCapturedUpdatedLater(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	defer func() {
+		log.Info().Ctx(bg).Msg("deferred, ctx stored before the return") // OK - ctx at the return
+	}()
+	go func() {
+		log.Info().Ctx(bg).Msg("go, ctx stored after") // OK - may run after ctx is stored
+	}()
+	bg = ctx
+}
+
+func goodEventCtxThroughFuncLiteralParamUpdatedByClosure(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	f := func(p *context.Context) {
+		log.Info().Ctx(*p).Msg("updated by another closure") // OK - not known to be fresh
+	}
+	func() { bg = ctx }()
+	f(&bg)
+}
+
+func goodEventCtxCapturedPointerUpdatedByClosure(ctx context.Context, log zerolog.Logger, pc *context.Context) {
+	*pc = context.Background()
+	func() { *pc = ctx }()
+	func() {
+		log.Info().Ctx(*pc).Msg("updated by another closure") // OK - not known to be fresh
+	}()
+}
+
+func goodEventCtxCapturedUpdatedByNestedClosure(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	func() {
+		func() { bg = ctx }()
+		log.Info().Ctx(bg).Msg("updated by a nested closure") // OK - not known to be fresh
+	}()
+}
+
+// A store that a walk of the function does not see, by a closure or through
+// a pointer passed on, may put another context in the variable.
+
+func goodEventCtxBackgroundUpdatedByClosureBeforeRead(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	func() { bg = ctx }()
+	log.Info().Ctx(bg).Msg("updated by a closure before") // OK - not known to be fresh
+}
+
+func goodEventCtxBackgroundPassedOn(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	freshContextSet(&bg, ctx)
+	log.Info().Ctx(bg).Msg("passed on by pointer") // OK - not known to be fresh
+	func() {
+		log.Info().Ctx(bg).Msg("captured, passed on by pointer") // OK - not known to be fresh
+	}()
+}
+
+// LIMITATION (false negative): A pointer to a field of another variable,
+// captured by a closure, may point anywhere, so what it points to is not
+// taken as fresh.
+func limitationEventCtxBackgroundThroughCapturedFieldPointer(ctx context.Context, log zerolog.Logger) {
+	h := freshContextHolder{ctx: context.Background()}
+	pc := &h.ctx
+	func() {
+		log.Info().Ctx(*pc).Msg("captured pointer to a field") // LIMITATION: should report but doesn't
+	}()
+}
+
+func freshContextRun(f func()) { f() }
+
+func freshContextSet(p *context.Context, c context.Context) { *p = c }

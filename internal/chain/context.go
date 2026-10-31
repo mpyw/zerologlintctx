@@ -119,8 +119,9 @@ func contextParamName(fn *ssa.Function) string {
 // context.Background or context.TODO: a context that carries nothing of the
 // caller's. A Ctx call given one does not pass on the context in scope. It
 // sees through a Phi, a conversion, and a load of a local variable, a pointer
-// parameter or a field of one, where only such calls reach it (see
-// storesReaching):
+// parameter, a variable a closure captures, or a field of one, where only
+// such calls reach it, through the calls of a func literal and where a
+// closure is made (see resolver):
 //
 //	bg := context.Background()
 //	if debug {
@@ -128,32 +129,59 @@ func contextParamName(fn *ssa.Function) string {
 //	}
 //	l.Info().Ctx(bg).Msg("x")   // bg is fresh on both paths
 //
-// A value of any other kind, such as a parameter, a global, a variable a
-// closure captures, or a call of another function, is not fresh.
+// A variable that a closure stores to, other than the function read in, is
+// not fresh: a walk of that function does not see the store. A value of any
+// other kind, such as a parameter, a global, or a call of another function,
+// is not fresh.
 //
 //declscope:shared // tracing.go does not count a Ctx call given one
-func isFreshContext(v ssa.Value, positions instrPositions) bool {
-	return contextIsFresh(v, positions, make(map[ssa.Value]verdict)) == yes
+func isFreshContext(v ssa.Value, positions instrPositions, closures *closures) bool {
+	f := &contextFreshness{
+		done:   make(map[ssa.Value]verdict),
+		active: make(map[*ssa.Parameter]bool),
+	}
+	f.r = resolver{positions: positions, closures: closures, enter: f.enter, unseenUnknown: true}
+	return f.isFresh(v) == yes
 }
 
-// contextIsFresh does the work of isFreshContext: yes for a fresh context,
-// and no for any other. done holds the verdict of each value already asked
-// about. A value still being worked out is neutral: it is reached again only
-// through an edge of a Phi that leads back to it, or a store in a loop that
-// reaches itself, which adds no other value.
-func contextIsFresh(v ssa.Value, positions instrPositions, done map[ssa.Value]verdict) verdict {
-	if found, ok := done[v]; ok {
+// contextFreshness works out whether values are fresh contexts, for one
+// isFreshContext.
+type contextFreshness struct {
+	r resolver
+	// done holds the verdict of each value already asked about. A value
+	// still being worked out is neutral: it is reached again only through an
+	// edge of a Phi that leads back to it, or a store in a loop that reaches
+	// itself, which adds no other value.
+	done map[ssa.Value]verdict
+	// active holds the parameters of func literals being resolved.
+	active map[*ssa.Parameter]bool
+}
+
+// enter resolves param through expand, unless it is being resolved already,
+// as a recursive call of its func literal leads back to it. The other calls
+// give the value.
+func (f *contextFreshness) enter(param *ssa.Parameter, expand func()) {
+	if f.active[param] {
+		return
+	}
+	f.active[param] = true
+	expand()
+	delete(f.active, param)
+}
+
+// isFresh is yes for a fresh context, and no for any other.
+func (f *contextFreshness) isFresh(v ssa.Value) verdict {
+	if found, ok := f.done[v]; ok {
 		return found
 	}
-	done[v] = neutral
-	found := contextTraceFresh(v, positions, done)
-	done[v] = found
+	f.done[v] = neutral
+	found := f.trace(v)
+	f.done[v] = found
 	return found
 }
 
-// contextTraceFresh does the work of contextIsFresh for a value not asked
-// about yet.
-func contextTraceFresh(v ssa.Value, positions instrPositions, done map[ssa.Value]verdict) verdict {
+// trace does the work of isFresh for a value not asked about yet.
+func (f *contextFreshness) trace(v ssa.Value) verdict {
 	switch val := v.(type) {
 	case *ssa.Call:
 		sfn := val.Call.StaticCallee()
@@ -163,31 +191,32 @@ func contextTraceFresh(v ssa.Value, positions instrPositions, done map[ssa.Value
 		fn, ok := sfn.Object().(*types.Func)
 		return verdictOf(ok && zerologapi.MakesFreshContext(fn))
 	case *ssa.Phi:
-		return contextAllFresh(val.Edges, positions, done)
+		return all(verdictsOf(val.Edges, f.isFresh))
 	case *ssa.ChangeType:
-		return contextIsFresh(val.X, positions, done)
+		return f.isFresh(val.X)
 	case *ssa.UnOp:
 		if _, isLoad := asLoad(val); !isLoad {
 			return no
 		}
 		// The stores that reach the load must be known from the function
-		// alone. A global can be changed anywhere
-		if _, tracked := placeOf(val.X); !tracked {
+		// alone. A global can be changed anywhere, so resolveAt knows nothing
+		// of it
+		at, _ := placeOf(val.X)
+		sources, ok := f.r.resolveAt(at, val)
+		if !ok {
 			return no
 		}
-		stored, ok := storesReaching(val.X, val, positions)
-		if !ok || stored.unknown || stored.captured != nil || len(stored.params) > 0 {
-			return no
-		}
-		return contextAllFresh(stored.values, positions, done)
+		return all(func(yield func(verdict) bool) {
+			for src := range sources {
+				found := no
+				if src.v != nil && !src.pointer {
+					found = f.isFresh(src.v)
+				}
+				if !yield(found) {
+					return
+				}
+			}
+		})
 	}
 	return no
-}
-
-// contextAllFresh combines the verdicts of values, as contextIsFresh judges
-// each: every one must be fresh.
-func contextAllFresh(values []ssa.Value, positions instrPositions, done map[ssa.Value]verdict) verdict {
-	return all(verdictsOf(values, func(v ssa.Value) verdict {
-		return contextIsFresh(v, positions, done)
-	}))
 }

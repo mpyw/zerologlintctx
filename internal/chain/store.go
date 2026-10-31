@@ -45,7 +45,7 @@ import (
 // variable carries its zero value, which has no value to trace. One that
 // leads back to the entry of the function carries the value the caller
 // passed, which is unknown, or the value of the captured variable when the
-// closure runs, which is in captured.
+// closure runs, which is among captured.
 //
 // For any other address, such as a global, ok is true when the function
 // stores to it, and holds every value it stores there, wherever it runs.
@@ -195,21 +195,22 @@ func (pk *storePick) holds(p *ssa.Phi) bool {
 	return holds(p)
 }
 
-// merge adds what o found to r. Two different captured variables cannot be
-// told apart in one result, so that is unknown.
+// merge adds what o found to r.
 func (r *storeReaching) merge(o storeReaching) {
 	r.values = append(r.values, o.values...)
 	r.params = append(r.params, o.params...)
 	r.unknown = r.unknown || o.unknown
-	if o.captured == nil {
-		return
+	for _, c := range o.captured {
+		r.addCaptured(c)
 	}
-	if r.captured == nil {
-		r.captured, r.capturedPath = o.captured, o.capturedPath
-		return
-	}
-	if (place{root: r.captured, path: r.capturedPath}).key() != (place{root: o.captured, path: o.capturedPath}).key() {
-		r.unknown = true
+}
+
+// addCaptured adds c, a place in a variable a closure captures, to what r
+// found, unless it is there already.
+func (r *storeReaching) addCaptured(c place) {
+	key := c.key()
+	if !slices.ContainsFunc(r.captured, func(o place) bool { return o.key() == key }) {
+		r.captured = append(r.captured, c)
 	}
 }
 
@@ -354,12 +355,11 @@ type storeReaching struct {
 	// tell: one the caller passed through a pointer parameter, or one an
 	// aggregate was copied whole from where no store can be seen.
 	unknown bool
-	// captured is the variable a closure captures, when some path carries
-	// the value at capturedPath in it as the closure starts. Tracing it finds
-	// what is at the same selections of the variable bound where the closure
-	// is made.
-	captured     *ssa.FreeVar
-	capturedPath []sel
+	// captured are the places in variables a closure captures, each a free
+	// variable and the selections from it, whose values some path carries as
+	// the closure starts. Each is what is at the same selections of the
+	// variable bound where the closure is made, when the closure runs.
+	captured []place
 	// params are the parameters of a func literal, with the selections from
 	// them, whose values some path carries from the entry of the func literal.
 	// Tracing them finds what the calls of the func literal pass.
@@ -515,7 +515,7 @@ func (w *storeWalk) pickedThrough(edge ssa.Value) (*ssa.Phi, bool) {
 // runs only takes the paths through its defer, so its walk never gets here.
 func (w *storeWalk) reachEntry() {
 	if fv, ok := w.at.root.(*ssa.FreeVar); ok {
-		w.out.captured, w.out.capturedPath = fv, slices.Clone(w.at.path)
+		w.out.addCaptured(place{root: fv, path: slices.Clone(w.at.path)})
 		return
 	}
 	if p, ok := storeIsFuncLiteralParam(w.at.root); ok {
@@ -580,13 +580,8 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 		w.out.unknown = true
 		return
 	}
-	// A copy of a variable that a closure captures is not followed, though
-	// isTrackedRoot accepts one. The walk of the copy shares w.out, which
-	// holds one captured variable: reaching the entry of the closure, it
-	// would replace the one this walk may have found there, or this walk
-	// would replace it, and the other variable would not be traced.
 	from, tracked := placeOf(load.X)
-	if _, captured := from.root.(*ssa.FreeVar); !tracked || captured {
+	if !tracked {
 		w.out.unknown = true
 		return
 	}
