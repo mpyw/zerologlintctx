@@ -22,6 +22,7 @@ zerologlintctx/
 │   │   ├── aggregate.go       # The copies of a struct or array
 │   │   ├── match.go           # Whether two addresses are the same
 │   │   ├── place.go           # An address as a root and its selections
+│   │   ├── walk.go            # Walks the paths of the control flow
 │   │   └── value.go           # SSA plumbing the other files stand on
 │   ├── directive/             # Comment directive handling
 │   │   └── ignore.go          # //zerologlintctx:ignore parsing, directive problems
@@ -162,6 +163,26 @@ The `tracer` type in `internal/chain/tracing.go` does it. Phi nodes are in
 One tracer serves a whole package. It keeps each value it found to have
 context, so it is not worked out again for the next call that reaches it,
 or for a closure that reaches a value of the function it is declared in.
+
+### Walking the Control Flow
+
+`walk.go` walks the paths of a function block by block, from a point before
+an instruction. `walkBack` goes backwards, latest instruction first, and
+`walkFwd` goes forwards. The caller's visit function tells what each path
+does at an instruction: go on, stop there, or end the whole walk. The walk
+takes each block once, and calls back when a path reaches the entry of the
+function.
+
+| Walk | Direction | A path stops at | Kept to |
+|------|-----------|-----------------|---------|
+| `storeWalk.walkBefore`: stores that reach a read | Back | A store to the address, or its declaration | Through a Phi of pointers, the edges that hold the variable picked |
+| `storeWalk.walkDeferred`: stores that reach the returns after a `defer` | Back | The same, or the `defer` | The blocks on a path through the `defer` (`walkThrough`) |
+| `traceCtxCalledOnEveryPath`: an `Event.Ctx` call before a point | Back | A `Ctx` call, or another event in its place | All |
+| `traceCtxSetAtReturns`: an `Event.Ctx` call after a deferred terminator | Forward | A `Ctx` call | All |
+
+`walkBackWith` carries a state on each path. A block is walked once in each
+state. `walkBefore` uses it to keep, on each path, the Phi that must still
+point to the variable picked.
 
 ### Closures and Func Literals
 
