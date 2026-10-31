@@ -1,6 +1,6 @@
 // store.go finds what can be at an address when it is read. storesReaching is
-// the entry; it leans on aggregate.go to follow copies and on match.go to
-// decide whether two addresses are the same.
+// the entry; it leans on walk.go to walk the control flow, on aggregate.go to
+// follow copies and on match.go to decide whether two addresses are the same.
 
 package chain
 
@@ -290,45 +290,19 @@ func (w *storeWalk) declaredInLoop() bool {
 //	}
 //	return                              // the path that skips the if defers nothing
 func (w *storeWalk) walkDeferred(d *ssa.Defer) {
-	type step struct {
-		block *ssa.BasicBlock
-		to    int // Index after the last instruction of block to look at
-	}
-	following := w.positions.following(d)
-	start := w.positions.of(d) + 1
-	reachesD := false
-	var queue []step
+	var rets []walkPoint
 	for _, ret := range storeReturnsAfter(d, w.positions) {
-		queue = append(queue, step{ret.Block(), w.positions.of(ret)})
+		rets = append(rets, walkPointBefore(ret, w.positions))
 	}
-	seen := make(map[*ssa.BasicBlock]bool)
-	for len(queue) > 0 {
-		s := queue[len(queue)-1]
-		queue = queue[:len(queue)-1]
-		from := 0
-		if s.block == d.Block() {
-			from = start // Before it, the path goes on from d
+	reachesD := false
+	visit := func(instr ssa.Instruction) walkStep {
+		if instr == d {
+			reachesD = true // Before it, the path goes on from d
+			return walkStop
 		}
-		stopped := false
-		for i := s.to - 1; i >= from && !stopped; i-- {
-			stopped = w.stopsAt(s.block.Instrs[i])
-		}
-		if stopped {
-			continue
-		}
-		if s.block == d.Block() {
-			reachesD = true
-			continue
-		}
-		for _, pred := range s.block.Preds {
-			if following[pred] || pred == d.Block() {
-				if !seen[pred] {
-					seen[pred] = true
-					queue = append(queue, step{pred, len(pred.Instrs)})
-				}
-			}
-		}
+		return w.stepAt(instr)
 	}
+	walkBack(rets, visit, nil, walkThrough(d, w.positions))
 	if reachesD {
 		w.walkBefore(d)
 	}
@@ -496,50 +470,27 @@ type storeCopy struct {
 // walkBefore walks every path that leads to instr, from the instruction
 // before it.
 //
-// When the walk has a picked variable, a step also holds the Phi that must
-// point to it where the step is, until the walk has passed the edge that
-// takes the variable itself. At the top of the block of that Phi, the walk
+// When the walk has a picked variable, each path also holds the Phi that must
+// point to it there, until the path has passed the edge that takes the
+// variable itself. At the top of the block of that Phi, the walk
 // goes on through the edges that may hold the variable only.
 func (w *storeWalk) walkBefore(instr ssa.Instruction) {
-	type step struct {
-		block *ssa.BasicBlock
-		from  int      // Index of the last instruction of block to look at
-		need  *ssa.Phi // The Phi that points to the picked variable here, if any
+	atEntry := func() bool {
+		w.reachEntry()
+		return true
 	}
-	type visit struct {
-		block *ssa.BasicBlock
-		need  *ssa.Phi
+	if w.picked == nil {
+		walkBack([]walkPoint{walkPointBefore(instr, w.positions)}, w.stepAt, atEntry, nil)
+		return
 	}
-	b := instr.Block()
-	queue := []step{{b, w.positions.of(instr) - 1, nil}}
-	if w.picked != nil {
-		queue[0].need = w.picked.phi
-	}
-	seen := make(map[visit]bool)
-	for len(queue) > 0 {
-		s := queue[len(queue)-1]
-		queue = queue[:len(queue)-1]
-		if w.stopsInBlock(s.block, s.from) {
-			continue
+	from := []walkFrom[*ssa.Phi]{{walkPointBefore(instr, w.positions), w.picked.phi}}
+	edge := func(b *ssa.BasicBlock, i int, need *ssa.Phi) (*ssa.Phi, bool) {
+		if need == nil || need.Block() != b {
+			return need, true
 		}
-		if len(s.block.Preds) == 0 {
-			w.reachEntry()
-			continue
-		}
-		for i, pred := range s.block.Preds {
-			need := s.need
-			if need != nil && need.Block() == s.block {
-				var takes bool
-				if need, takes = w.pickedThrough(need.Edges[i]); !takes {
-					continue // The Phi does not point to the variable on this path
-				}
-			}
-			if v := (visit{pred, need}); !seen[v] {
-				seen[v] = true
-				queue = append(queue, step{pred, len(pred.Instrs) - 1, need})
-			}
-		}
+		return w.pickedThrough(need.Edges[i]) // The Phi may not point to the variable on this path
 	}
+	walkBackWith(from, w.stepAt, atEntry, edge)
 }
 
 // pickedThrough reports whether edge, of a Phi that points to the picked
@@ -574,36 +525,28 @@ func (w *storeWalk) reachEntry() {
 	w.out.unknown = true
 }
 
-// stopsInBlock looks at the instructions of b from index from back to its
-// first, and reports whether one of them ends the path.
-func (w *storeWalk) stopsInBlock(b *ssa.BasicBlock, from int) bool {
-	for i := from; i >= 0; i-- {
-		if w.stopsAt(b.Instrs[i]) {
-			return true
-		}
-	}
-	return false
-}
-
-// stopsAt reports whether instr ends a path: a store to the address, or to an
-// aggregate that holds it, or the declaration of the local variable.
-func (w *storeWalk) stopsAt(instr ssa.Instruction) bool {
+// stepAt stops a path at a store to the address, or to an aggregate that
+// holds it, and at the declaration of the local variable. It records what
+// the store carries.
+func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 	switch in := instr.(type) {
 	case *ssa.Alloc:
-		return in == w.at.root // Its zero value has nothing to trace
+		if in == w.at.root {
+			return walkStop // Its zero value has nothing to trace
+		}
 	case *ssa.Store:
 		n, ok := w.prefixLen(in.Addr)
 		if !ok {
-			return false
+			return walkOn
 		}
 		if n == len(w.at.path) {
 			w.out.values = append(w.out.values, in.Val)
 		} else {
 			w.copied(in, w.at.path[n:])
 		}
-		return true
+		return walkStop
 	}
-	return false
+	return walkOn
 }
 
 // prefixLen reports whether addr is the root or a selection from it that the

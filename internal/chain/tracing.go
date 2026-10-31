@@ -123,8 +123,7 @@ func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 		return true
 	}
 	done := make(map[tracePointValue]bool)
-	before := tracePoint{block: at.Block(), index: tr.positions.of(at)}
-	if tr.traceCtxSetInPlace(v, before, done) {
+	if tr.traceCtxSetInPlace(v, walkPointBefore(at, tr.positions), done) {
 		return true
 	}
 	if d, deferred := at.(*ssa.Defer); deferred {
@@ -167,48 +166,24 @@ func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
 	if len(calls) == 0 {
 		return false
 	}
-	type step struct {
-		block *ssa.BasicBlock
-		from  int // Index of the first instruction of block to look at
-	}
-	queue := []step{{d.Block(), tr.positions.of(d) + 1}}
-	seen := make(map[*ssa.BasicBlock]bool)
-	for len(queue) > 0 {
-		s := queue[len(queue)-1]
-		queue = queue[:len(queue)-1]
-		i := slices.IndexFunc(s.block.Instrs[s.from:], func(instr ssa.Instruction) bool {
-			return calls[instr] || defs[instr]
-		})
-		if i >= 0 && defs[s.block.Instrs[s.from+i]] {
-			return false // The event is made again, so a Ctx call after is on another one
+	return walkFwd(walkPointAfter(d, tr.positions), func(instr ssa.Instruction) walkStep {
+		switch {
+		case defs[instr]:
+			return walkAbort // The event is made again, so a Ctx call after is on another one
+		case calls[instr]:
+			return walkStop // Ctx runs on this path
 		}
-		if i >= 0 {
-			continue // Ctx runs on this path
+		if _, ok := instr.(*ssa.Return); ok {
+			return walkAbort
 		}
-		if _, ok := s.block.Instrs[len(s.block.Instrs)-1].(*ssa.Return); ok {
-			return false
-		}
-		for _, succ := range s.block.Succs {
-			if !seen[succ] {
-				seen[succ] = true
-				queue = append(queue, step{succ, 0})
-			}
-		}
-	}
-	return true
-}
-
-// tracePoint is a point in a function: before the instruction at index of
-// block, or at its end when index is the number of its instructions.
-type tracePoint struct {
-	block *ssa.BasicBlock
-	index int
+		return walkOn
+	})
 }
 
 // tracePointValue is an event asked about at a point.
 type tracePointValue struct {
 	v     ssa.Value
-	point tracePoint
+	point walkPoint
 }
 
 // traceCtxSetInPlace reports whether Event.Ctx is called on the event v
@@ -228,7 +203,7 @@ type tracePointValue struct {
 // an edge of a Phi that leads back to it, which carries the same event. done is
 // worked out for each terminator, and not kept, since a call before one
 // terminator may come after another.
-func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before tracePoint, done map[tracePointValue]bool) bool {
+func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before walkPoint, done map[tracePointValue]bool) bool {
 	key := tracePointValue{v: v, point: before}
 	if found, ok := done[key]; ok {
 		return found
@@ -257,7 +232,7 @@ func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool
 		}
 		pred := phi.Block().Preds[i]
 		// An edge with context of its own needs no Ctx call in place
-		if !tr.traceCtxSetInPlace(edge, tracePoint{block: pred, index: len(pred.Instrs)}, done) &&
+		if !tr.traceCtxSetInPlace(edge, walkPoint{block: pred, index: len(pred.Instrs)}, done) &&
 			!tr.traceValue(edge, traceEvent, make(map[ssa.Value]bool)) {
 			return false
 		}
@@ -271,7 +246,7 @@ func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]bool
 // path that leads back to the entry of the function without passing v does
 // not have v, and needs no call, unless v is a parameter or a free variable,
 // which the entry gives.
-func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
+func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before walkPoint) bool {
 	fn := before.block.Parent()
 	calls := make(map[ssa.Instruction]bool)
 	makes := make(map[ssa.Instruction]bool) // Where another event is in v on the path
@@ -306,46 +281,24 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before tracePoint) bool {
 func (tr *tracer) traceCtxCalledOnEveryPath(
 	calls, makes map[ssa.Instruction]bool,
 	made bool,
-	before tracePoint,
+	before walkPoint,
 ) bool {
 	if len(calls) == 0 {
 		return false
 	}
-	type step struct {
-		block *ssa.BasicBlock
-		to    int // Index after the last instruction of block to look at
+	visit := func(instr ssa.Instruction) walkStep {
+		switch {
+		case calls[instr]:
+			return walkStop // Ctx runs on this path
+		case !makes[instr]:
+			return walkOn
+		case !tr.traceStoredEventHasCtx(instr):
+			return walkAbort // v is made on this path, and Ctx does not run after
+		}
+		return walkStop // An event with context of its own is stored on this path
 	}
-	queue := []step{{before.block, before.index}}
-	seen := make(map[*ssa.BasicBlock]bool)
-	for len(queue) > 0 {
-		s := queue[len(queue)-1]
-		queue = queue[:len(queue)-1]
-		stopped := false
-		for i := s.to - 1; i >= 0 && !stopped; i-- {
-			instr := s.block.Instrs[i]
-			if calls[instr] {
-				stopped = true // Ctx runs on this path
-			} else if makes[instr] {
-				if !tr.traceStoredEventHasCtx(instr) {
-					return false // v is made on this path, and Ctx does not run after
-				}
-				stopped = true // An event with context of its own is stored on this path
-			}
-		}
-		if stopped {
-			continue
-		}
-		if len(s.block.Preds) == 0 && !made {
-			return false
-		}
-		for _, pred := range s.block.Preds {
-			if !seen[pred] {
-				seen[pred] = true
-				queue = append(queue, step{pred, len(pred.Instrs)})
-			}
-		}
-	}
-	return true
+	atEntry := func() bool { return made }
+	return walkBack([]walkPoint{before}, visit, atEntry, nil)
 }
 
 // traceStoredEventHasCtx reports whether instr, where another event is in a
@@ -943,8 +896,7 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 		}
 	}
 	_, local := at.root.(*ssa.Alloc)
-	before := tracePoint{block: call.Block(), index: tr.positions.of(call)}
-	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, before)
+	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, walkPointBefore(call, tr.positions))
 }
 
 // traceReceiver traces recv, the receiver of call, a method call. It is the
