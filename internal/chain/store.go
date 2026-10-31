@@ -39,9 +39,11 @@ import (
 // read.
 //
 // This holds for an address whose root is a local variable, a pointer
-// parameter or a variable a closure captures: its field, its constant
-// element, or itself. The stores that reach a read are known there, from the
-// function alone. A path that leads back to the declaration of a local
+// parameter or a variable a closure captures: its field, its element, or
+// itself. The stores that reach a read are known there, from the function
+// alone. A store that may write an element, or not, such as one to arr[0]
+// for a read of arr[i], is among them, but does not stop a path (see
+// storeWalk.stepAt). A path that leads back to the declaration of a local
 // variable carries its zero value, which has no value to trace. One that
 // leads back to the entry of the function carries the value the caller
 // passed, which is unknown, or the value of the captured variable when the
@@ -528,6 +530,14 @@ func (w *storeWalk) reachEntry() {
 // stepAt stops a path at a store to the address, or to an aggregate that
 // holds it, and at the declaration of the local variable. It records what
 // the store carries.
+//
+// A store that may write the address, or not, such as one to an element at
+// another index than a variable index, records what it carries too, but does
+// not stop the path: the value before it may still be the one read.
+//
+//	arr[i] = a             // reaches the read
+//	arr[0] = b             // reaches it too, when i is 0
+//	arr[i].Info()
 func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 	switch in := instr.(type) {
 	case *ssa.Alloc:
@@ -535,8 +545,8 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 			return walkStop // Its zero value has nothing to trace
 		}
 	case *ssa.Store:
-		n, ok := w.prefixLen(in.Addr)
-		if !ok {
+		n, cover := w.storeCover(in.Addr)
+		if cover == coverNone {
 			return walkOn
 		}
 		if n == len(w.at.path) {
@@ -544,9 +554,42 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 		} else {
 			w.copied(in, w.at.path[n:])
 		}
+		if cover == coverMay {
+			return walkOn
+		}
 		return walkStop
 	}
 	return walkOn
+}
+
+// storeCover tells how much of the address of the walk a store to addr
+// writes, as place.covers does, and how many selections addr takes.
+func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
+	at, _ := placeOf(addr)
+	return len(at.path), at.covers(w.at, w.indexOnce)
+}
+
+// storeIndexAlways is an index that is always taken to have one value, so
+// that an element at the same index is the same element, for a test of places
+// that runs nowhere in particular.
+func storeIndexAlways(ssa.Value) bool { return true }
+
+// storeIndexNever is an index that is never taken to have one value, for a
+// test of places that runs nowhere in particular.
+func storeIndexNever(ssa.Value) bool { return false }
+
+// indexOnce reports whether index, the index of an element of the address of
+// the walk, has one value wherever the walk meets it: it is not computed by
+// an instruction that runs again, in a loop. A store at the same index is
+// then to the same element.
+//
+//	for i := range arr {   // i is a Phi, which runs again on each iteration
+//	    arr[i].Info()      // the store below is to arr[i-1] here
+//	    arr[i] = base
+//	}
+func (w *storeWalk) indexOnce(index ssa.Value) bool {
+	def, ok := index.(ssa.Instruction)
+	return !ok || !w.positions.reaches(def, def)
 }
 
 // prefixLen reports whether addr is the root or a selection from it that the
@@ -614,7 +657,7 @@ func (w *storeWalk) addStoresAfter(instr ssa.Instruction) {
 		if !ok || !after(store) {
 			continue
 		}
-		if n, ok := w.prefixLen(store.Addr); ok {
+		if n, cover := w.storeCover(store.Addr); cover != coverNone {
 			if n == len(w.at.path) {
 				w.out.values = append(w.out.values, store.Val)
 			} else {
@@ -636,7 +679,7 @@ func (w *storeWalk) addStoresAfter(instr ssa.Instruction) {
 func storeReadsOf(addr ssa.Value, at place) (reads, escapes []ssa.Instruction) {
 	matches := func(v ssa.Value) bool {
 		p, _ := placeOf(v)
-		return p.same(at)
+		return len(p.path) == len(at.path) && p.covers(at, storeIndexAlways) == coverMust
 	}
 	var refs []ssa.Instruction
 	if addr == at.root {
@@ -682,6 +725,9 @@ func storeReadsOf(addr ssa.Value, at place) (reads, escapes []ssa.Instruction) {
 // already resolved so that following aggregate copies terminates. A store
 // whose value loads from addr is an update, which is built from the plain
 // stores, and is left out.
+//
+// A store to an element that may be the one at addr, or not, as one to s[0]
+// may be s[i], is among them too: every store is taken, wherever it runs.
 func findStores(addr ssa.Value, visited map[ssa.Value]bool) []*ssa.Store {
 	if visited[addr] {
 		return nil
@@ -693,10 +739,15 @@ func findStores(addr ssa.Value, visited map[ssa.Value]bool) []*ssa.Store {
 		return nil
 	}
 
+	at, _ := placeOf(addr)
+	mayWrite := func(store ssa.Value) bool {
+		p, _ := placeOf(store)
+		return len(p.path) == len(at.path) && p.covers(at, storeIndexNever) == coverMay
+	}
 	var plain []*ssa.Store
 	for instr := range instrsIn(fn) {
 		store, ok := instr.(*ssa.Store)
-		if ok && addressesMatch(store.Addr, addr) && !valueLoadsFromMatchingAddress(store.Val, addr) {
+		if ok && (addressesMatch(store.Addr, addr) || mayWrite(store.Addr)) && !valueLoadsFromMatchingAddress(store.Val, addr) {
 			plain = append(plain, store)
 		}
 	}
