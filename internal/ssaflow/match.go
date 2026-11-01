@@ -99,7 +99,7 @@ func matchAcrossClosure(inner, outer ssa.Value, runs []matchClosureRun) bool {
 	case *ssa.FreeVar:
 		return matchBoundOut(in, runs) == outer
 	case *ssa.UnOp:
-		if matchCopiedLoad(in, outer, runs) {
+		if matchCopiedLoad(in, outer, runs) || matchOriginAcross(in, outer, runs) {
 			return true
 		}
 		out, ok := outer.(*ssa.UnOp)
@@ -112,6 +112,37 @@ func matchAcrossClosure(inner, outer ssa.Value, runs []matchClosureRun) bool {
 	xa, sa, okA := addrSel(inner)
 	xb, sb, okB := addrSel(outer)
 	return okA && okB && sa.same(sb) && matchAcrossClosure(xa, xb, runs)
+}
+
+// matchOriginAcross reports whether inner, a load in a closure of a pointer
+// read from the variables it captures, is outer, a load in the function of
+// the last of runs, as matchSameOrigin matches two loads in one function.
+// outer is followed back past the copies that put the pointer where it loads
+// it (see matchOriginAt), and so is inner, as what the variable bound there
+// holds as the last run runs. inner must see what is at its address as the
+// closure starts:
+//
+//	t2 = *t0 ; *t1 = t2               // b := h, for h in t0 and b in t1
+//	t4 = *&t1.p ; *t4 = v             // outer: b.p, which is t2.p, so h.p too
+//	t1 = *&h.p ; Info(t1)             // in the closure: t1 is t0.p at the run
+//
+// When inner reads the pointer through another load in the closure, as
+// h.p does for a pointer h, that load must be where outer gets to, as
+// matchAcrossClosure matches it, with the same stores to the selections from
+// it at the run.
+func matchOriginAcross(inner *ssa.UnOp, outer ssa.Value, runs []matchClosureRun) bool {
+	run := runs[len(runs)-1].run
+	ov, ok := matchOriginOf(outer)
+	if inner.Op != token.MUL || run == nil || !ok ||
+		!maps.Equal(matchReachingStores(inner), map[ssa.Instruction]bool{nil: true}) {
+		return false
+	}
+	x, sels := matchSelsOf(inner.X)
+	if fv, isFreeVar := x.(*ssa.FreeVar); isFreeVar {
+		root := matchBoundOut(fv, runs)
+		return root != nil && matchOriginsSame(matchOriginAt(matchOrigin{root: root, sels: sels, at: run}), ov)
+	}
+	return matchOriginsSame(matchOrigin{root: ov.root, sels: sels, at: run}, ov) && matchAcrossClosure(x, ov.root, runs)
 }
 
 // matchCopiedLoad reports whether inner, a load in a closure of the variable
@@ -212,7 +243,14 @@ func matchSameOrigin(a, b ssa.Value) bool {
 //declscope:shared // store.go matches a store through the pointer a copy holds
 func matchOriginOfIs(o matchOrigin, v ssa.Value) bool {
 	ov, ok := matchOriginOf(v)
-	return ok && o.at.Parent() == ov.at.Parent() &&
+	return ok && matchOriginsSame(o, ov)
+}
+
+// matchOriginsSame reports whether o and ov are where one pointer is read
+// from: the same selections from the same address, in the same function,
+// with the same stores reaching both.
+func matchOriginsSame(o, ov matchOrigin) bool {
+	return o.at.Parent() == ov.at.Parent() &&
 		addressesMatch(o.root, ov.root) && slices.EqualFunc(o.sels, ov.sels, sel.same) &&
 		maps.Equal(matchStoresBeforeSels(o.root, o.sels, o.at), matchStoresBeforeSels(o.root, o.sels, ov.at))
 }
