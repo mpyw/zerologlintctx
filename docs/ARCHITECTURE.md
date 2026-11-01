@@ -269,6 +269,12 @@ function.
 | `eventQuery.ctxRunsBefore`: an `Event.Ctx` call before a terminator | Back | A `Ctx` call on the event, or a store of another event where it is read | Through a Phi it is read through, the edges that carry the event |
 | `eventQuery.ctxRunsAfterDefer`: an `Event.Ctx` call after a deferred terminator | Forward | A `Ctx` call on the event | All |
 
+`WalkReachable` answers a narrower question: whether a path from a point
+reaches another without running a given instruction. The in-place `Ctx`
+check asks it to tell whether a value kept at a Phi or in memory still holds
+the event of the latest run of a call in a loop (see
+[Events made in a loop](#events-made-in-a-loop)).
+
 `WalkBackWith` carries a state on each path. A block is walked once in each
 state. `walkBefore` uses it to keep, on each path, the Phi that must still
 point to the variable picked.
@@ -435,6 +441,43 @@ A deferred terminator runs at each return after the `defer` statement, so for
 one a `Ctx` call on the source that runs on every path from the `defer` to a
 return counts too. A path that makes the source again, in a loop, has
 another event there.
+
+#### Events made in a loop
+
+A call in a loop makes an event on each run, so the call alone does not name
+one event. `eventRunGraph` in `event.go` follows a receiver back to each such
+call with the point where each value on the way is used, and tells which
+runs it can hold (`eventRuns`):
+
+| Run | When | Example |
+|-----|------|---------|
+| Latest | No path kept the event past another run of the call | `e := logger.Info(); e.Msg("x")` |
+| Earlier | The event was kept at a Phi, a load or in memory, and every path from there to the use runs the call again | `last`, kept from the last iteration |
+| Any | A store at an index computed in the loop, read at another index | `evs[i] = logger.Info()` in a loop, then `evs[1]` |
+
+A `Ctx` call counts for the terminator only when the two can hold the same
+run. Any run can be the same as any other, except two elements at different
+constant indices.
+
+```go
+var last *zerolog.Event
+for range n {
+    e := logger.Info()
+    if last != nil {
+        last.Ctx(ctx)   // an earlier run
+        e.Msg("x")      // the latest run: reported
+    }
+    last = e
+}
+```
+
+When the receiver holds only earlier runs, the walk back does not fail at
+the latest run of the call. It goes on before it, where a `Ctx` call on any
+run counts, and fails at the run before. So a `Ctx` call on each event before
+it is kept for the next iteration counts.
+
+Only calls that can run again after they run, in a loop, get this check, so
+the graph is not built for the others.
 
 ### Common SSA Patterns
 
@@ -787,6 +830,7 @@ Due to SSA analysis constraints:
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE returns and arguments are supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
+- **Events made in a loop**: When a value can hold the event of the latest run of a call on one path, and of an earlier run on another, a `Ctx` call on it counts for the latest run on both paths
 - **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`, or in a func literal `e` is passed to. In the same function, a `Ctx` call on any value that holds the same event counts: an earlier read of the same variable or field, or another variable the event was copied to, unless another event is stored in between
 - **Events stored back**: When a read can see several events, a `Ctx` call on an earlier read that sees the same events counts for each of them, even where a path stores one of those events back over another in between. In the same way, a `Ctx` call on the caller's event at a place counts at later reads of the place, even when it is copied over in between from where no store can be seen
 - **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it

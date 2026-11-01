@@ -485,6 +485,182 @@ func badEventCtxResultUnusedOnOtherPath(ctx context.Context, log zerolog.Logger,
 	e.Msg("after ctx") // OK - .Ctx() runs first on this path
 }
 
+// ===== Ctx IN PLACE ACROSS ITERATIONS =====
+
+// A call in a loop makes an event on each run. A Ctx call on the event of an
+// earlier run does not set the context of the latest one (#246).
+
+func badEventCtxOnPreviousIterationPhi(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			last.Ctx(ctx)
+			e.Msg("ctx on the event of the previous iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = e
+	}
+}
+
+func badEventCtxOnPreviousIterationField(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	for range 2 {
+		e := log.Info()
+		if h.e != nil {
+			h.e.Ctx(ctx)
+			e.Msg("ctx on the event of the previous iteration, in a field") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		h.e = e
+	}
+}
+
+func badEventCtxOnPreviousIterationLoadedBefore(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	for range 2 {
+		old := h.e
+		h.e = log.Info()
+		if old != nil {
+			old.Ctx(ctx)
+			h.e.Msg("ctx on the event read before the new one") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+	}
+}
+
+func badEventCtxOnOtherElementMadeInLoop(ctx context.Context, log zerolog.Logger) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		evs[i] = log.Info()
+	}
+	evs[0].Ctx(ctx)
+	evs[1].Msg("ctx on another element") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxOnLatestForPreviousIteration(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			e.Ctx(ctx)
+			last.Msg("ctx on the event of this iteration only") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = e
+	}
+}
+
+func badEventDeferredCtxOnPreviousIteration(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		defer e.Msg("deferred, ctx on the event of the previous iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		if last != nil {
+			last.Ctx(ctx)
+		}
+		last = e
+	}
+}
+
+func goodEventCtxOnSameIteration(ctx context.Context, log zerolog.Logger) {
+	for range 2 {
+		e := log.Info()
+		e.Ctx(ctx)
+		e.Msg("ctx on the same iteration") // OK
+	}
+}
+
+func goodEventCtxOnSameIterationField(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	for range 2 {
+		h.e = log.Info()
+		h.e.Ctx(ctx)
+		h.e.Msg("ctx on the same iteration, in a field") // OK
+	}
+}
+
+func goodEventCtxOnPreviousIterationForIt(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			last.Ctx(ctx)
+			last.Msg("ctx on the event of the previous iteration, logged") // OK
+		}
+		last = e
+	}
+}
+
+func goodEventCtxOnLatestBeforeKept(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		e.Ctx(ctx)
+		if last != nil {
+			last.Msg("ctx on each event before it is kept") // OK - on the previous iteration
+		}
+		last = e
+	}
+}
+
+func goodEventCtxInLoopFieldReadAfter(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	for range 2 {
+		h.e = log.Info()
+		h.e.Ctx(ctx)
+	}
+	h.e.Msg("ctx on each event of the loop") // OK
+}
+
+func goodEventCtxOnSameElementMadeInLoop(ctx context.Context, log zerolog.Logger) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		evs[i] = log.Info()
+	}
+	evs[0].Ctx(ctx)
+	evs[0].Msg("ctx on the same element") // OK
+}
+
+func goodEventCtxOnSameElementAtComputedIndex(ctx context.Context, log zerolog.Logger, j int) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		evs[i] = log.Info()
+	}
+	evs[j].Ctx(ctx)
+	evs[j].Msg("ctx on the same element, at a computed index") // OK
+}
+
+func goodEventCtxOnEachElementInLoop(ctx context.Context, log zerolog.Logger) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		evs[i] = log.Info()
+		evs[i].Ctx(ctx)
+	}
+	evs[1].Msg("ctx on each element") // OK
+}
+
+func goodEventDeferredCtxOnSameIteration(ctx context.Context, log zerolog.Logger) {
+	for range 2 {
+		e := log.Info()
+		defer e.Msg("deferred, ctx on the same iteration") // OK
+		e.Ctx(ctx)
+	}
+}
+
+// LIMITATION: last holds the event of this iteration on one path, and of the
+// previous one on the other. A Ctx call on a value that can hold either
+// counts.
+func limitationEventCtxOnLatestOrPreviousIteration(ctx context.Context, log zerolog.Logger, cond bool) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if cond {
+			last = e
+		}
+		if last != nil {
+			last.Ctx(ctx)
+			e.Msg("ctx on this or the previous event") // LIMITATION: not reported
+		}
+	}
+}
+
 // ===== UPDATECONTEXT (changes the Logger in place) =====
 
 // UpdateContext keeps only the fields its func writes. What Context.Ctx sets

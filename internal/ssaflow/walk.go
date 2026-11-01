@@ -179,6 +179,51 @@ func WalkFwd(from WalkPoint, visit walkVisit) bool {
 	return true
 }
 
+// WalkReachable returns a test of whether a path from the point from reaches
+// a point without running avoid on the way. Both points and avoid are in one
+// function. The test finds the blocks such a path enters once, the first time
+// it is asked about a point that is not straight down the block of from.
+// work, when not nil, counts those blocks.
+func WalkReachable(from WalkPoint, avoid ssa.Instruction, positions Positions, work *int) func(WalkPoint) bool {
+	ab, ai := avoid.Block(), positions.of(avoid)
+	// avoidsAt reports whether a path from index i of b to its end does not
+	// run avoid
+	avoidsAt := func(b *ssa.BasicBlock, i int) bool { return b != ab || ai < i }
+	var entered map[*ssa.BasicBlock]bool
+	enter := func() {
+		entered = make(map[*ssa.BasicBlock]bool)
+		var queue []*ssa.BasicBlock
+		if avoidsAt(from.block, from.index) {
+			queue = append(queue, from.block.Succs...)
+		}
+		for len(queue) > 0 {
+			b := queue[len(queue)-1]
+			queue = queue[:len(queue)-1]
+			if entered[b] {
+				continue
+			}
+			entered[b] = true
+			if work != nil {
+				*work++
+			}
+			if avoidsAt(b, 0) {
+				queue = append(queue, b.Succs...)
+			}
+		}
+	}
+	return func(to WalkPoint) bool {
+		if to.block == from.block && from.index <= to.index && (ab != to.block || ai < from.index || to.index <= ai) {
+			return true // Straight down the block
+		}
+		if entered == nil {
+			enter()
+		}
+		// A path enters the block of to at its top, and runs the
+		// instructions before to
+		return entered[to.block] && (to.block != ab || to.index <= ai)
+	}
+}
+
 // walkThrough returns the blocks on a path through instr: its own block, and
 // those that can run after it. A walk back from a point after instr that
 // keeps to them, and stops at instr, takes only the paths that pass instr.

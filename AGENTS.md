@@ -138,6 +138,7 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE is supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
+- **Events made in a loop**: When a value can hold the event of the latest run of a call on one path, and of an earlier run on another, a `Ctx` call on it counts for the latest run on both paths
 - **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`, or in a func literal `e` is passed to. In the same function, a `Ctx` call on any value that holds the same event counts: an earlier read of the same variable or field, or another variable the event was copied to, unless another event is stored in between
 - **Events stored back**: When a read can see several events, a `Ctx` call on an earlier read that sees the same events counts for each of them, even where a path stores one of those events back over another in between
 - **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it

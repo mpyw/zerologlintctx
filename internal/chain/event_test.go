@@ -108,6 +108,13 @@ func f(ctx context.Context, l zerolog.Logger) {
 		for range n {
 			b.WriteString("\tif sink {\n\t\th.e = l.Warn()\n\t}\n\th.e.Ctx(ctx)\n\th.e.Msg(\"x\")\n")
 		}
+	case "fieldphiloop":
+		// fieldphi in a loop, so that each event is made on each iteration
+		b.WriteString("\tfor sink {\n\th := &holder{e: l.Info()}\n")
+		for range n {
+			b.WriteString("\tif sink {\n\t\th.e = l.Warn()\n\t}\n\th.e.Ctx(ctx)\n\th.e.Msg(\"x\")\n")
+		}
+		b.WriteString("\t}\n")
 	case "onevmany":
 		// One Ctx call on another event, so that the function has one
 		b.WriteString("\tl.Debug().Ctx(ctx).Msg(\"y\")\n\te := l.Info()\n")
@@ -129,6 +136,7 @@ func TestEventQueryWorkIsQuadratic(t *testing.T) {
 		accepts func(n int) int
 	}{
 		{"fieldphi", 0, func(n int) int { return n }},
+		{"fieldphiloop", 0, func(n int) int { return n }},
 		{"onevmany", 1, func(int) int { return 1 }}, // The one with Ctx in its chain
 	} {
 		t.Run(tt.shape, func(t *testing.T) {
@@ -185,5 +193,23 @@ func f(ctx context.Context, l zerolog.Logger) {
 `))
 	if terminators != 2 || accepted != 1 {
 		t.Errorf("%d of %d terminators accepted, want 1 of 2", accepted, terminators)
+	}
+}
+
+func TestEventRunGraphOutOfFunction(t *testing.T) {
+	t.Parallel()
+	fn := eventFunc(t, eventShapeSrc("fieldphiloop", 1))
+	ix := newEventIndex(make(ssaflow.Positions), ssaflow.NewClosures())
+	instr := fn.Blocks[0].Instrs[0]
+	// With no function, every instruction is out of it
+	g := &eventRunGraph{ix: ix}
+	if p := g.pointBefore(instr); p != (ssaflow.WalkPoint{}) {
+		t.Errorf("pointBefore = %v, want none", p)
+	}
+	if p := g.pointAfter(instr); p != nil {
+		t.Errorf("pointAfter = %v, want nil", *p)
+	}
+	if !g.reachesFrom(ssaflow.WalkPoint{}, ssaflow.WalkPointBefore(instr, ix.positions), instr) {
+		t.Error("reachesFrom none = false, want true")
 	}
 }
