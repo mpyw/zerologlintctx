@@ -361,14 +361,17 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 //     is set, the value must also be able to hold the same run of src as the
 //     receiver.
 //   - eventCtxFresh, for a call given a fresh context that runs on src alone,
-//     and on the same run of src as the receiver. With anyRun set, none is.
+//     and on the same run of src as the receiver, or on carried, a Phi that
+//     a walk back carries in place of the receiver there, as
+//     eventQuery.carriedValue has it (see eventQuery.freshOnCarried). With
+//     anyRun set, none is.
 //
 // Otherwise, it is eventCtxNone.
-func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource, anyRun bool) eventCtxFound {
+func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource, carried ssa.Value, anyRun bool) eventCtxFound {
 	for _, cc := range q.calls.at[instr] {
 		switch {
 		case cc.fresh:
-			if !anyRun && q.freshOn(cc, src) {
+			if !anyRun && (q.freshOn(cc, src) || q.freshOnCarried(cc, carried)) {
 				return eventCtxFresh
 			}
 		case q.counts(cc, src) && (anyRun || q.runsOf(src).sameRun(q.ix.ctxRunsOf(cc, src))):
@@ -385,6 +388,29 @@ func (q *eventQuery) freshOn(cc *eventCtxCall, src eventSource) bool {
 	q.ix.work++
 	return len(cc.sources.list) == 1 && cc.sources.has(src) &&
 		q.runsOf(src).alwaysSameRun(q.ix.ctxRunsOf(cc, src))
+}
+
+// freshOnCarried reports whether cc, a Ctx call given a fresh context, runs
+// on carried, the value a walk back carries in place of the receiver, as
+// eventQuery.carriedValue has it, and carried is a Phi, back through the
+// methods that return the event (see eventOrigin). Whichever event the Phi
+// is on the path, the call replaces its context:
+//
+//	e := logger.Info().Ctx(ctx)
+//	if cond {
+//	    e = logger.Warn().Ctx(ctx)
+//	}
+//	e.Ctx(context.Background()) // runs on the event e is
+//	e.Msg("x")                  // reported
+//
+// A path takes an edge of the Phi at the top of its block, so carries the
+// edge before it, and the Phi there is the one the call runs on.
+func (q *eventQuery) freshOnCarried(cc *eventCtxCall, carried ssa.Value) bool {
+	phi, ok := eventOrigin(carried, q.ix.closures).(*ssa.Phi)
+	if !ok || len(cc.recv.next) != 1 || cc.recv.read != nil || len(cc.recv.more) != 0 {
+		return false
+	}
+	return eventOrigin(cc.recv.next[0], q.ix.closures) == phi
 }
 
 // runsOf returns the runs of src the receiver can hold, or nil when src is
@@ -463,7 +489,7 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	earlier, reachesLatest := false, false
 	visit := func(instr ssa.Instruction, carried ssa.Value) ssaflow.WalkStep {
 		q.ix.work++
-		switch q.ctxCallOn(instr, src, earlier) {
+		switch q.ctxCallOn(instr, src, q.carriedValue(carried), earlier) {
 		case eventCtxSet:
 			return ssaflow.WalkStop // Ctx runs on this path
 		case eventCtxFresh:
@@ -510,7 +536,7 @@ func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoin
 	def := q.defOf(src)
 	visit := func(instr ssa.Instruction, carried ssa.Value) ssaflow.WalkStep {
 		q.ix.work++
-		switch q.ctxCallOn(instr, src, false) {
+		switch q.ctxCallOn(instr, src, q.carriedValue(carried), false) {
 		case eventCtxFresh:
 			return ssaflow.WalkAbort
 		case eventCtxSet:
@@ -561,7 +587,7 @@ func (q *eventQuery) ctxSetAtReturns(src eventSource, from ssaflow.WalkPoint, se
 		if instr == def {
 			return end // The event is made again, so a Ctx call after is on another one
 		}
-		if found := q.ctxCallOn(instr, src, false); found != eventCtxNone {
+		if found := q.ctxCallOn(instr, src, nil, false); found != eventCtxNone {
 			after := ssaflow.WalkPointAfter(instr, q.ix.positions)
 			if q.ctxSetAtReturns(src, after, found == eventCtxSet, walks) {
 				return ssaflow.WalkStop
@@ -626,12 +652,17 @@ func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource, carried
 //
 // Any other value is carried on as it is.
 func (q *eventQuery) carriedInto(b *ssa.BasicBlock, i int, carried ssa.Value) ssa.Value {
-	v := carried
-	if v == nil && len(q.recv.next) == 1 && q.recv.read == nil && len(q.recv.more) == 0 {
-		v = q.recv.next[0]
-	}
-	if phi, ok := eventOrigin(v, q.ix.closures).(*ssa.Phi); ok && phi.Block() == b {
+	if phi, ok := eventOrigin(q.carriedValue(carried), q.ix.closures).(*ssa.Phi); ok && phi.Block() == b {
 		return phi.Edges[i]
+	}
+	return carried
+}
+
+// carriedValue returns carried, a value a path carries, or for nil, the
+// receiver, when it is one value, not read from memory. Otherwise it is nil.
+func (q *eventQuery) carriedValue(carried ssa.Value) ssa.Value {
+	if carried == nil && len(q.recv.next) == 1 && q.recv.read == nil && len(q.recv.more) == 0 {
+		return q.recv.next[0]
 	}
 	return carried
 }
