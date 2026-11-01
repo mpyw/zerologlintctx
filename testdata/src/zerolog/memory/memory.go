@@ -1096,9 +1096,9 @@ func goodCapturedLocalLoggerPtrStoredOnBranch(ctx context.Context, cond bool) {
 	}()
 }
 
-// The pointer in the box is picked on a branch, so it is not followed
-// through the closure. The walk goes back past the copy to where the box is
-// filled, which stops the path.
+// The pointer in the box is picked on a branch. Each value it can be is
+// walked for along the paths on which the box holds it, out of the closure:
+// the store through b.p is a store through that value.
 func goodCapturedLocalLoggerPtrPickedStoredOnBranch(ctx context.Context, base zerolog.Logger, cond, other bool) {
 	p := zerolog.Ctx(ctx)
 	if other {
@@ -1126,6 +1126,88 @@ func badCapturedLocalLoggerPtrPickedStoredOnBranch(ctx context.Context, base zer
 			*b.p = base
 		}
 		b.p.Info().Msg("captured local, stored without ctx on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+// A closure deferred in the func literal reads the pointer as the func
+// literal returns, after the store through it (#359).
+func badCapturedLocalLoggerPtrPickedStoredOnBranchReadDeferred(ctx context.Context, base zerolog.Logger, cond, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	b := &loggerPtrBox{p}
+	func() {
+		if cond {
+			*b.p = base
+		}
+		defer func() {
+			b.p.Info().Msg("captured local, stored without ctx on one branch, deferred") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func badCapturedLocalLoggerPtrPickedStoredReadDeferred(ctx context.Context, base zerolog.Logger, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	b := &loggerPtrBox{p}
+	func() {
+		*b.p = base
+		defer func() {
+			b.p.Info().Msg("captured local, stored without ctx, deferred") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func goodCapturedLocalLoggerPtrPickedStoredReadDeferred(ctx context.Context, base zerolog.Logger, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base
+		p = &l
+	}
+	b := &loggerPtrBox{p}
+	func() {
+		*b.p = base.With().Ctx(ctx).Logger()
+		defer func() {
+			b.p.Info().Msg("captured local, stored with ctx, deferred") // OK - the store reaches either pointer
+		}()
+	}()
+}
+
+// The box holds another pointer by the store through q, which is the pointer
+// picked on a branch.
+func badCapturedLocalLoggerPtrReplacedBeforeStoreThrough(ctx context.Context, base zerolog.Logger, other bool) {
+	p := zerolog.Ctx(ctx)
+	l := base.With().Ctx(ctx).Logger()
+	m := base
+	if other {
+		p = &l
+	}
+	b := &loggerPtrBox{p}
+	func() {
+		q := b.p
+		b.p = &m
+		*q = base.With().Ctx(ctx).Logger()
+		b.p.Info().Msg("captured local, replaced before the store through the old one") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badCapturedLocalLoggerPtrPickedStoredAfterDefer(ctx context.Context, base zerolog.Logger, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	b := &loggerPtrBox{p}
+	func() {
+		defer func() {
+			b.p.Info().Msg("captured local, stored without ctx after the defer") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+		*b.p = base
 	}()
 }
 
@@ -2207,9 +2289,9 @@ func goodEitherPointerParamOrLoggerOfCtxInLoop(ctx context.Context, l1, l2 *zero
 	}
 }
 
-// The logger of ctx is stored through in the loop, so the Phi is not walked
-// along its paths. Each pointer parameter takes every store that reaches
-// any read of it instead.
+// The logger of ctx is stored through in the loop, after the read. A path
+// back from the read meets the Phi first, and takes the store of the
+// iteration before only on the edge that picks the logger of ctx.
 func goodEitherPointerParamOrLoggerOfCtxStoredInLoop(ctx context.Context, l1, l2 *zerolog.Logger, cond bool, n int) {
 	*l1 = l1.With().Ctx(ctx).Logger()
 	*l2 = zerolog.Ctx(ctx).With().Logger()
@@ -2301,8 +2383,8 @@ func badPointerReceivedOrLoggerOfCtxInLoop(ctx context.Context, ch chan *zerolog
 	}
 }
 
-// The logger of ctx is stored through in the loop, so it is not walked along
-// the paths of the Phi: a store may be to the pointer of a later iteration.
+// The logger of ctx is stored through without ctx in the loop. The path that
+// picks it takes the store.
 func badLoggerOfCtxStoredThroughInLoop(ctx context.Context, l1 *zerolog.Logger, l zerolog.Logger, n int) {
 	*l1 = l1.With().Ctx(ctx).Logger()
 	p := l1
@@ -2312,6 +2394,118 @@ func badLoggerOfCtxStoredThroughInLoop(ctx context.Context, l1 *zerolog.Logger, 
 		p = q
 	}
 	p.Print("the logger of ctx, stored through without ctx in the loop") // want `zerolog direct logging bypasses context`
+}
+
+// The box p is read from is picked on a branch too. The walk gives up on a
+// pointer read through a pointer that may be one of several, and p is traced
+// as a value.
+func goodPointerFromBoxPickedOnBranchReadInClosure(ctx context.Context, base zerolog.Logger, cond, other bool) {
+	h1 := &loggerPtrBox{zerolog.Ctx(ctx)}
+	h2 := &loggerPtrBox{zerolog.Ctx(ctx)}
+	hh := h1
+	if cond {
+		hh = h2
+	}
+	l := base.With().Ctx(ctx).Logger()
+	p := hh.p
+	if other {
+		p = &l
+	}
+	func() { p.Info().Msg("a pointer from a box picked on a branch, or l") }() // OK
+}
+
+func badPointerFromBoxPickedOnBranchReadInClosure(ctx context.Context, base zerolog.Logger, cond, other bool) {
+	h1 := &loggerPtrBox{zerolog.Ctx(ctx)}
+	h2 := &loggerPtrBox{zerolog.Ctx(ctx)}
+	hh := h1
+	if cond {
+		hh = h2
+	}
+	l := base
+	p := hh.p
+	if other {
+		p = &l
+	}
+	func() { p.Info().Msg("a pointer from a box picked on a branch, or l without ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A three-clause loop has a block for i++ between the body and the header
+// (#357).
+func badLoggerOfCtxStoredThroughInThreeClauseLoop(ctx context.Context, l1 *zerolog.Logger, l zerolog.Logger, n int) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	p := l1
+	for i := 0; i < n; i++ {
+		q := zerolog.Ctx(ctx)
+		*q = l
+		p = q
+	}
+	p.Print("the logger of ctx, stored through without ctx in a three-clause loop") // want `zerolog direct logging bypasses context`
+}
+
+// From the second iteration, p is the q of the iteration before (#358).
+func badLoggerOfCtxStoredThroughInLoopReadInLoop(ctx context.Context, l1 *zerolog.Logger, l zerolog.Logger, n int) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	p := l1
+	for range n {
+		p.Print("the logger of ctx, stored through without ctx later in the loop") // want `zerolog direct logging bypasses context`
+		q := zerolog.Ctx(ctx)
+		*q = l
+		p = q
+	}
+}
+
+// In a func literal, or from a field, the pointer the Phi picks first is not
+// a parameter of the function (#356).
+func goodPointerCapturedOrLoggerOfCtxStoredInLoop(ctx context.Context, l1 *zerolog.Logger, n int) {
+	func() {
+		*l1 = l1.With().Ctx(ctx).Logger()
+		p := l1
+		for range n {
+			p.Print("captured pointer, or the logger of ctx stored through in the loop") // OK
+			q := zerolog.Ctx(ctx)
+			*q = q.With().Ctx(ctx).Logger()
+			p = q
+		}
+	}()
+}
+
+func (r *loggerPtrField) goodPointerFieldOrLoggerOfCtxStoredInLoop(ctx context.Context, n int) {
+	*r.f = r.f.With().Ctx(ctx).Logger()
+	p := r.f
+	for range n {
+		p.Print("pointer from a field, or the logger of ctx stored through in the loop") // OK
+		q := zerolog.Ctx(ctx)
+		*q = q.With().Ctx(ctx).Logger()
+		p = q
+	}
+}
+
+// A store before the read in the loop is to the variable of this iteration.
+// The Phi reads the one of the iteration before, whose last store is the one
+// after the read. Going back from the read, the walk meets the declaration
+// before the Phi, and drops the store it kept.
+func goodVariableStoredAfterReadInLoop(ctx context.Context, l1 *zerolog.Logger, l zerolog.Logger, n int) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	p := l1
+	for range n {
+		q := new(zerolog.Logger)
+		*q = l
+		p.Print("the variable of the iteration before, stored with ctx last") // OK
+		*q = l.With().Ctx(ctx).Logger()
+		p = q
+	}
+}
+
+func badVariableStoredAfterReadInLoop(ctx context.Context, l1 *zerolog.Logger, l zerolog.Logger, n int) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	p := l1
+	for range n {
+		q := new(zerolog.Logger)
+		*q = l.With().Ctx(ctx).Logger()
+		p.Print("the variable of the iteration before, stored without ctx last") // want `zerolog direct logging bypasses context`
+		*q = l
+		p = q
+	}
 }
 
 func badEitherFieldReplacedOrLoggerOfCtx(ctx context.Context, l zerolog.Logger, cond, other bool) {
@@ -2511,6 +2705,31 @@ func badGlobalHoldersCopiedBothWays(ctx context.Context) {
 // element read through the same index (#222). A store to an element at
 // another index may write it too, or not: it does not hide a store before it,
 // and what it stores must have context as well.
+
+// The element p is loaded from may be replaced at a variable index, or not.
+// The walk gives up on the pointer read in the closure, which is traced as a
+// value.
+func goodPointerElementMayBeReplacedReadInClosure(ctx context.Context, base zerolog.Logger, cond bool, i int) {
+	l := base.With().Str("k", "v").Ctx(ctx).Logger()
+	m := base.With().Ctx(ctx).Logger()
+	ps := [2]*zerolog.Logger{&m, &m}
+	if cond {
+		ps[i] = &l
+	}
+	p := ps[0]
+	func() { p.Info().Msg("an element that may be replaced") }() // OK - both loggers have ctx
+}
+
+func badPointerElementMayBeReplacedReadInClosure(ctx context.Context, base zerolog.Logger, cond bool, i int) {
+	l := base
+	m := base.With().Ctx(ctx).Logger()
+	ps := [2]*zerolog.Logger{&m, &m}
+	if cond {
+		ps[i] = &l
+	}
+	p := ps[0]
+	func() { p.Info().Msg("an element that may be replaced without ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
 
 func goodVariableIndexSameAddress(ctx context.Context, base zerolog.Logger, i int) {
 	var arr [2]zerolog.Logger
@@ -3194,4 +3413,48 @@ func badBoxedSelfUpdatePickedWithLoggerOfCtx(ctx context.Context, l1 *zerolog.Lo
 		p = zerolog.Ctx(ctx)
 	}
 	(&loggerPtrBox{p}).p.Print("boxed, updated without ctx") // want `zerolog direct logging bypasses context`
+}
+
+// Read in another closure first, the pointer parameter is a variable that
+// the closures capture, and p is one too, read in a func literal. Each value
+// p can hold is walked for along the paths on which p holds it, out of the
+// closure: the parameter from p := l1 only, and the logger of ctx from the
+// other store (#355).
+func goodCapturedPointerParamPickedWithLoggerOfCtxInIIFE(ctx context.Context, l1 *zerolog.Logger, other bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	func() { l1.Info().Msg("in a closure") }() // OK
+	p := l1
+	if other {
+		p = zerolog.Ctx(ctx)
+	}
+	func() { p.Print("a captured pointer parameter, or the logger of ctx, in an IIFE") }() // OK
+}
+
+func goodCapturedPointerParamPickedWithLoggerOfCtxInDeferred(ctx context.Context, l1 *zerolog.Logger, other bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	func() { l1.Info().Msg("in a closure") }() // OK
+	p := l1
+	if other {
+		p = zerolog.Ctx(ctx)
+	}
+	defer func() { p.Print("a captured pointer parameter, or the logger of ctx, deferred") }() // OK
+}
+
+func goodBoxedPointerParamPickedWithLoggerOfCtxInIIFE(ctx context.Context, l1 *zerolog.Logger, other bool) {
+	*l1 = (&loggerPtrBox{l1}).p.With().Ctx(ctx).Logger()
+	p := l1
+	if other {
+		p = zerolog.Ctx(ctx)
+	}
+	func() { (&loggerPtrBox{p}).p.Print("boxed, or the logger of ctx, in an IIFE") }() // OK
+}
+
+func badCapturedPointerParamPickedWithLoggerOfCtxInIIFE(ctx context.Context, l1 *zerolog.Logger, other bool) {
+	*l1 = l1.With().Logger()
+	func() { l1.Info().Msg("in a closure") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	p := l1
+	if other {
+		p = zerolog.Ctx(ctx)
+	}
+	func() { p.Print("a captured pointer parameter without ctx, in an IIFE") }() // want `zerolog direct logging bypasses context`
 }

@@ -1491,10 +1491,10 @@ func goodLoggerPointerToOneOfTwoVariablesDeclaredInBranch(ctx context.Context, b
 	p.Info().Msg("one of two variables declared in a branch") // OK - both loggers have ctx
 }
 
-// Read in a func literal, the pointer is a captured variable, and the walk
-// from where the closure runs does not keep to the paths on which it points
-// to l. With the logger of ctx as the other pointer, the pointer is traced
-// as a value instead.
+// Read in a func literal, the pointer is a captured variable. Each value it
+// can hold is walked along the paths on which the variable holds it, out of
+// the closure to where it runs: l from the store p = &l only, and the logger
+// of ctx from the other stores.
 func goodLoggerPointerToVariableSetBeforePickInIIFE(ctx context.Context, base zerolog.Logger, a, b bool) {
 	p := zerolog.Ctx(ctx)
 	if a {
@@ -1549,6 +1549,121 @@ func badLoggerPointerToVariableSetBeforePickInDeferred(ctx context.Context, base
 	defer func() {
 		p.Info().Msg("l lacks ctx on the edge that picks it, deferred") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
+}
+
+// A store to l after the pick reaches the read on the paths that pick l.
+func goodLoggerPointerToVariableSetAfterPickInIIFE(ctx context.Context, base zerolog.Logger, cond bool) {
+	p := zerolog.Ctx(ctx)
+	l := base
+	if cond {
+		p = &l
+	}
+	l = base.With().Ctx(ctx).Logger()
+	func() {
+		p.Info().Msg("l set with ctx after the pick, in an IIFE") // OK - the store after the pick has ctx
+	}()
+}
+
+func badLoggerPointerToVariableSetAfterPickInIIFE(ctx context.Context, base zerolog.Logger, cond bool) {
+	p := zerolog.Ctx(ctx)
+	l := base.With().Ctx(ctx).Logger()
+	if cond {
+		p = &l
+	}
+	l = base
+	func() {
+		p.Info().Msg("l set without ctx after the pick, in an IIFE") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+// A goroutine may run after a store to the variable it reads the pointer
+// from, so a value stored there after the go statement counts too.
+func goodLoggerPointerSetAfterGoroutineStarts(ctx context.Context, base zerolog.Logger) {
+	p := zerolog.Ctx(ctx)
+	l := base.With().Ctx(ctx).Logger()
+	go func() {
+		p.Info().Msg("p set after the goroutine starts") // OK - both loggers have ctx
+	}()
+	p = &l
+}
+
+func badLoggerPointerSetAfterGoroutineStarts(ctx context.Context, base zerolog.Logger) {
+	p := zerolog.Ctx(ctx)
+	l := base
+	go func() {
+		p.Info().Msg("p set after the goroutine starts, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+	p = &l
+}
+
+// A goroutine that stores through the pointer before it reads it reads that
+// store, whichever value the variable holds when it runs.
+func goodLoggerPointerStoredInGoroutineSetAfter(ctx context.Context, base zerolog.Logger) {
+	p := zerolog.Ctx(ctx)
+	m := base
+	go func() {
+		*p = base.With().Ctx(ctx).Logger()
+		p.Info().Msg("stored through in the goroutine, p set after it starts") // OK - the goroutine stores with ctx first
+	}()
+	p = &m
+}
+
+// A Phi that may point to more variables than the walk takes is traced as a
+// value.
+func goodLoggerPointerToOneOfManyVariables(ctx context.Context, base zerolog.Logger, n int) {
+	l0 := base.With().Ctx(ctx).Logger()
+	p := &l0
+	switch n {
+	case 1:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 2:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 3:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 4:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 5:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 6:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 7:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 8:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 9:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 10:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 11:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 12:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 13:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 14:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 15:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	case 16:
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	p.Info().Msg("one of many variables") // OK - every logger has ctx
 }
 
 func goodLoggerFieldOfVariableDeclaredInBranch(ctx context.Context, base zerolog.Logger, cond bool) {

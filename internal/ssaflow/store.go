@@ -93,10 +93,10 @@ func storesReaching(
 	}
 	reads, escapes := storeReadsOf(addr, at, model)
 	for _, rd := range reads {
-		w.walkBefore(rd)
+		w.walkBefore(rd, storePath{})
 	}
 	for _, esc := range escapes {
-		w.walkEscape(esc)
+		w.walkEscape(esc, storePath{})
 	}
 	return r, true
 }
@@ -191,18 +191,18 @@ func storePointerOf(root ssa.Value) *storePointer {
 	return p
 }
 
-// walkPointerBefore walks every path that leads to instr, for a walk whose
-// root is a pointer that is not in a variable. Each path goes back to def,
-// where the pointer is made, and on from there only when def loads it from
-// an address: up to a store of another pointer there, or the declaration of
-// the variable the address is in.
+// walkPointerBefore walks every path that leads to a point of starts, in its
+// state, for a walk whose root is a pointer that is not in a variable. Each
+// path goes back to def, where the pointer is made, and on from there only
+// when def loads it from an address: up to a store of another pointer there,
+// or the declaration of the variable the address is in.
 //
 //	*t0 = a                   // stops the path: before it, t0 holds another pointer
 //	t1 = *t0 ; *&t1.log = v   // reaches the read, past def
 //	t8 = *t0                  // def
 //	Info(&t8.log)
 //
-// A store of another pointer at from between def and instr does not stop a
+// A store of another pointer at from between def and the read does not stop a
 // path: the pointer read is the one def loaded. A path that gets to the entry
 // of a closure goes on from each call of it (see walkPointerOut), and so does
 // one for a global, which no def makes (see walkGlobalOut). One that
@@ -211,7 +211,11 @@ func storePointerOf(root ssa.Value) *storePointer {
 //
 //	if cond { *b.p = v }      // b is a pointer parameter
 //	b.p.Info()                // reads what the caller passed when cond is false
-func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
+//
+// With a guard, what a path does at def, or at the entry, it does once the
+// guard is resolved (see storeGuard): before, the pointer is not yet the
+// leaf there.
+func (w *storeWalk) walkPointerBefore(starts []WalkFrom[storePath]) {
 	def, reached := w.pointer.def, false
 	toDef := func(in ssa.Instruction) WalkStep {
 		if def != nil && in == def {
@@ -220,17 +224,13 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 		}
 		return w.stepAt(in)
 	}
-	var atEntry func() bool
 	entered := false
-	if w.pointer.global {
-		atEntry = func() bool {
-			entered = true
-			return true
-		}
+	toEntry := func(st storePath) {
+		entered = entered || w.pointer.global && st.resolved()
 	}
-	w.walkPickedBack(instr, toDef, atEntry)
+	w.walkStates(starts, w.guarded(toDef), toEntry, nil, false)
 	if entered {
-		w.walkGlobalOut(instr.Parent())
+		w.walkGlobalOut(starts[0].Point.block.Parent())
 	}
 	from := w.pointer.from
 	if reached && from == nil && len(w.at.path) == 0 {
@@ -249,7 +249,7 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 		return w.stepAt(in)
 	}
 	entered = false
-	atEntry = func() bool {
+	atEntry := func() bool {
 		entered = true
 		if storeIsCallerParam(storeReadFrom(from)) {
 			w.out.unknown = true // The pointer is read from what the caller passed
@@ -648,27 +648,25 @@ const storePickedMax = 16
 //	}
 //	h.l.Info()              // reads t1.l or t5.l: both a and b reach it
 //
-// Each variable is walked from read, as storesReaching walks one, along the
-// paths on which phi points to it: where the walk first reaches the top of
-// the block of phi, it goes on through the edges that hold the variable only.
-// An edge that is a Phi itself holds it when one of its own edges does. Every
-// value that reaches read must have context, as for the edges of a Phi.
+// Each leaf, a value phi can be through the edges that are Phis themselves,
+// is walked for from read, as storesReaching walks for a variable, along the
+// paths on which phi is that leaf (see storeGuard). Every value that reaches
+// read must have context, as for the edges of a Phi.
 //
-// An edge that is not a pointer to a variable, a pointer parameter or a
+// A leaf that is not a pointer to a variable, a pointer parameter or a
 // captured variable, or a field or constant element of one, such as a
 // pointer read from a parameter, is walked for as storesReachingPointer
-// walks for one, back along the same paths to where it is made (see
-// storePick.pointerOf).
+// walks for one, back to where it is made, and a path back to there, as for
+// the logger of ctx, carries what tracing the leaf itself finds (see
+// storeReaching.made).
 //
 // A go or defer statement takes the pointer when it runs, and reads what it
 // points to later: the walk goes back from it, and every store after it
 // counts too (see walkToRead).
 //
-// A path back to where such an edge is made, as for the logger of ctx,
-// carries what tracing the edge itself finds (see storeReaching.made). ok is
-// false when no path carries a store through such an edge or the edge
-// itself, or it cannot be walked for, when phi may point to more than
-// storePickedMax variables, or when read is nil.
+// ok is false when no path carries a store through such a leaf or the leaf
+// itself, when the walk for a leaf gives up (see storeGuard.giveUp), when phi
+// may point to more than storePickedMax variables, or when read is nil.
 func storesReachingPicked(
 	phi *ssa.Phi,
 	path []sel,
@@ -682,26 +680,52 @@ func storesReachingPicked(
 	if !ok {
 		return r, false
 	}
+	pointers := newStorePointers(positions)
 	for _, leaf := range leaves {
-		leafAt, tracked := PlaceOf(leaf)
-		pick := &storePick{phi: phi, leaf: leaf}
-		var lr storeReaching
-		w := &storeWalk{
-			at:        leafAt.with(path...),
-			positions: positions,
-			out:       &lr,
-			picked:    pick,
-		}
-		if !tracked {
-			if w.pointer, ok = pick.pointerOf(positions); !ok || w.pickedStoredLater() {
-				return storeReaching{}, false
-			}
-		}
-		w.walkToRead(read)
-		if !tracked && lr.isEmpty() && len(lr.made) == 0 {
-			return storeReaching{}, false // What is there was stored where the function cannot see
+		lr, ok := storesReachingLeaf(phi, path, storeTarget{v: leaf, phi: true}, read, positions, nil, pointers)
+		if !ok {
+			return storeReaching{}, false
 		}
 		r.merge(lr)
+	}
+	return r, true
+}
+
+// storesReachingLeaf finds the values that can be at path, selections from
+// what root points to, when read runs, along the paths on which root is
+// leaf: what is at the same selections from leaf. pointers, when not nil,
+// follows the pointers read from memory for the walk of leaf (see
+// storeWalk.pointers), and guard follows those a guarded place is read
+// through (see storeGuard).
+//
+// A leaf that is not in a variable is walked for as storesReachingPointer
+// walks for one, in the function it is in. ok is false when no path carries a
+// store through such a leaf or the leaf itself, as what is there was stored
+// where the function cannot see, or when the walk gave up.
+func storesReachingLeaf(
+	root ssa.Value,
+	path []sel,
+	leaf storeTarget,
+	read ssa.Instruction,
+	positions Positions,
+	pointers, guard *storePointers,
+) (r storeReaching, ok bool) {
+	at, tracked := PlaceOf(leaf.v)
+	g := newStoreGuard(root, leaf.v, guard)
+	w := &storeWalk{
+		at:        at.with(path...),
+		positions: positions,
+		out:       &r,
+		pointers:  pointers,
+		outer:     leaf.via,
+		guard:     g,
+	}
+	if !tracked && len(leaf.via) == 0 {
+		w.pointer = storePointerOf(leaf.v)
+	}
+	w.walkToRead(read)
+	if g.gaveUp || !tracked && r.isEmpty() && len(r.made) == 0 {
+		return storeReaching{}, false
 	}
 	return r, true
 }
@@ -733,51 +757,360 @@ func storePickedLeaves(phi *ssa.Phi) (leaves []ssa.Value, ok bool) {
 	return leaves, true
 }
 
-// storePick is a variable that a Phi of pointers points to, which a walk
-// looks for the stores to: the walk takes only the paths on which the Phi
-// points to it.
-type storePick struct {
-	phi  *ssa.Phi
-	leaf ssa.Value
-}
-
-// pointerOf returns where the leaf, a pointer that is not in a variable, is
-// made, for a walk of the stores through it along the paths on which the Phi
-// is the leaf (see storeWalk.walkPointerBefore). Such a walk keeps to those
-// paths back to where the leaf is made, and goes on from there on every
-// path. ok is false when the leaf is a load that may be made after the Phi,
-// as in a loop: a path back from the read may meet it before it meets the
-// Phi. Another leaf made after the Phi is walked for only when no store goes
-// through it (see storeWalk.pickedStoredLater).
-func (pk *storePick) pointerOf(positions Positions) (_ *storePointer, ok bool) {
-	p := storePointerOf(pk.leaf)
-	if p.def != nil && p.from != nil && positions.reaches(pk.phi, p.def) {
-		return nil, false
-	}
-	return p, true
-}
-
-// pickedStoredLater reports whether the walk is for a leaf of the Phi it
-// picks that may be made after the Phi, as in a loop, and a store of the
-// function goes through it, as the walk takes one (see storeCover). A path
-// back from the read may then meet the leaf before it meets the Phi, where it
-// makes the pointer of a later iteration, and the stores through that one
-// are not what the Phi points to. With no such store, every path that gets
-// to the leaf carries the leaf itself, whichever iteration made it:
+// storeGuard keeps a walk for one leaf of a pointer, a value the pointer can
+// be in the end, to the paths on which the pointer is that leaf. Each path of
+// the walk carries a storePath: what must still hold, going back from the
+// read, for the pointer to be the leaf there.
 //
-//	p := l1                  // a pointer parameter, stored through before
-//	for range n {
-//	    p.Print("x")         // p is l1, or the logger of ctx
-//	    p = zerolog.Ctx(ctx) // the leaf, made after the Phi
+//	p := zerolog.Ctx(ctx)             // *p = t0
+//	if cond {
+//	    l := base.With().Ctx(ctx).Logger()
+//	    p = &l                        // *p = t3: the path holds the leaf t3
 //	}
-func (w *storeWalk) pickedStoredLater() bool {
-	def := w.pointer.def
-	if def == nil || !w.positions.reaches(w.picked.phi, def) {
+//	func() { p.Info().Msg("x") }()    // t1 = *p ; Info(t1): t1 must be t3
+//
+// The walk for t3 starts with the value t1 that must be the leaf. Past the
+// load, the place p must hold it, and past the closure entry, the variable
+// bound where the closure runs. At a store to that place, the value stored
+// must be the leaf: t3 resolves the guard, and the path goes on as a walk for
+// t3 does. t0 is another value, and the path does not hold the leaf. The
+// same holds for a Phi, whose edges are taken at the top of its block, and
+// for a field of a struct value, which is the same field where the value is
+// loaded from.
+//
+// Before the guard is resolved, a path is between the read and where the
+// pointer gets to be the leaf. A store to the leaf there is kept on the path,
+// and counts only when the path resolves later (see storePath). A store
+// through a pointer just loaded from the guarded place, as *b.p = v does for
+// a place b.p, is a store through the leaf on that path. Where the leaf is
+// made, met there, drops what is kept: in a loop, it made the pointer of a
+// later iteration.
+type storeGuard struct {
+	// root is the pointer, the value that must be the leaf at the read.
+	root ssa.Value
+	// leaf is the value root is on the paths of the walk.
+	leaf ssa.Value
+	// made is where leaf is made: the instruction, or the declaration of the
+	// local variable it points into. It is nil when the function does not
+	// make it, as for a parameter or a global.
+	made ssa.Instruction
+	// pointers follows the pointers read from memory that a guarded place is
+	// read through, to the variable they point to.
+	pointers *storePointers
+	// places are the values and places that the paths name, by their keys.
+	places map[PlaceKey]Place
+	// gaveUp reports that a path met what the guard cannot tell (see
+	// giveUp).
+	gaveUp bool
+}
+
+// newStoreGuard returns a guard for the paths on which root is leaf.
+func newStoreGuard(root, leaf ssa.Value, pointers *storePointers) *storeGuard {
+	g := &storeGuard{root: root, leaf: leaf, pointers: pointers, places: make(map[PlaceKey]Place)}
+	at, tracked := PlaceOf(leaf)
+	if alloc, isAlloc := at.root.(*ssa.Alloc); isAlloc {
+		g.made = alloc
+	} else if !tracked {
+		g.made = storePointerOf(leaf).def
+	}
+	return g
+}
+
+// storeGuardKind is what a path of a guarded walk still needs.
+type storeGuardKind uint8
+
+const (
+	// storeGuardResolved is a path on which the pointer is the leaf.
+	storeGuardResolved storeGuardKind = iota
+	// storeGuardValue is a path on which a value must be the leaf: a Phi, at
+	// the top of its block, or a load, where it runs.
+	storeGuardValue
+	// storeGuardPlace is a path on which a place in memory must hold the leaf.
+	storeGuardPlace
+)
+
+// storePath is the state of a path of a walk with a guard (see storeGuard),
+// and the zero value for one without.
+type storePath struct {
+	kind storeGuardKind
+	// at keys the value, with the selections from it, or the place, that
+	// kind names.
+	at PlaceKey
+	// must and may are the stores to the leaf that the path met before the
+	// guard is resolved: the one that writes it every time it runs, and one
+	// that may write it, or not. The path stopped for the leaf at must, and
+	// went on past may. mustSels is how many selections must takes: fewer
+	// than the address of the walk for a store of a whole aggregate that
+	// holds it (see storeWalk.copied).
+	must, may *ssa.Store
+	mustSels  int
+}
+
+// resolved reports whether the pointer is the leaf on the path, or the walk
+// has no guard.
+func (st storePath) resolved() bool {
+	return st.kind == storeGuardResolved
+}
+
+// start returns the state of a path at the read: root must be the leaf. It
+// is the zero value for a walk without a guard. root is a Phi, or a pointer
+// read from memory, which need takes.
+func (g *storeGuard) start() storePath {
+	var st storePath
+	if g != nil {
+		g.need(&st, PlaceAt(g.root))
+	}
+	return st
+}
+
+// need sets st to a path on which v, a value and the selections from it,
+// must be the leaf. A field or element selected from a value is the same
+// selection from that value. It reports whether v may be the leaf: a Phi or
+// a load may be, the leaf is, and any other value is not.
+func (g *storeGuard) need(st *storePath, v Place) bool {
+	for {
+		if len(v.path) == 0 && v.root == g.leaf {
+			st.kind = storeGuardResolved
+			return true
+		}
+		from, s, isSel := valueSel(v.root)
+		if !isSel {
+			break
+		}
+		v = Place{root: from, path: append([]sel{s}, v.path...)}
+	}
+	_, isPhi := v.root.(*ssa.Phi)
+	if _, isLoad := AsLoad(v.root); !isPhi && !isLoad {
 		return false
 	}
-	for instr := range InstrsIn(def.Parent()) {
-		if store, isStore := instr.(*ssa.Store); isStore {
-			if _, cover := w.storeCover(store.Addr); cover != coverNone {
+	st.kind, st.at = storeGuardValue, g.key(v)
+	return true
+}
+
+// key returns the key of at, and keeps at by it.
+func (g *storeGuard) key(at Place) PlaceKey {
+	k := at.Key()
+	g.places[k] = at
+	return k
+}
+
+// giveUp ends the walk: it met what the guard cannot tell, such as a store
+// that may write the guarded place, or not. The walk for the pointer is then
+// not done.
+func (g *storeGuard) giveUp() WalkStep {
+	g.gaveUp = true
+	return WalkAbort
+}
+
+// settle goes on from where v, a value and the selections from it, must be
+// the leaf, on the path of st. When v is the leaf, the stores kept on the
+// path are what is at the address, and the path stops at must, or goes on
+// resolved. When v cannot be the leaf, the path stops with nothing.
+func (g *storeGuard) settle(w *storeWalk, st *storePath, v Place) WalkStep {
+	if !g.need(st, v) {
+		return WalkStop // The pointer is another one on this path
+	}
+	if !st.resolved() {
+		return WalkOn
+	}
+	return w.resolve(st)
+}
+
+// resolve takes the path of st as one on which the pointer is the leaf: the
+// stores kept on it are what is at the address, and the path stops at must,
+// or goes on resolved.
+func (w *storeWalk) resolve(st *storePath) WalkStep {
+	if st.may != nil {
+		w.out.values = append(w.out.values, st.may.Val)
+	}
+	must, n := st.must, st.mustSels
+	*st = storePath{}
+	switch {
+	case must == nil:
+		return WalkOn
+	case n == len(w.at.path):
+		w.out.values = append(w.out.values, must.Val)
+	default:
+		w.copied(must, w.at.path[n:])
+	}
+	return WalkStop
+}
+
+// guarded returns the visit of a walk with a guard: visit on a path that is
+// resolved, and step on one that is not.
+func (w *storeWalk) guarded(visit func(ssa.Instruction) WalkStep) func(ssa.Instruction, *storePath) WalkStep {
+	return w.guardedHeld(visit, false)
+}
+
+// guardedHeld returns what guarded does. With held, the guard of a path that
+// is not resolved holds as it is: only the stores to the leaf are kept (see
+// walkDeferred).
+func (w *storeWalk) guardedHeld(visit func(ssa.Instruction) WalkStep, held bool) func(ssa.Instruction, *storePath) WalkStep {
+	return func(instr ssa.Instruction, st *storePath) WalkStep {
+		if w.guard == nil || st.resolved() {
+			return visit(instr)
+		}
+		return w.guard.step(w, instr, st, held)
+	}
+}
+
+// step visits instr on a path whose guard is not resolved. Past a load that
+// must be the leaf, the place it loads from must hold it, and past a store to
+// that place, the value stored. A store to the leaf is kept on the path (see
+// storePath), and where the leaf is made drops what is kept. With held, the
+// guard does not change, and a store is to the leaf only as storeCover takes
+// it.
+func (g *storeGuard) step(w *storeWalk, instr ssa.Instruction, st *storePath, held bool) WalkStep {
+	if instr == g.made {
+		st.must, st.may = nil, nil // Those were to the leaf of a later iteration
+		return WalkOn
+	}
+	if st.kind == storeGuardValue && !held {
+		v := g.places[st.at]
+		if load, isLoad := AsLoad(v.root); isLoad && instr == ssa.Instruction(load) {
+			from, _ := PlaceOf(load.X)
+			return g.enter(st, from.with(v.path...))
+		}
+	}
+	store, isStore := instr.(*ssa.Store)
+	if !isStore {
+		return WalkOn
+	}
+	if st.kind == storeGuardPlace && !held {
+		at := g.places[st.at]
+		switch n, cover := g.cover(w, store.Addr, at); cover {
+		case coverMust:
+			return g.settle(w, st, Place{root: store.Val, path: at.path[n:]})
+		case coverMay:
+			return g.giveUp()
+		}
+	}
+	if st.must != nil {
+		return WalkOn // The path stopped for the leaf already
+	}
+	n, cover := w.storeCover(store.Addr)
+	if !held {
+		n, cover = w.pathCover(store, *st)
+	}
+	switch {
+	case cover == coverNone, w.pointer != nil && w.pointer.global && w.updates(store):
+	case cover == coverMust:
+		st.must, st.mustSels = store, n
+	case n != len(w.at.path), st.may != nil:
+		return g.giveUp() // A copy that may be made, or more than a path keeps
+	default:
+		st.may = store
+	}
+	return WalkOn
+}
+
+// enter sets st to a path on which at, a place in memory, must hold the leaf.
+// A place in what a pointer read from memory points to is the same place in
+// the variable the pointer points to, when that is the only one. ok is false
+// for any other place whose stores cannot all be seen, and the walk gives up.
+func (g *storeGuard) enter(st *storePath, at Place) WalkStep {
+	at, ok := g.pointed(at)
+	if !ok {
+		return g.giveUp()
+	}
+	st.kind, st.at = storeGuardPlace, g.key(at)
+	return WalkOn
+}
+
+// pointed returns at, as a place in a variable, through the pointers read
+// from memory that it is read through, each of which points to one variable
+// only. ok is false when one may point to several, or cannot be followed.
+func (g *storeGuard) pointed(at Place) (Place, bool) {
+	seen := make(map[ssa.Value]bool)
+	for !isTrackedRoot(at.root) {
+		targets, ok := g.pointers.targetsOf(at.root)
+		if !ok || len(targets) != 1 || targets[0].phi || seen[at.root] {
+			return at, false
+		}
+		seen[at.root] = true
+		inner, _ := PlaceOf(targets[0].v)
+		at = inner.with(at.path...)
+	}
+	return at, true
+}
+
+// edge takes a path whose guard is not resolved into the i-th predecessor of
+// b. At the top of the block of a Phi that must be the leaf, the edge of that
+// predecessor must be.
+func (g *storeGuard) edge(w *storeWalk, b *ssa.BasicBlock, i int, st storePath) (storePath, bool) {
+	if st.kind != storeGuardValue {
+		return st, true
+	}
+	v := g.places[st.at]
+	phi, isPhi := v.root.(*ssa.Phi)
+	if !isPhi || phi.Block() != b {
+		return st, true
+	}
+	return st, g.settle(w, &st, Place{root: phi.Edges[i], path: v.path}) == WalkOn
+}
+
+// cover tells how much of at, a guarded place in a variable, a store to addr
+// writes, and how many selections addr takes from the variable. A store
+// through a pointer read from memory writes the variable when the pointer
+// points to it, as storeWalk.storeCover takes one.
+func (g *storeGuard) cover(w *storeWalk, addr ssa.Value, at Place) (int, placeCover) {
+	to, _ := PlaceOf(addr)
+	limit := coverMust
+	if to.root != at.root {
+		to, limit = g.pointers.through(to, at.root)
+	}
+	return len(to.path), min(to.covers(at, w.indexOnce), limit)
+}
+
+// pathCover tells how much of the address of the walk store writes, on a path
+// of st, and how many selections it takes, as storeCover does. A store
+// through the pointer that st needs to be the leaf is a store through the
+// leaf: through the value itself, or through a load of the place, in the same
+// block, with no store to the place between.
+func (w *storeWalk) pathCover(store *ssa.Store, st storePath) (int, placeCover) {
+	to, _ := PlaceOf(store.Addr)
+	if !w.guard.through(w, to.root, store, st) {
+		return w.storeCover(store.Addr)
+	}
+	leaf, _ := PlaceOf(w.guard.leaf)
+	to = leaf.with(to.path...)
+	return len(to.path), to.covers(w.at, w.indexOnce)
+}
+
+// through reports whether pointer, the root of the address of store, is the
+// pointer that st, a path whose guard is not resolved, needs to be the leaf,
+// where store runs.
+func (g *storeGuard) through(w *storeWalk, pointer ssa.Value, store *ssa.Store, st storePath) bool {
+	at := g.places[st.at]
+	if st.kind == storeGuardValue {
+		return len(at.path) == 0 && at.root == pointer
+	}
+	load, isLoad := AsLoad(pointer)
+	if !isLoad || load.Block() != store.Block() {
+		return false
+	}
+	from, _ := PlaceOf(load.X)
+	if from, ok := g.pointed(from); !ok || from.Key() != st.at {
+		return false
+	}
+	instrs := store.Block().Instrs
+	for _, instr := range instrs[w.positions.of(load)+1 : w.positions.of(store)] {
+		if other, isStore := instr.(*ssa.Store); isStore {
+			if _, cover := g.cover(w, other.Addr, at); cover != coverNone {
+				return false // The place holds another pointer by the store
+			}
+		}
+	}
+	return true
+}
+
+// storedAfter reports whether a store that can run after esc may write the
+// place that st, a path that gets out of a closure, needs to hold the leaf.
+func (g *storeGuard) storedAfter(w *storeWalk, esc ssa.Instruction, st storePath) bool {
+	at, after := g.places[st.at], w.positions.after(esc)
+	for instr := range InstrsIn(esc.Parent()) {
+		if store, isStore := instr.(*ssa.Store); isStore && after(store) {
+			if _, cover := g.cover(w, store.Addr, at); cover != coverNone {
 				return true
 			}
 		}
@@ -785,22 +1118,18 @@ func (w *storeWalk) pickedStoredLater() bool {
 	return false
 }
 
-// holds reports whether p, phi or a Phi that an edge of phi leads to, may be
-// the leaf, through edges that are Phis themselves.
-func (pk *storePick) holds(p *ssa.Phi) bool {
-	seen := make(map[*ssa.Phi]bool)
-	var holds func(*ssa.Phi) bool
-	holds = func(p *ssa.Phi) bool {
-		if seen[p] {
-			return false
-		}
-		seen[p] = true
-		return slices.ContainsFunc(p.Edges, func(edge ssa.Value) bool {
-			inner, isPhi := edge.(*ssa.Phi)
-			return edge == pk.leaf || isPhi && holds(inner)
-		})
+// outOf returns st, a path that gets to the entry of the closure mc makes,
+// as a path in the function that makes it. A value of the closure runs past
+// the entry, so st needs a place there: one in a variable the closure
+// captures is in the variable bound where it is made. A place in a variable
+// of a function further out stays as it is.
+func (g *storeGuard) outOf(st storePath, mc *ssa.MakeClosure) storePath {
+	at := g.places[st.at]
+	if fv, isFreeVar := at.root.(*ssa.FreeVar); isFreeVar && fv.Parent() == mc.Fn {
+		at.root = mc.Bindings[slices.Index(mc.Fn.(*ssa.Function).FreeVars, fv)]
+		st.at = g.key(at)
 	}
-	return holds(p)
+	return st
 }
 
 // storePointers follows the pointers that a function reads from memory to
@@ -832,9 +1161,6 @@ type storePointers struct {
 	// value read. One still being followed is there and not ok, so that
 	// reaching it again, through a store that leads back to it, fails.
 	pointed map[ssa.Value]storePointed
-	// following holds the pointers whose targets are being walked for, so
-	// that a pointer copied back and forth, in a loop, is followed once.
-	following map[ssa.Value]bool
 }
 
 // storePointed is what a pointer read from memory can point to. ok is false
@@ -844,16 +1170,16 @@ type storePointed struct {
 	ok      bool
 }
 
-// storeTarget is something a pointer can point to: v, or one of the values
-// that the Phi of picked can be, when v is that one.
+// storeTarget is something a pointer can point to: v. phi reports that v is
+// one of the values a Phi that the pointer can be may be.
 //
 // via, when not empty, are the closures the pointer is read in, innermost
 // first, out to the function v is in: the pointer is read from a variable a
 // closure captures, and v is what that variable holds when the closure runs.
 type storeTarget struct {
-	v      ssa.Value
-	picked *storePick
-	via    []*ssa.MakeClosure
+	v   ssa.Value
+	phi bool
+	via []*ssa.MakeClosure
 }
 
 // newStorePointers returns a storePointers that has followed no pointer yet.
@@ -861,77 +1187,70 @@ func newStorePointers(positions Positions) *storePointers {
 	return &storePointers{
 		positions: positions,
 		pointed:   make(map[ssa.Value]storePointed),
-		following: make(map[ssa.Value]bool),
 	}
 }
 
 // reachingThrough finds the values that can be at at, whose root is a
 // pointer read from memory, when read runs: what can be at the same
-// selections from each variable the pointer can point to. ok is false when
-// the pointer cannot be followed, or points to nothing but nil.
-func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r storeReaching, ok bool) {
-	return p.reachingThroughVia(at, read, nil)
-}
-
-// reachingThroughVia finds what reachingThrough does, for at in a function
-// that read runs in, or that via leads out to: the closures read is in,
-// innermost first, out to the function of at.
+// selections from each leaf the pointer can be, along the paths on which it
+// is that leaf (see storesReachingLeaf). ok is false when the pointer cannot
+// be followed, points to nothing but nil, or the walk for a leaf is not done.
 //
-// A target that is not in a variable, read through a closure, is not known
-// when no store through it is found, even when a path gets back to where it
-// is made: the walks of the other targets do not keep to the paths on which
-// the variable the closure captures holds each one.
-//
-// A pointer copied from another one read from memory points to what that one
-// does, as it is read where the copy is made. When that one cannot be
-// followed, as for one read from a pointer parameter, the stores through the
-// same pointer are walked for, as storesReachingPointer does. For one that a
-// Phi picks, the walk keeps to the paths on which the Phi picks it, back to
-// where it is made (see storePick.pointerOf):
+// A pointer that the pointer can be may itself be read from memory, as one
+// copied from another field is. It points to what that one does, as it is
+// read where the copy is made, and the guard of each leaf goes through both
+// (see storeGuard):
 //
 //	a := holder{&inner{l: base.With().Ctx(ctx).Logger()}}
 //	h := holder{a.p}                  // t5 = *&a.p ; *&h.p = t5
 //	func() { h.p.l.Info() }()         // t5, then a.p, as the copy is made
-func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via []*ssa.MakeClosure) (r storeReaching, ok bool) {
-	targets, ok := p.targetsOf(at.root)
-	if !ok || len(targets) == 0 {
+//
+// When that one cannot be followed, as for one read from a pointer
+// parameter, it is a leaf that is not in a variable, and the stores through
+// the same pointer are walked for, as storesReachingPointer does.
+func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r storeReaching, ok bool) {
+	leaves, ok := p.leavesOf(at.root, nil, map[ssa.Value]bool{at.root: true})
+	if !ok || len(leaves) == 0 {
 		return r, false
 	}
-	if p.following[at.root] {
-		return r, true // Copied back to where it was read from: it adds nothing
-	}
-	p.following[at.root] = true
-	defer delete(p.following, at.root)
-	for _, t := range targets {
-		tvia := append(slices.Clip(via), t.via...)
-		tat, tracked := PlaceOf(t.v)
-		tat = tat.with(at.path...)
-		var tr storeReaching
-		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p, outer: tvia}
-		if !tracked {
-			if tr, ok = p.reachingThroughVia(tat, read, tvia); ok {
-				r.merge(tr)
-				continue
-			}
-			if len(tvia) == 0 && t.picked != nil {
-				if w.pointer, ok = t.picked.pointerOf(p.positions); !ok || w.pickedStoredLater() {
-					return storeReaching{}, false
-				}
-			} else if len(tvia) == 0 {
-				w.pointer = storePointerOf(t.v)
-			}
-		}
-		w.walkToRead(read)
-		if !tracked && tr.isEmpty() && (len(tr.made) == 0 || len(tvia) > 0) {
-			// What a callee stored there is not seen, as for storesReachingPointer.
-			// A path back to where the pointer is made carries the pointer itself,
-			// unless the pointer is read through a closure: the walks of the other
-			// targets do not keep to the paths on which the pointer is this one
+	for _, leaf := range leaves {
+		lr, ok := storesReachingLeaf(at.root, at.path, leaf, read, p.positions, p, p)
+		if !ok {
 			return storeReaching{}, false
 		}
-		r.merge(tr)
+		r.merge(lr)
 	}
 	return r, true
+}
+
+// leavesOf returns the leaves of v, a pointer read from memory: what it can
+// point to, through the pointers read from memory among them, which are not
+// in seen, the pointers on the way to v. via are the closures that lead out
+// from the read to the function of v. A pointer copied back to where it was
+// read from, in a loop, adds nothing. ok is false when v cannot be followed.
+func (p *storePointers) leavesOf(v ssa.Value, via []*ssa.MakeClosure, seen map[ssa.Value]bool) ([]storeTarget, bool) {
+	targets, ok := p.targetsOf(v)
+	if !ok {
+		return nil, false
+	}
+	var leaves []storeTarget
+	for _, t := range targets {
+		t.via = append(slices.Clip(via), t.via...)
+		if _, isRead := storePointerRead(t.v); isRead && !isTrackedRoot(t.v) {
+			if seen[t.v] {
+				continue
+			}
+			seen[t.v] = true
+			inner, ok := p.leavesOf(t.v, t.via, seen)
+			delete(seen, t.v)
+			if ok && len(inner) > 0 {
+				leaves = append(leaves, inner...)
+				continue
+			}
+		}
+		leaves = append(leaves, t)
+	}
+	return leaves, true
 }
 
 // isEmpty reports whether r found nothing at all, apart from made.
@@ -977,8 +1296,8 @@ func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
 //	func() { p.log.Info().Msg("x") }()       // t0 = *p ; Info(&t0.log), and t0 is t1
 //
 // ok is false when stored has a value that is not known, or a parameter of
-// a func literal, when a captured variable has no MakeClosure that binds it,
-// or when a target through a closure is one of the values of a Phi.
+// a func literal, or when a captured variable has no MakeClosure that binds
+// it.
 func storeTargetsReaching(
 	stored storeReaching,
 	from *ssa.Function,
@@ -994,9 +1313,6 @@ func storeTargetsReaching(
 	}
 	for i := range targets {
 		targets[i].via = storeViaTo(from, targets[i].v, via)
-		if len(targets[i].via) > 0 && targets[i].picked != nil {
-			return nil, false // walkOut does not keep to the paths of a Phi
-		}
 	}
 	for _, c := range stored.captured {
 		fv := c.root.(*ssa.FreeVar)
@@ -1110,7 +1426,7 @@ func (p *storePointers) throughSeen(at Place, root ssa.Value, seen map[ssa.Value
 	}
 	for _, t := range targets {
 		cover := coverMay
-		if len(targets) == 1 && t.picked == nil {
+		if len(targets) == 1 && !t.phi {
 			cover = coverMust
 		}
 		tat, _ := PlaceOf(t.v)
@@ -1162,7 +1478,7 @@ func storeTargetsOf(values []ssa.Value) ([]storeTarget, bool) {
 			return nil, false
 		}
 		for _, leaf := range leaves {
-			targets = append(targets, storeTarget{v: leaf, picked: &storePick{phi: phi, leaf: leaf}})
+			targets = append(targets, storeTarget{v: leaf, phi: true})
 		}
 	}
 	return targets, true
@@ -1212,7 +1528,7 @@ func storesReachingClosure(
 ) storeReaching {
 	var r storeReaching
 	w := &storeWalk{at: Place{root: v, path: path}, positions: positions, out: &r}
-	w.walkEscape(mc)
+	w.walkEscape(mc, storePath{})
 	return r
 }
 
@@ -1223,10 +1539,15 @@ func storesReachingClosure(
 // unless the variable is declared in a loop, and one that is only called reads
 // it at each call (see closureRuns). A Phi passes the address on only from
 // the edges that are the address (see walkToPhiEdges).
-func (w *storeWalk) walkEscape(esc ssa.Instruction) {
+//
+// The walk starts in st, and a path whose guard is not resolved keeps to it
+// back from esc. Every store to the address after esc counts all the same. A
+// store to the guarded place after esc may make the pointer the leaf before
+// the closure runs, so the path is then taken as resolved.
+func (w *storeWalk) walkEscape(esc ssa.Instruction, st storePath) {
 	switch e := esc.(type) {
 	case *ssa.MakeClosure:
-		if w.walkToRuns(e) {
+		if w.walkToRuns(e, st) {
 			return
 		}
 	case *ssa.Phi:
@@ -1234,7 +1555,10 @@ func (w *storeWalk) walkEscape(esc ssa.Instruction) {
 		w.addStoresAfter(esc)
 		return
 	}
-	w.walkBefore(esc)
+	if !st.resolved() && w.guard.storedAfter(w, esc, st) && w.resolve(&st) == WalkStop {
+		return
+	}
+	w.walkBefore(esc, st)
 	w.addStoresAfter(esc)
 }
 
@@ -1275,23 +1599,23 @@ func (w *storeWalk) phiEdgeHolds(edge ssa.Value) bool {
 	return len(at.path) == len(w.at.path) && at.covers(w.at, storeIndexAlways) == coverMust
 }
 
-// walkToRuns walks to where mc runs, when it is a closure that is only
-// deferred, outside a loop the variable is declared in, or only called. It
-// reports whether it did.
-func (w *storeWalk) walkToRuns(mc *ssa.MakeClosure) bool {
+// walkToRuns walks to where mc runs, in st, when it is a closure that is
+// only deferred, outside a loop the variable is declared in, or only called.
+// It reports whether it did.
+func (w *storeWalk) walkToRuns(mc *ssa.MakeClosure, st storePath) bool {
 	runs, ok := closureRunsOf(mc)
 	if !ok {
 		return false
 	}
 	if defers, deferred := runs.defersOnly(); deferred && !w.declaredInLoop() {
 		for _, d := range defers {
-			w.walkDeferred(d)
+			w.walkDeferred(d, st, false)
 		}
 		return true
 	}
 	if calls, called := runs.callsOnly(); called {
 		for _, call := range calls {
-			w.walkBefore(call)
+			w.walkBefore(call, st)
 		}
 		return true
 	}
@@ -1317,22 +1641,30 @@ func (w *storeWalk) declaredInLoop() bool {
 //	    l = l.With().Ctx(ctx).Logger() // the only store on a path through d
 //	}
 //	return                              // the path that skips the if defers nothing
-func (w *storeWalk) walkDeferred(d *ssa.Defer) {
-	var rets []WalkPoint
+//
+// The walk starts in st at each return. With held, the guard holds as it is
+// up to d, where the pointer is taken, as for a deferred call of a method on
+// it: only the stores to the leaf are kept past d. Otherwise the guard goes
+// on from the returns, where a deferred closure reads what it captures.
+func (w *storeWalk) walkDeferred(d *ssa.Defer, st storePath, held bool) {
+	var rets []WalkFrom[storePath]
 	for _, ret := range storeReturnsAfter(d, w.positions) {
-		rets = append(rets, WalkPointBefore(ret, w.positions))
+		rets = append(rets, WalkFrom[storePath]{WalkPointBefore(ret, w.positions), st})
 	}
-	reachesD := false
-	visit := func(instr ssa.Instruction) WalkStep {
+	var atD []storePath
+	inner := w.guardedHeld(w.stepAt, held)
+	visit := func(instr ssa.Instruction, st *storePath) WalkStep {
 		if instr == d {
-			reachesD = true // Before it, the path goes on from d
+			if !slices.Contains(atD, *st) {
+				atD = append(atD, *st) // Before it, the path goes on from d
+			}
 			return WalkStop
 		}
-		return w.stepAt(instr)
+		return inner(instr, st)
 	}
-	walkBack(rets, visit, nil, walkThrough(d, w.positions))
-	if reachesD {
-		w.walkBefore(d)
+	w.walkStates(rets, visit, nil, walkThrough(d, w.positions), held)
+	for _, st := range atD {
+		w.walkBefore(d, st)
 	}
 }
 
@@ -1353,23 +1685,24 @@ func storeReturnsAfter(d *ssa.Defer, positions Positions) []ssa.Instruction {
 	return rets
 }
 
-// walkToRead walks every path to read. A deferred call reads at the returns
-// after it, and a go call at any point after it, as an escape does. A
-// deferred call that reads a variable declared in a loop is read as an
-// escape too, since a return may meet a later iteration's variable first.
-// So is one for a walk with a picked variable, whose paths walkDeferred does
-// not keep to.
+// walkToRead walks every path to read, from where the guard starts (see
+// storeGuard.start). A deferred call reads at the returns after it, and a go
+// call at any point after it, as an escape does. A deferred call that reads
+// a variable declared in a loop is read as an escape too, since a return may
+// meet a later iteration's variable first. So is one for a pointer that is
+// not in a variable, whose walk goes back from the read.
 func (w *storeWalk) walkToRead(read ssa.Instruction) {
-	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() && w.picked == nil && w.pointer == nil {
-		w.walkDeferred(d)
+	st := w.guard.start()
+	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() && w.pointer == nil {
+		w.walkDeferred(d, st, true)
 		return
 	}
 	switch read.(type) {
 	case *ssa.Defer, *ssa.Go:
-		w.walkBefore(read)
+		w.walkBefore(read, st)
 		w.addStoresAfter(read)
 	default:
-		w.walkBefore(read)
+		w.walkBefore(read, st)
 	}
 }
 
@@ -1471,10 +1804,9 @@ type storeWalk struct {
 	// copies holds the loads that copied walks have started from, with the
 	// path they look for, shared by every walk that copied starts.
 	copies map[storeCopy]bool
-	// picked, when not nil, is the Phi the address is read through, and the
-	// variable of root it points to. The walk takes only the paths on which
-	// the Phi points to it.
-	picked *storePick
+	// guard, when not nil, keeps the walk to the paths on which the pointer
+	// the address is read through is the leaf root is in (see storeGuard).
+	guard *storeGuard
 	// pointers, when not nil, follows the pointers read from memory, so that
 	// a store through one that points to root is a store to root.
 	pointers *storePointers
@@ -1495,68 +1827,55 @@ type storeCopy struct {
 }
 
 // walkBefore walks every path that leads to instr, from the instruction
-// before it.
-//
-// When the walk has a picked variable, each path also holds the Phi that must
-// point to it there, until the path has passed the edge that takes the
-// variable itself. At the top of the block of that Phi, the walk
-// goes on through the edges that may hold the variable only.
-func (w *storeWalk) walkBefore(instr ssa.Instruction) {
+// before it, in st.
+func (w *storeWalk) walkBefore(instr ssa.Instruction, st storePath) {
+	from := []WalkFrom[storePath]{{WalkPointBefore(instr, w.positions), st}}
 	if w.pointer != nil {
-		w.walkPointerBefore(instr)
+		w.walkPointerBefore(from)
 		return
 	}
-	if w.picked == nil {
-		w.walkBackFrom([]WalkPoint{WalkPointBefore(instr, w.positions)})
-		return
-	}
-	atEntry := func() bool {
-		w.reachEntry()
-		return true
-	}
-	w.walkPickedBack(instr, w.stepAt, atEntry)
-}
-
-// walkPickedBack walks every path that leads to instr, from the instruction
-// before it, with visit and atEntry as walkBack does. When the walk has a
-// picked variable, it takes only the paths on which the Phi points to it.
-func (w *storeWalk) walkPickedBack(instr ssa.Instruction, visit func(ssa.Instruction) WalkStep, atEntry func() bool) {
-	if w.picked == nil {
-		walkBack([]WalkPoint{WalkPointBefore(instr, w.positions)}, visit, atEntry, nil)
-		return
-	}
-	from := []WalkFrom[*ssa.Phi]{{WalkPointBefore(instr, w.positions), w.picked.phi}}
-	edge := func(b *ssa.BasicBlock, i int, need *ssa.Phi) (*ssa.Phi, bool) {
-		if need == nil || need.Block() != b {
-			return need, true
-		}
-		return w.pickedThrough(need.Edges[i]) // The Phi may not point to the variable on this path
-	}
-	walkBackWith(from, visit, atEntry, edge)
+	w.walkStates(from, w.guarded(w.stepAt), w.reachEntry, nil, false)
 }
 
 // walkBackFrom walks every path that leads to a point of from, and stops each
 // at the first store to the address.
 func (w *storeWalk) walkBackFrom(from []WalkPoint) {
-	atEntry := func() bool {
-		w.reachEntry()
-		return true
+	starts := make([]WalkFrom[storePath], len(from))
+	for i, p := range from {
+		starts[i].Point = p
 	}
-	walkBack(from, w.stepAt, atEntry, nil)
+	w.walkStates(starts, w.guarded(w.stepAt), w.reachEntry, nil, false)
 }
 
-// pickedThrough reports whether edge, of a Phi that points to the picked
-// variable, may be the variable, and returns the Phi that must point to it
-// before the edge: edge itself when it is a Phi, or nil when it is the
-// variable.
-func (w *storeWalk) pickedThrough(edge ssa.Value) (*ssa.Phi, bool) {
-	if edge == w.picked.leaf {
-		return nil, true
+// walkStates walks every path that leads to a point of from, in its state,
+// with visit as walkBackStates does, and atEntry, when not nil, at the entry
+// of the function. through, when not nil, keeps the walk to the predecessors
+// it accepts. At the top of a block, a path whose guard is not resolved goes
+// on only into the predecessors whose edge may be the leaf, unless held (see
+// walkDeferred). The walk ends when the guard gives up.
+func (w *storeWalk) walkStates(
+	from []WalkFrom[storePath],
+	visit func(ssa.Instruction, *storePath) WalkStep,
+	atEntry func(storePath),
+	through func(*ssa.BasicBlock) bool,
+	held bool,
+) {
+	edge := func(b *ssa.BasicBlock, i int, st storePath) (storePath, bool) {
+		switch {
+		case through != nil && !through(b.Preds[i]):
+			return st, false
+		case held || st.resolved():
+			return st, true
+		}
+		return w.guard.edge(w, b, i, st)
 	}
-	if inner, isPhi := edge.(*ssa.Phi); isPhi && w.picked.holds(inner) {
-		return inner, true
+	entry := func(st storePath) bool {
+		if atEntry != nil {
+			atEntry(st)
+		}
+		return w.guard == nil || !w.guard.gaveUp
 	}
-	return nil, false
+	walkBackStates(from, visit, entry, edge)
 }
 
 // reachEntry records a path that leads back to the entry of the function, or
@@ -1567,24 +1886,24 @@ func (w *storeWalk) pickedThrough(edge ssa.Value) (*ssa.Phi, bool) {
 // runs only takes the paths through its defer, so its walk never gets here.
 // A walk for a variable that a pointer read from memory points to may get
 // here, on a path where the pointer is another one, such as nil, and the
-// variable is not made: that path carries nothing.
-func (w *storeWalk) reachEntry() {
-	if len(w.outer) > 0 {
-		w.walkOut()
-		return
-	}
-	if _, isAlloc := w.at.root.(*ssa.Alloc); isAlloc && w.pointers != nil {
-		return
-	}
-	if fv, ok := w.at.root.(*ssa.FreeVar); ok {
+// variable is not made: that path carries nothing. So does a path whose
+// guard is not resolved, in the function the leaf is in: the pointer is
+// another one there.
+func (w *storeWalk) reachEntry(st storePath) {
+	_, isAlloc := w.at.root.(*ssa.Alloc)
+	fv, isFreeVar := w.at.root.(*ssa.FreeVar)
+	p, isParam := storeIsFuncLiteralParam(w.at.root)
+	switch {
+	case len(w.outer) > 0:
+		w.walkOut(st)
+	case !st.resolved() || isAlloc && w.pointers != nil:
+	case isFreeVar:
 		w.out.addCaptured(Place{root: fv, path: slices.Clone(w.at.path)})
-		return
-	}
-	if p, ok := storeIsFuncLiteralParam(w.at.root); ok {
+	case isParam:
 		w.out.params = append(w.out.params, storeParamPath{param: p, path: slices.Clone(w.at.path), pointer: true})
-		return
+	default:
+		w.out.unknown = true
 	}
-	w.out.unknown = true
 }
 
 // walkOut goes on from the entry of outer[0], the closure the walk is in,
@@ -1592,13 +1911,26 @@ func (w *storeWalk) reachEntry() {
 // variable it captures does (see walkEscape): a store before the closure
 // runs, or after it is made when it may run later, may be what is at the
 // address. In the function root is in, a root that is not in a variable is
-// walked for as storesReachingPointer walks for one.
-func (w *storeWalk) walkOut() {
-	out := &storeWalk{at: w.at, positions: w.positions, out: w.out, pointers: w.pointers, outer: w.outer[1:]}
+// walked for as storesReachingPointer walks for one. A path whose guard is
+// not resolved goes on with the place the guard needs there (see
+// storeGuard.outOf).
+func (w *storeWalk) walkOut(st storePath) {
+	mc := w.outer[0]
+	if !st.resolved() {
+		st = w.guard.outOf(st, mc)
+	}
+	out := &storeWalk{
+		at:        w.at,
+		positions: w.positions,
+		out:       w.out,
+		pointers:  w.pointers,
+		outer:     w.outer[1:],
+		guard:     w.guard,
+	}
 	if len(out.outer) == 0 && !isTrackedRoot(w.at.root) {
 		out.pointer = storePointerOf(w.at.root)
 	}
-	out.walkEscape(w.outer[0])
+	out.walkEscape(mc, st)
 }
 
 // stepAt stops a path at a store to the address, or to an aggregate that
@@ -1856,7 +2188,7 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 		return
 	}
 	src.copies[key] = true
-	src.walkBefore(load)
+	src.walkBefore(load, storePath{})
 }
 
 // addStoresAfter adds the values stored to the address by the stores that
