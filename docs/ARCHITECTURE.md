@@ -1400,13 +1400,13 @@ negative is a missed report.
 | Events stored back | A `Ctx` call on a read that can see several events counts for each of them. It counts even where a path stores one of those events back over another after the call | `inplace` |
 | The caller's event copied over | A `Ctx` call on the caller's event at a place counts at later reads of the place. It counts even when another value of the caller's is copied over it in between | `inplace` |
 | Panics | A deferred call is checked at the returns after its `defer` statement. It is not checked at the points where a panic could run it | `deferred` |
-| Stores by a closure | The mirror of the false positive row: a store without `.Ctx(ctx)` by a closure, such as `func() { *p = base }()` or `func() { l = base }()`, is not seen by a read after the call. The read sees the value from before the call, which may have the context | `closures` |
 | Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. The value stored before it is taken as the one read | `memory` |
 | Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
 | Fresh in-place `Ctx` through another reference | `e.Ctx(context.Background())` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to. The event keeps the context it had. This is the mirror of #139 | `freshctx` |
 | Fresh contexts on another run | A fresh `Ctx` call on an event made in a loop counts only for a value that holds the latest run. It is not seen for the event kept from the last iteration | `freshctx` |
 | A pointer in a field | A pointer read from a field of a struct, such as `*h.p`, is not followed to a fresh context it points to. One read from a variable is | `freshctx` |
 | An address given more than once | A variable may hold a fresh context and have its address given to a func literal more than once, such as `f(&bg)` on two branches. Then the context is not taken as fresh. Given once, it is | `freshctx` |
+| Stores by a closure | The mirror of the false positive row: a store without `.Ctx(ctx)` by a closure, such as `func() { *p = base }()` or `func() { l = base }()`, is not seen by a read after the call. The read sees the value from before the call, which may have the context | `closures` |
 
 ## Testing
 
