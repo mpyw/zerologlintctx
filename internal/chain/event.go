@@ -85,6 +85,19 @@ func (s *eventSources) has(src eventSource) bool {
 	return s.set[src]
 }
 
+// same reports whether s and o are the same set.
+func (s *eventSources) same(o *eventSources) bool {
+	if len(s.list) != len(o.list) {
+		return false
+	}
+	for _, src := range s.list {
+		if !o.has(src) {
+			return false
+		}
+	}
+	return true
+}
+
 // eventStep is what a value of a chain is one step back: other values that
 // are the same event, and the events it can be that go back no further.
 type eventStep struct {
@@ -640,17 +653,19 @@ func (ix *eventIndex) ctxCallOf(call *ssa.Call) (*eventCtxCall, bool) {
 }
 
 // addClosureCtxCalls adds to calls the Ctx calls given a context that is not
-// fresh that the func literal of mc runs on every run, at each call of mc where it is made, as for an IIFE. Such
-// a call runs the func literal there, and the Ctx calls with it:
+// fresh that the func literal of mc runs on every run, at each call of mc
+// where it is made, as for an IIFE. Such a call runs the func literal there,
+// and the Ctx calls with it:
 //
 //	e := logger.Info()
 //	func() { e.Ctx(ctx) }() // runs Ctx on e here
 //	e.Msg("x")              // OK
 //
-// A Ctx call runs on every run when its block dominates every return of the
-// func literal. The events it runs on are what it reads there, as for any Ctx
-// call. A go or defer statement runs the func literal at another time, and is
-// not one of the calls.
+// The Ctx calls on the same events run on every run when every path from the
+// entry of the func literal to a return passes one of them (see
+// eventRunsOnEveryReturn). The events each runs on are what it reads there,
+// as for any Ctx call. A go or defer statement runs the func literal at
+// another time, and is not one of the calls.
 func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosure) {
 	fn := mc.Fn.(*ssa.Function) // Always a function, a func literal or a wrapper
 	if fn.Parent() == nil {
@@ -661,17 +676,20 @@ func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosu
 		return
 	}
 	inner := ix.ctxCallsIn(fn)
+	var set []*eventCtxCall
 	for instr := range ssaflow.InstrsIn(fn) {
-		ccs := inner.at[instr]
-		if len(ccs) == 0 || !eventRunsOnEveryReturn(instr, fn) {
+		for _, cc := range inner.at[instr] {
+			if !cc.fresh {
+				set = append(set, cc)
+			}
+		}
+	}
+	for _, cc := range set {
+		if !eventRunsOnEveryReturn(cc, set, fn) {
 			continue
 		}
 		for _, site := range sites {
-			for _, cc := range ccs {
-				if !cc.fresh {
-					calls.add(site, &eventCtxCall{call: site, sources: ix.sourcesAtRun(cc.sources, mc, site), recv: cc.recv})
-				}
-			}
+			calls.add(site, &eventCtxCall{call: site, sources: ix.sourcesAtRun(cc.sources, mc, site), recv: cc.recv})
 		}
 	}
 }
@@ -699,13 +717,41 @@ func (ix *eventIndex) sourcesAtRun(sources *eventSources, mc *ssa.MakeClosure, s
 	return mapped
 }
 
-// eventRunsOnEveryReturn reports whether instr runs on every path from the
-// entry of fn to a return: its block dominates the block of each return. The
-// recover block, reached after a panic, is not looked at.
-func eventRunsOnEveryReturn(instr ssa.Instruction, fn *ssa.Function) bool {
-	for _, b := range fn.Blocks {
-		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn && b != fn.Recover && !instr.Block().Dominates(b) {
+// eventRunsOnEveryReturn reports whether cc, or another call of set on the
+// same events, runs on every path from the entry of fn to a return:
+//
+//	func() {
+//	    if cond {
+//	        e.Ctx(ctx)
+//	    } else {
+//	        e.Ctx(ctx)      // one of the two runs on every path
+//	    }
+//	}()
+//
+// The recover block, reached after a panic, is not looked at.
+func eventRunsOnEveryReturn(cc *eventCtxCall, set []*eventCtxCall, fn *ssa.Function) bool {
+	passed := make(map[*ssa.BasicBlock]bool)
+	for _, other := range set {
+		if other.sources.same(cc.sources) {
+			passed[other.call.Block()] = true
+		}
+	}
+	queue := []*ssa.BasicBlock{fn.Blocks[0]}
+	seen := map[*ssa.BasicBlock]bool{fn.Blocks[0]: true}
+	for len(queue) > 0 {
+		b := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if passed[b] {
+			continue // A Ctx call runs on this path
+		}
+		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn {
 			return false
+		}
+		for _, succ := range b.Succs {
+			if !seen[succ] {
+				seen[succ] = true
+				queue = append(queue, succ)
+			}
 		}
 	}
 	return true
