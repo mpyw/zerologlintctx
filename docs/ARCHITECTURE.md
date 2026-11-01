@@ -316,7 +316,8 @@ constant, and the block it never runs.
 Inside a dead block, every edge is still taken. A walk that starts there,
 or a Phi there, sees what it saw before. A walk that starts in a live block
 reaches only live blocks. Only an `If` on an `*ssa.Const` counts, so a path
-that can run is never dropped. A `for range 1` checks a counter, not a
+that can run is never dropped. `LiveFlowOf` finds the flow of a function once.
+It keeps it by a weak pointer to the function, so the cache holds no SSA. A `for range 1` checks a counter, not a
 constant. Its loop is not folded (see [Known Limitations](#known-limitations)).
 
 `walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
