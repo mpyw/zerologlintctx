@@ -683,6 +683,75 @@ func limitationCapturedPtrPickedOnBranch(ctx context.Context, cond bool) {
 	func() { p.log.Info().Msg("captured pointer picked on a branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// ===== A POINTER CHAIN READ IN A CLOSURE =====
+// A pointer read from what another pointer points to, in a closure, is
+// followed out of the closure at each level.
+
+type chainedLogger struct{ l zerolog.Logger }
+
+type chainedHolder struct{ p *chainedLogger }
+
+type chainedHolderHolder struct{ h *chainedHolder }
+
+func newChainedLogger() *chainedLogger { return &chainedLogger{} }
+
+func goodPointerChainTwoLevelsIIFE(ctx context.Context, logger zerolog.Logger) {
+	hh := chainedHolderHolder{&chainedHolder{&chainedLogger{logger.With().Ctx(ctx).Logger()}}}
+	func() { hh.h.p.l.Info().Msg("through two pointer fields") }() // OK - the logger has ctx
+}
+
+func goodPointerChainTwoLevelsNested(ctx context.Context, logger zerolog.Logger) {
+	hh := chainedHolderHolder{&chainedHolder{&chainedLogger{logger.With().Ctx(ctx).Logger()}}}
+	func() {
+		func() { hh.h.p.l.Info().Msg("through two pointer fields, nested") }() // OK - the logger has ctx
+	}()
+}
+
+func badPointerChainTwoLevelsIIFE(ctx context.Context, logger zerolog.Logger) {
+	hh := chainedHolderHolder{&chainedHolder{&chainedLogger{logger}}}
+	func() { hh.h.p.l.Info().Msg("through two pointer fields, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodPointerChainCopiedIIFE(ctx context.Context, logger zerolog.Logger) {
+	a := chainedHolder{&chainedLogger{logger.With().Ctx(ctx).Logger()}}
+	h := chainedHolder{a.p}
+	func() { h.p.l.Info().Msg("pointer copied from another field") }() // OK - the logger has ctx
+}
+
+func goodPointerChainCopiedReturnedIIFE(ctx context.Context, logger zerolog.Logger) {
+	a := chainedHolder{newChainedLogger()}
+	a.p.l = logger.With().Ctx(ctx).Logger()
+	h := chainedHolder{a.p}
+	func() { h.p.l.Info().Msg("returned pointer copied from another field") }() // OK - stored through with ctx
+}
+
+func badPointerChainCopiedIIFE(ctx context.Context, logger zerolog.Logger) {
+	a := chainedHolder{&chainedLogger{logger}}
+	h := chainedHolder{a.p}
+	func() { h.p.l.Info().Msg("pointer copied from another field, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerChainCopiedStoredAfterIIFE(ctx context.Context, logger zerolog.Logger) {
+	a := chainedHolder{&chainedLogger{logger.With().Ctx(ctx).Logger()}}
+	h := chainedHolder{a.p}
+	a.p.l = logger
+	func() { h.p.l.Info().Msg("stored through the other field, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodPointerToPointerIIFE(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info().Ctx(ctx)
+	ptr := &e
+	ptr2 := &ptr
+	func() { (**ptr2).Msg("pointer to a pointer") }() // OK - the event has ctx
+}
+
+func badPointerToPointerIIFE(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	ptr := &e
+	ptr2 := &ptr
+	func() { (**ptr2).Msg("pointer to a pointer, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== A POINTER READ IN A CLOSURE FROM WHAT IT CAPTURES =====
 // The pointer is read from a captured variable at two levels, and a store
 // through the same pointer before the closure runs is what it reads.

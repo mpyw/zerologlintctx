@@ -446,23 +446,39 @@ func newStorePointers(positions Positions) *storePointers {
 // selections from each variable the pointer can point to. ok is false when
 // the pointer cannot be followed, or points to nothing but nil.
 func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r storeReaching, ok bool) {
+	return p.reachingThroughVia(at, read, nil)
+}
+
+// reachingThroughVia finds what reachingThrough does, for at in a function
+// that read runs in, or that via leads out to: the closures read is in,
+// innermost first, out to the function of at.
+//
+// A pointer copied from another one read from memory points to what that one
+// does, as it is read where the copy is made:
+//
+//	a := holder{&inner{l: base.With().Ctx(ctx).Logger()}}
+//	h := holder{a.p}                  // t5 = *&a.p ; *&h.p = t5
+//	func() { h.p.l.Info() }()         // t5, then a.p, as the copy is made
+func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via []*ssa.MakeClosure) (r storeReaching, ok bool) {
 	targets, ok := p.targetsOf(at.root)
 	if !ok || len(targets) == 0 {
 		return r, false
 	}
 	for _, t := range targets {
+		tvia := append(slices.Clip(via), t.via...)
 		tat, tracked := PlaceOf(t.v)
 		tat = tat.with(at.path...)
 		var tr storeReaching
-		if !tracked && len(t.via) == 0 {
-			// A pointer copied from another one read from memory
-			if tr, ok = p.reachingThrough(tat, read); !ok {
+		if !tracked {
+			if tr, ok = p.reachingThroughVia(tat, read, tvia); ok {
+				r.merge(tr)
+				continue
+			}
+			if len(tvia) == 0 {
 				return storeReaching{}, false
 			}
-			r.merge(tr)
-			continue
 		}
-		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p, outer: t.via}
+		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p, outer: tvia}
 		w.walkToRead(read)
 		if !tracked && tr.isEmpty() {
 			// What a callee stored there is not seen, as for storesReachingPointer
@@ -491,15 +507,19 @@ func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
 	p.pointed[v] = storePointed{} // Reaching v again while it is followed fails
 	var got storePointed
 	if stored, ok := p.reachingReads(reads); ok {
-		got.targets, got.ok = storeTargetsReaching(stored, nil, p.positions)
+		got.targets, got.ok = storeTargetsReaching(stored, parentFunc(v), nil, p.positions)
 	}
 	p.pointed[v] = got
 	return got.targets, got.ok
 }
 
 // storeTargetsReaching returns what a pointer can point to when it can be
-// any of what stored found where it is read from. via are the closures the
-// read is in, innermost first, out to the function stored was found in.
+// any of what stored found where it is read from, in from. The via of each
+// target are the closures from is in, innermost first, out to the function of
+// the target: a walk with closures to go out of finds stores in each of them
+// (see storeWalk.walkOut). via is what is taken for a value that is in no
+// function, or one that cannot be told: the closures from is in out to the
+// function stored was found in.
 //
 // A path that carries the value of a variable a closure captures, as the
 // closure starts, carries what the variable bound where the closure is made
@@ -514,7 +534,12 @@ func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
 // ok is false when stored has a value that is not known, or a parameter of
 // a func literal, when a captured variable has no MakeClosure that binds it,
 // or when a target through a closure is one of the values of a Phi.
-func storeTargetsReaching(stored storeReaching, via []*ssa.MakeClosure, positions Positions) ([]storeTarget, bool) {
+func storeTargetsReaching(
+	stored storeReaching,
+	from *ssa.Function,
+	via []*ssa.MakeClosure,
+	positions Positions,
+) ([]storeTarget, bool) {
 	if stored.unknown || len(stored.params) > 0 {
 		return nil, false
 	}
@@ -523,10 +548,10 @@ func storeTargetsReaching(stored storeReaching, via []*ssa.MakeClosure, position
 		return nil, false
 	}
 	for i := range targets {
-		if len(via) > 0 && targets[i].picked != nil {
+		targets[i].via = storeViaTo(from, targets[i].v, via)
+		if len(targets[i].via) > 0 && targets[i].picked != nil {
 			return nil, false // walkOut does not keep to the paths of a Phi
 		}
-		targets[i].via = via
 	}
 	for _, c := range stored.captured {
 		fv := c.root.(*ssa.FreeVar)
@@ -537,7 +562,7 @@ func storeTargetsReaching(stored storeReaching, via []*ssa.MakeClosure, position
 		idx := slices.Index(fv.Parent().FreeVars, fv)
 		for _, mc := range makers {
 			bound := storesReachingClosure(mc.Bindings[idx], c.path, mc, positions)
-			more, ok := storeTargetsReaching(bound, append(slices.Clip(via), mc), positions)
+			more, ok := storeTargetsReaching(bound, from, append(slices.Clip(via), mc), positions)
 			if !ok {
 				return nil, false
 			}
@@ -545,6 +570,28 @@ func storeTargetsReaching(stored storeReaching, via []*ssa.MakeClosure, position
 		}
 	}
 	return targets, true
+}
+
+// storeViaTo returns the closures from is in, innermost first, out to the
+// function v is in. It returns def when v is in no function, or when a
+// closure on the way is not made once where it is declared.
+func storeViaTo(from *ssa.Function, v ssa.Value, def []*ssa.MakeClosure) []*ssa.MakeClosure {
+	to := parentFunc(v)
+	if fv, isFreeVar := v.(*ssa.FreeVar); isFreeVar {
+		to = fv.Parent()
+	}
+	if to == nil {
+		return def
+	}
+	var via []*ssa.MakeClosure
+	for fn := from; fn != to; fn = fn.Parent() {
+		makers := storeMakersOf(fn)
+		if len(makers) != 1 {
+			return def
+		}
+		via = append(via, makers[0])
+	}
+	return via
 }
 
 // storeMakersOf returns the MakeClosure instructions that make fn, a func

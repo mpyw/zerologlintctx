@@ -780,6 +780,17 @@ deferred, and from where it is made, with every store after it, otherwise
 a call returns, is walked for as below, and is taken as not known when no
 store through it is found.
 
+Each target keeps the closures that lead from the read out to the function it
+is in. A pointer found there may itself be read from memory, as for
+`hh.h.p.l` or a pointer copied from another field. It is followed in the same
+way, and the walk for what it points to goes out of the same closures:
+
+```go
+a := pointedLoggerHolder{&pointedLogger{base.With().Ctx(ctx).Logger()}}
+h := pointedLoggerHolder{a.p}           // t5 = *&a.p ; *&h.p = t5
+func() { h.p.l.Info().Msg("x") }()      // h.p is t5, which is a.p where h is made
+```
+
 ```go
 p := newHolder()
 p.log = base.With().Ctx(ctx).Logger()  // t2 = *t0 ; *&t2.log = ..., and t2 is t1

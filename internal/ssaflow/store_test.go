@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"slices"
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
@@ -149,8 +150,58 @@ func f(x *T) func() { return x.m }
 		t.Errorf("storeMakersOf(%v) = %v, want nil", wrapper, makers)
 	}
 	stored := storeReaching{captured: []Place{PlaceAt(wrapper.FreeVars[0])}}
-	if _, ok := storeTargetsReaching(stored, nil, make(Positions)); ok {
+	if _, ok := storeTargetsReaching(stored, wrapper, nil, make(Positions)); ok {
 		t.Error("storeTargetsReaching of a free variable of a wrapper: ok")
+	}
+}
+
+// TestStoreViaTo checks the closures that lead from a nested func literal
+// out to the function of a value: none for a value of its own, and the
+// default for a value in no function, or in a function it is not in.
+func TestStoreViaTo(t *testing.T) {
+	const src = `package p
+
+func f() {
+	x := 0
+	func() {
+		func() { x++ }()
+	}()
+}
+
+func g(n int) int { return n + 1 }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := pkg.Func("f")
+	mid, inner := f.AnonFuncs[0], f.AnonFuncs[0].AnonFuncs[0]
+	outerMC, innerMC := storeMakersOf(mid)[0], storeMakersOf(inner)[0]
+	x := outerMC.Bindings[0]
+	g := pkg.Func("g").Blocks[0]
+	ret := g.Instrs[len(g.Instrs)-1].(*ssa.Return)
+	def := []*ssa.MakeClosure{outerMC}
+
+	for _, tt := range []struct {
+		name string
+		v    ssa.Value
+		want []*ssa.MakeClosure
+	}{
+		{"a variable of the outer function", x, []*ssa.MakeClosure{innerMC, outerMC}},
+		{"a free variable of its own", inner.FreeVars[0], nil},
+		{"a constant", ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int]), def},
+		{"a value of a function it is not in", ret.Results[0], def},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := storeViaTo(inner, tt.v, def); !slices.Equal(got, tt.want) {
+				t.Errorf("storeViaTo(%v) = %v, want %v", tt.v, got, tt.want)
+			}
+		})
 	}
 }
 
