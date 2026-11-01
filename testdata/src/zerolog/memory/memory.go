@@ -1102,6 +1102,51 @@ func badLoggerPtrFromMap(ctx context.Context, m map[int]*zerolog.Logger, base ze
 	p.Info().Msg("pointer looked up in a map, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// On a path that gets back to where the pointer is made without a store
+// through it, what it points to is what the pointer itself has.
+
+func badLoggerPtrFromCallStoredOnBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	p := newLoggerPtr()
+	if cond {
+		*p = base.With().Ctx(ctx).Logger()
+	}
+	p.Info().Msg("the Logger of the call when cond is false") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrFromChannelStoredOnBranch(ctx context.Context, l *zerolog.Logger, cond bool) {
+	ch := make(chan *zerolog.Logger, 1)
+	ch <- l
+	l = <-ch
+	if cond {
+		*l = l.With().Ctx(ctx).Logger()
+	}
+	l.Info().Msg("the Logger received when cond is false") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodCtxLoggerPtrStoredOnBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		*p = base.With().Ctx(ctx).Logger()
+	}
+	p.Info().Msg("the logger of ctx when cond is false") // OK
+}
+
+func badLoggerPtrFromCallCopiedStoredOnBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	h := loggerPtrBox{newLoggerPtr()}
+	if cond {
+		*h.p = base.With().Ctx(ctx).Logger()
+	}
+	h.p.Info().Msg("copied, the Logger of the call when cond is false") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodCtxLoggerPtrCopiedStoredOnBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	h := loggerPtrBox{zerolog.Ctx(ctx)}
+	if cond {
+		*h.p = base.With().Ctx(ctx).Logger()
+	}
+	h.p.Info().Msg("copied, the logger of ctx when cond is false") // OK
+}
+
 func goodCtxLoggerPtrUpdated(ctx context.Context, cond bool) {
 	p := zerolog.Ctx(ctx)
 	if cond {

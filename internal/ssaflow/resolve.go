@@ -118,7 +118,7 @@ func (r Resolver) yieldEmbedded(
 	switch {
 	case n == len(embedded) && ok:
 		return r.yieldStored(stored, yield)
-	case !ok || stored.unknown || len(stored.captured) > 0 || len(stored.params) > 0:
+	case !ok || stored.unknown || len(stored.captured) > 0 || len(stored.params) > 0 || len(stored.made) > 0:
 		return yield(Resolved{})
 	}
 	elem := field.Underlying().(*types.Pointer).Elem()
@@ -177,13 +177,19 @@ func (r Resolver) yieldWalked(
 }
 
 // yieldStored yields the sources of what storesReaching found: unknown, when
-// some path carries a value the function cannot tell, what each captured
+// some path carries a value the function cannot tell, what each pointer made
+// on a path points to, traced through the pointer, what each captured
 // variable holds as the closure runs, what the calls of a func literal pass
 // for its parameters, and the values stored. It reports whether yield asked
 // for more.
 func (r Resolver) yieldStored(stored storeReaching, yield func(Resolved) bool) bool {
 	if stored.unknown && !yield(Resolved{}) {
 		return false
+	}
+	for _, v := range stored.made {
+		if !yield(Resolved{V: v, Pointer: true}) {
+			return false
+		}
 	}
 	for _, c := range stored.captured {
 		if !r.yieldFreeVar(c.root.(*ssa.FreeVar), c.path, yield) {

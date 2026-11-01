@@ -114,8 +114,10 @@ func storesReaching(
 //
 // The walk goes back from read, and stops each path at the first store, as
 // for a variable, up to where the pointer is made (see
-// storeWalk.walkPointerBefore). A path that gets there, or to the entry of
-// the function, carries nothing: what is there was stored where the function
+// storeWalk.walkPointerBefore). A path that gets there, for at the pointer
+// itself, made other than by a load, carries what tracing the pointer finds
+// (see storeReaching.made). Otherwise a path that gets there, or to the
+// entry of the function, carries nothing: what is there was stored where the function
 // cannot see, by the callee that returned the pointer, by the caller, or
 // before another pointer was put where it is read from. Only the stores of
 // the function itself are traced, and ok is false when no path carries one,
@@ -129,7 +131,7 @@ func storesReachingPointer(at Place, read ssa.Instruction, positions Positions) 
 	}
 	w := &storeWalk{at: at, positions: positions, out: &r, pointer: storePointerOf(at.root)}
 	w.walkToRead(read)
-	return r, len(r.values) > 0 || r.unknown || len(r.captured) > 0 || len(r.params) > 0
+	return r, !r.isEmpty()
 }
 
 // storePointer is where a pointer that is not in a variable is made, for a
@@ -201,6 +203,9 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 	}
 	walkBack([]WalkPoint{WalkPointBefore(instr, w.positions)}, toDef, nil, nil)
 	from := w.pointer.from
+	if reached && from == nil && len(w.at.path) == 0 {
+		w.out.addMade(w.at.root)
+	}
 	if !reached || from == nil {
 		return
 	}
@@ -548,7 +553,7 @@ func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via [
 	return r, true
 }
 
-// isEmpty reports whether r found nothing at all.
+// isEmpty reports whether r found nothing at all, apart from made.
 func (r storeReaching) isEmpty() bool {
 	return len(r.values) == 0 && !r.unknown && len(r.captured) == 0 && len(r.params) == 0
 }
@@ -599,7 +604,7 @@ func storeTargetsReaching(
 	via []*ssa.MakeClosure,
 	positions Positions,
 ) ([]storeTarget, bool) {
-	if stored.unknown || len(stored.params) > 0 {
+	if stored.unknown || len(stored.params) > 0 || len(stored.made) > 0 {
 		return nil, false
 	}
 	targets, ok := storeTargetsOf(stored.values)
@@ -787,8 +792,19 @@ func (r *storeReaching) merge(o storeReaching) {
 	r.values = append(r.values, o.values...)
 	r.params = append(r.params, o.params...)
 	r.unknown = r.unknown || o.unknown
+	for _, v := range o.made {
+		r.addMade(v)
+	}
 	for _, c := range o.captured {
 		r.addCaptured(c)
+	}
+}
+
+// addMade adds v, a pointer that is not in a variable, to the pointers that
+// r found are made on a path, unless it is there already.
+func (r *storeReaching) addMade(v ssa.Value) {
+	if !slices.Contains(r.made, v) {
+		r.made = append(r.made, v)
 	}
 }
 
@@ -996,6 +1012,11 @@ type storeReaching struct {
 	// them, whose values some path carries from the entry of the func literal.
 	// Tracing them finds what the calls of the func literal pass.
 	params []storeParamPath
+	// made are the pointers that are not in a variable, such as one a call
+	// returns, to where some path gets without a store through them, other
+	// than by a load (see storeWalk.walkPointerBefore). What each points to
+	// there is what tracing the pointer itself finds.
+	made []ssa.Value
 	// followed reports that the address is in what a pointer read from
 	// memory points to, and the stores were found in each variable it can
 	// point to (see storePointers).
