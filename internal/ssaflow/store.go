@@ -579,9 +579,11 @@ const storePickedMax = 16
 // points to later: the walk goes back from it, and every store after it
 // counts too (see walkToRead).
 //
-// ok is false when no store through such an edge is found, or it cannot be
-// walked for, when phi may point to more than storePickedMax variables, or
-// when read is nil.
+// A path back to where such an edge is made, as for the logger of ctx,
+// carries what tracing the edge itself finds (see storeReaching.made). ok is
+// false when no path carries a store through such an edge or the edge
+// itself, or it cannot be walked for, when phi may point to more than
+// storePickedMax variables, or when read is nil.
 func storesReachingPicked(
 	phi *ssa.Phi,
 	path []sel,
@@ -611,7 +613,7 @@ func storesReachingPicked(
 			}
 		}
 		w.walkToRead(read)
-		if !tracked && lr.isEmpty() {
+		if !tracked && lr.isEmpty() && len(lr.made) == 0 {
 			return storeReaching{}, false // What is there was stored where the function cannot see
 		}
 		r.merge(lr)
@@ -800,8 +802,9 @@ func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via [
 			}
 		}
 		w.walkToRead(read)
-		if !tracked && tr.isEmpty() {
-			// What a callee stored there is not seen, as for storesReachingPointer
+		if !tracked && tr.isEmpty() && len(tr.made) == 0 {
+			// What a callee stored there is not seen, as for storesReachingPointer.
+			// A path back to where the pointer is made carries the pointer itself
 			return storeReaching{}, false
 		}
 		r.merge(tr)
