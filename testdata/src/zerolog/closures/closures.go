@@ -543,3 +543,128 @@ func badGoroutineInInnerLoopChangedOnLaterIteration(ctx context.Context, logger 
 		}
 	}
 }
+
+// ===== A POINTER CAPTURED BY A CLOSURE =====
+
+type ptrHolder struct{ log zerolog.Logger }
+
+func newPtrHolder() *ptrHolder { return &ptrHolder{} }
+
+func goodCapturedPtrStoreBeforeIIFE(ctx context.Context) {
+	p := &ptrHolder{}
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	func() { p.log.Info().Msg("captured pointer, stored before") }() // OK - p.log has ctx
+}
+
+func goodCapturedPtrLiteralIIFE(ctx context.Context) {
+	p := &ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
+	func() { p.log.Info().Msg("captured pointer, composite literal") }() // OK
+}
+
+func goodCapturedPtrToVarIIFE(ctx context.Context) {
+	var h ptrHolder
+	p := &h
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	func() { p.log.Info().Msg("captured pointer to a variable") }() // OK
+}
+
+func goodCapturedPtrGo(ctx context.Context) {
+	p := &ptrHolder{}
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	go func() { p.log.Info().Msg("captured pointer, goroutine") }() // OK
+}
+
+func goodCapturedPtrDefer(ctx context.Context) {
+	p := &ptrHolder{}
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	defer func() { p.log.Info().Msg("captured pointer, deferred") }() // OK
+}
+
+func goodCapturedReturnedPtrIIFE(ctx context.Context) {
+	p := newPtrHolder()
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	func() { p.log.Info().Msg("captured returned pointer") }() // OK
+}
+
+func goodCapturedReturnedPtrGo(ctx context.Context) {
+	p := newPtrHolder()
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	go func() { p.log.Info().Msg("captured returned pointer, goroutine") }() // OK
+}
+
+func goodCapturedPtrParamGo(ctx context.Context, p *ptrHolder) {
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	go func() { p.log.Info().Msg("captured pointer parameter") }() // OK
+}
+
+func goodCapturedPtrStoreBeforeCall(ctx context.Context, logger zerolog.Logger) {
+	p := newPtrHolder()
+	p.log = logger
+	f := func() { p.log.Info().Msg("store before the call") }
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	f() // OK - the store before the call is what f reads
+}
+
+func goodCapturedPtrNested(ctx context.Context) {
+	p := &ptrHolder{}
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		func() { p.log.Info().Msg("captured pointer, nested") }() // OK
+	}()
+}
+
+func goodCapturedPtrStoreInClosure(ctx context.Context, logger zerolog.Logger) {
+	p := &ptrHolder{log: logger}
+	func() {
+		p.log = zerolog.Ctx(ctx).With().Logger()
+		p.log.Info().Msg("stored in the closure") // OK
+	}()
+}
+
+func badCapturedPtrStoreBeforeIIFE(ctx context.Context, logger zerolog.Logger) {
+	p := &ptrHolder{}
+	p.log = logger
+	func() { p.log.Info().Msg("captured pointer, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedPtrOneBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	p := &ptrHolder{log: logger}
+	if cond {
+		p.log = zerolog.Ctx(ctx).With().Logger()
+	}
+	func() { p.log.Info().Msg("captured pointer, one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedPtrStoreAfterGo(ctx context.Context, logger zerolog.Logger) {
+	p := &ptrHolder{}
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	go func() { p.log.Info().Msg("changed after the goroutine starts") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	p.log = logger
+}
+
+func badCapturedPtrStoreAfterCall(ctx context.Context, logger zerolog.Logger) {
+	p := newPtrHolder()
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	f := func() { p.log.Info().Msg("store after the closure is made") } // want `zerolog call chain missing .Ctx\(ctx\)`
+	p.log = logger
+	f()
+}
+
+func badCapturedReturnedPtrNoStore(ctx context.Context) {
+	p := newPtrHolder()
+	func() { p.log.Info().Msg("nothing stored") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedPtrReassigned(ctx context.Context, logger zerolog.Logger) {
+	p := &ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
+	p = &ptrHolder{log: logger}
+	func() { p.log.Info().Msg("another pointer") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedPtrStoreInClosure(ctx context.Context, logger zerolog.Logger) {
+	p := &ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
+	func() {
+		p.log = logger
+		p.log.Info().Msg("stored in the closure, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}

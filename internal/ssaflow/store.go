@@ -366,9 +366,14 @@ type storePointed struct {
 
 // storeTarget is something a pointer can point to: v, or one of the values
 // that the Phi of picked can be, when v is that one.
+//
+// via, when not empty, are the closures the pointer is read in, innermost
+// first, out to the function v is in: the pointer is read from a variable a
+// closure captures, and v is what that variable holds when the closure runs.
 type storeTarget struct {
 	v      ssa.Value
 	picked *storePick
+	via    []*ssa.MakeClosure
 }
 
 // newStorePointers returns a storePointers that has followed no pointer yet.
@@ -389,7 +394,7 @@ func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r store
 		tat, tracked := PlaceOf(t.v)
 		tat = tat.with(at.path...)
 		var tr storeReaching
-		if !tracked {
+		if !tracked && len(t.via) == 0 {
 			// A pointer copied from another one read from memory
 			if tr, ok = p.reachingThrough(tat, read); !ok {
 				return storeReaching{}, false
@@ -397,11 +402,20 @@ func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r store
 			r.merge(tr)
 			continue
 		}
-		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p}
+		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p, outer: t.via}
 		w.walkToRead(read)
+		if !tracked && tr.isEmpty() {
+			// What a callee stored there is not seen, as for storesReachingPointer
+			return storeReaching{}, false
+		}
 		r.merge(tr)
 	}
 	return r, true
+}
+
+// isEmpty reports whether r found nothing at all.
+func (r storeReaching) isEmpty() bool {
+	return len(r.values) == 0 && !r.unknown && len(r.captured) == 0 && len(r.params) == 0
 }
 
 // targetsOf returns what v, a pointer read from memory, can point to. ok is
@@ -416,11 +430,76 @@ func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
 	}
 	p.pointed[v] = storePointed{} // Reaching v again while it is followed fails
 	var got storePointed
-	if stored, ok := p.reaching(at, load); ok && !stored.unknown && len(stored.captured) == 0 && len(stored.params) == 0 {
-		got.targets, got.ok = storeTargetsOf(stored.values)
+	if stored, ok := p.reaching(at, load); ok {
+		got.targets, got.ok = storeTargetsReaching(stored, nil, p.positions)
 	}
 	p.pointed[v] = got
 	return got.targets, got.ok
+}
+
+// storeTargetsReaching returns what a pointer can point to when it can be
+// any of what stored found where it is read from. via are the closures the
+// read is in, innermost first, out to the function stored was found in.
+//
+// A path that carries the value of a variable a closure captures, as the
+// closure starts, carries what the variable bound where the closure is made
+// holds when the closure runs (see storesReachingClosure). The walk for each
+// of those targets goes from the read back to the entry of the closure, then
+// on from where the closure runs (see storeWalk.walkOut):
+//
+//	p := &lh{}                               // t1 = new lh ; *t0 = t1
+//	p.log = base.With().Ctx(ctx).Logger()    // t2 = *t0 ; *&t2.log = ...
+//	func() { p.log.Info().Msg("x") }()       // t0 = *p ; Info(&t0.log), and t0 is t1
+//
+// ok is false when stored has a value that is not known, or a parameter of
+// a func literal, when a captured variable has no MakeClosure that binds it,
+// or when a target through a closure is one of the values of a Phi.
+func storeTargetsReaching(stored storeReaching, via []*ssa.MakeClosure, positions Positions) ([]storeTarget, bool) {
+	if stored.unknown || len(stored.params) > 0 {
+		return nil, false
+	}
+	targets, ok := storeTargetsOf(stored.values)
+	if !ok {
+		return nil, false
+	}
+	for i := range targets {
+		if len(via) > 0 && targets[i].picked != nil {
+			return nil, false // walkOut does not keep to the paths of a Phi
+		}
+		targets[i].via = via
+	}
+	for _, c := range stored.captured {
+		fv := c.root.(*ssa.FreeVar)
+		makers := storeMakersOf(fv.Parent())
+		if len(makers) == 0 {
+			return nil, false
+		}
+		idx := slices.Index(fv.Parent().FreeVars, fv)
+		for _, mc := range makers {
+			bound := storesReachingClosure(mc.Bindings[idx], c.path, mc, positions)
+			more, ok := storeTargetsReaching(bound, append(slices.Clip(via), mc), positions)
+			if !ok {
+				return nil, false
+			}
+			targets = append(targets, more...)
+		}
+	}
+	return targets, true
+}
+
+// storeMakersOf returns the MakeClosure instructions that make fn, a func
+// literal, in the function it is declared in, as Closures.makersOf does.
+func storeMakersOf(fn *ssa.Function) []*ssa.MakeClosure {
+	if fn.Parent() == nil {
+		return nil
+	}
+	var makers []*ssa.MakeClosure
+	for instr := range InstrsIn(fn.Parent()) {
+		if mc, ok := instr.(*ssa.MakeClosure); ok && mc.Fn == fn {
+			makers = append(makers, mc)
+		}
+	}
+	return makers
 }
 
 // reaching finds the values that can be at at when read runs, for at in a
@@ -782,6 +861,12 @@ type storeWalk struct {
 	// pointer, when not nil, is where root is made, when it is a pointer
 	// that is not in a variable (see storesReachingPointer).
 	pointer *storePointer
+	// outer, when not empty, are the closures the walk starts in, innermost
+	// first, out to the function root is in. A path that leads back to the
+	// entry of the first goes on from where it runs (see walkOut).
+	outer []*ssa.MakeClosure
+	// walkedOut reports that walkOut has run.
+	walkedOut bool
 }
 
 // storeCopy is a load that a copied walk starts from, and the selections it
@@ -855,6 +940,10 @@ func (w *storeWalk) pickedThrough(edge ssa.Value) (*ssa.Phi, bool) {
 // here, on a path where the pointer is another one, such as nil, and the
 // variable is not made: that path carries nothing.
 func (w *storeWalk) reachEntry() {
+	if len(w.outer) > 0 {
+		w.walkOut()
+		return
+	}
 	if _, isAlloc := w.at.root.(*ssa.Alloc); isAlloc && w.pointers != nil {
 		return
 	}
@@ -867,6 +956,24 @@ func (w *storeWalk) reachEntry() {
 		return
 	}
 	w.out.unknown = true
+}
+
+// walkOut goes on from the entry of outer[0], the closure the walk is in,
+// in the function that makes it, as a walk for what the closure reads of a
+// variable it captures does (see walkEscape): a store before the closure
+// runs, or after it is made when it may run later, may be what is at the
+// address. In the function root is in, a root that is not in a variable is
+// walked for as storesReachingPointer walks for one.
+func (w *storeWalk) walkOut() {
+	if w.walkedOut {
+		return
+	}
+	w.walkedOut = true
+	out := &storeWalk{at: w.at, positions: w.positions, out: w.out, pointers: w.pointers, outer: w.outer[1:]}
+	if len(out.outer) == 0 && !isTrackedRoot(w.at.root) {
+		out.pointer = storePointerOf(w.at.root)
+	}
+	out.walkEscape(w.outer[0])
 }
 
 // stepAt stops a path at a store to the address, or to an aggregate that
