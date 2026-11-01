@@ -1589,8 +1589,8 @@ func goodEitherPointerParamUpdated(ctx context.Context, l1, l2 *zerolog.Logger, 
 	p.Info().Msg("either pointer") // OK
 }
 
-// A go statement reads the receiver later, so the Phi is not walked, and each
-// pointer parameter takes every store that reaches any read of it.
+// A go statement reads what the pointer points to later: the stores before it
+// on the paths of the Phi, and every store after it, reach the read.
 func goodEitherPointerParamUpdatedInGo(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
 	*l1 = l1.With().Ctx(ctx).Logger()
 	*l2 = zerolog.Ctx(ctx).With().Logger()
@@ -1622,6 +1622,108 @@ func badEitherPointerParamUpdatedInGo(ctx context.Context, l1, l2 *zerolog.Logge
 		p = l2
 	}
 	go p.Print("either pointer, in a go statement") // want `zerolog direct logging bypasses context`
+}
+
+// A pointer parameter that a closure captures is loaded from a variable, so the
+// edge of the Phi is a load, walked back to where it is made (#320).
+func goodEitherCapturedPointerParamInGo(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	func() { _ = l1 }()
+	p := l1
+	if cond {
+		p = l2
+	}
+	go p.Print("either captured pointer, in a go statement") // OK
+}
+
+func goodEitherCapturedPointerParamDeferred(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	func() { _ = l1 }()
+	p := l1
+	if cond {
+		p = l2
+	}
+	defer p.Print("either captured pointer, deferred") // OK
+}
+
+func badEitherCapturedPointerParamInGo(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	func() { _ = l1 }()
+	p := l1
+	if cond {
+		p = l2
+	}
+	go p.Print("either captured pointer, one without ctx") // want `zerolog direct logging bypasses context`
+}
+
+func badEitherCapturedPointerParamReplacedAfterGo(ctx context.Context, l, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	func() { _ = l1 }()
+	p := l1
+	if cond {
+		p = l2
+	}
+	go p.Print("either captured pointer, replaced after") // want `zerolog direct logging bypasses context`
+	*l1 = *l
+}
+
+func badEitherCapturedPointerParamReplacedAfterDefer(ctx context.Context, l, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	func() { _ = l1 }()
+	p := l1
+	if cond {
+		p = l2
+	}
+	defer p.Print("either captured pointer, replaced after the defer") // want `zerolog direct logging bypasses context`
+	*l1 = *l
+}
+
+func (b *loggerPtrBox) goodEitherReceiverFieldInGo(ctx context.Context, l2 *zerolog.Logger, cond bool) {
+	*b.p = b.p.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		p = l2
+	}
+	go p.Print("either the receiver's field, in a go statement") // OK
+}
+
+func (b *loggerPtrBox) badEitherReceiverFieldInGo(ctx context.Context, l2 *zerolog.Logger, cond bool) {
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		p = l2
+	}
+	go p.Print("either the receiver's field, the caller's") // want `zerolog direct logging bypasses context`
+}
+
+func goodEitherReceivedPointerInGo(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	c := make(chan *zerolog.Logger, 1)
+	c <- l1
+	l1 = <-c
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	p := l1
+	if cond {
+		p = l2
+	}
+	go p.Print("either received pointer, in a go statement") // OK
+}
+
+func badEitherReceivedPointerInGo(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	c := make(chan *zerolog.Logger, 1)
+	c <- l1
+	l1 = <-c
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	p := l1
+	if cond {
+		p = l2
+	}
+	go p.Print("either received pointer, not stored through") // want `zerolog direct logging bypasses context`
 }
 
 func badFieldPointerCapturedThenReplaced(ctx context.Context, l zerolog.Logger) {

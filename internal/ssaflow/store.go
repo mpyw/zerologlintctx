@@ -368,17 +368,20 @@ const storePickedMax = 16
 // walks for one, back along the same paths to where it is made (see
 // storePick.pointerOf).
 //
+// A go or defer statement takes the pointer when it runs, and reads what it
+// points to later: the walk goes back from it, and every store after it
+// counts too (see walkToRead).
+//
 // ok is false when no store through such an edge is found, or it cannot be
 // walked for, when phi may point to more than storePickedMax variables, or
-// when read is a go or defer statement, which reads the address later.
+// when read is nil.
 func storesReachingPicked(
 	phi *ssa.Phi,
 	path []sel,
 	read ssa.Instruction,
 	positions Positions,
 ) (r storeReaching, ok bool) {
-	switch read.(type) {
-	case nil, *ssa.Defer, *ssa.Go:
+	if read == nil {
 		return r, false
 	}
 	leaves, ok := storePickedLeaves(phi)
@@ -400,7 +403,7 @@ func storesReachingPicked(
 				return storeReaching{}, false
 			}
 		}
-		w.walkBefore(read)
+		w.walkToRead(read)
 		if !tracked && lr.isEmpty() {
 			return storeReaching{}, false // What is there was stored where the function cannot see
 		}

@@ -728,7 +728,10 @@ Phi itself, has what each variable the Phi may point to holds there. Each one
 is walked from the read along the paths on which the Phi points to it: at the
 top of the block of the Phi, the walk goes on through the edges that hold it
 only. Every value that reaches the read must have context. A Phi that may
-point to more than a few variables is not walked.
+point to more than a few variables is not walked. A `go` or `defer` statement
+takes the pointer when it runs, and reads what it points to later: the walk
+goes back from the statement along the same paths, and every store after it
+counts too.
 
 A pointer the Phi picks that is not in a variable, such as `b.p` read from a
 pointer parameter, is walked for as below (see
