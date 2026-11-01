@@ -195,3 +195,21 @@ func f(ctx context.Context, l zerolog.Logger) {
 		t.Errorf("%d of %d terminators accepted, want 1 of 2", accepted, terminators)
 	}
 }
+
+func TestEventRunGraphOutOfFunction(t *testing.T) {
+	t.Parallel()
+	fn := eventFunc(t, eventShapeSrc("fieldphiloop", 1))
+	ix := newEventIndex(make(ssaflow.Positions), ssaflow.NewClosures())
+	instr := fn.Blocks[0].Instrs[0]
+	// With no function, every instruction is out of it
+	g := &eventRunGraph{ix: ix}
+	if p := g.pointBefore(instr); p != (ssaflow.WalkPoint{}) {
+		t.Errorf("pointBefore = %v, want none", p)
+	}
+	if p := g.pointAfter(instr); p != nil {
+		t.Errorf("pointAfter = %v, want nil", *p)
+	}
+	if !g.reachesFrom(ssaflow.WalkPoint{}, ssaflow.WalkPointBefore(instr, ix.positions), instr) {
+		t.Error("reachesFrom none = false, want true")
+	}
+}

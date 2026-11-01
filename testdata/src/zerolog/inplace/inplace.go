@@ -618,6 +618,15 @@ func goodEventCtxOnSameElementMadeInLoop(ctx context.Context, log zerolog.Logger
 	evs[0].Msg("ctx on the same element") // OK
 }
 
+func goodEventCtxOnSameElementAtComputedIndex(ctx context.Context, log zerolog.Logger, j int) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		evs[i] = log.Info()
+	}
+	evs[j].Ctx(ctx)
+	evs[j].Msg("ctx on the same element, at a computed index") // OK
+}
+
 func goodEventCtxOnEachElementInLoop(ctx context.Context, log zerolog.Logger) {
 	var evs [2]*zerolog.Event
 	for i := range 2 {
