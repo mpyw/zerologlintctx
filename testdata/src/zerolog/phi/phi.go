@@ -1725,6 +1725,157 @@ func badLoggerPointerMadeInLoopDeferredStoredAfter(ctx context.Context, base zer
 
 func newDeferredLoggerPtr() *zerolog.Logger { return new(zerolog.Logger) }
 
+// LIMITATION (false positive): each iteration makes a pointer of its own.
+// The pointer is made again after the defer statement. So the walk goes
+// back from the statement, as for a go statement, and every store after it
+// counts too. What the pointer points to before the statement is still
+// seen, although the store after it, on the same iteration, has ctx.
+func limitationLoggerPointerMadeInLoopDeferredStoredAfter(ctx context.Context, base zerolog.Logger, n int) {
+	for range n {
+		p := newDeferredLoggerPtr()
+		defer p.Print("made in a loop, deferred, stored through after") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+		*p = base.With().Ctx(ctx).Logger()
+	}
+}
+
+// A Phi of pointers put in a struct field is the pointer read back from the
+// field: a store through the Phi is a store through it (#367).
+type phiLoggerPtrBox struct{ p *zerolog.Logger }
+
+func goodLoggerPointerPickedInFieldStoredThrough(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	*p = base.With().Ctx(ctx).Logger()
+	h.p.Print("picked, put in a field, stored through") // OK - the store through p has ctx
+}
+
+func badLoggerPointerPickedInFieldStoredThroughWithoutCtx(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base.With().Ctx(ctx).Logger()
+	b := base.With().Ctx(ctx).Logger()
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	*p = base
+	h.p.Print("picked, put in a field, stored through without ctx") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+}
+
+func goodLoggerPointerPickedStoredThroughThenPutInField(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	*p = base.With().Ctx(ctx).Logger()
+	h := phiLoggerPtrBox{p}
+	h.p.Print("picked, stored through, put in a field") // OK - the store through p has ctx
+}
+
+func goodLoggerPointerPickedInFieldDeferredStoredAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	defer (&phiLoggerPtrBox{p}).p.Print("picked, put in a field, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func badLoggerPointerPickedInFieldDeferredStoredWithoutCtxAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base.With().Ctx(ctx).Logger()
+	b := base.With().Ctx(ctx).Logger()
+	p := &a
+	if other {
+		p = &b
+	}
+	defer (&phiLoggerPtrBox{p}).p.Print("picked, put in a field, deferred, stored through without ctx after") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	*p = base
+}
+
+func goodLoggerPointerPickedInFieldOfCopyStoredThrough(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	g := h
+	*p = base.With().Ctx(ctx).Logger()
+	g.p.Print("picked, put in a field, copied, stored through") // OK - the store through p has ctx
+}
+
+func badLoggerPointerPickedInFieldStoredThroughOnBranch(ctx context.Context, base zerolog.Logger, other, cond bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	if cond {
+		*p = base.With().Ctx(ctx).Logger()
+	}
+	h.p.Print("picked, put in a field, stored through on a branch") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+}
+
+// The field holds another pointer by the store, so the store through p is
+// not through the pointer read back.
+func badLoggerPointerPickedInFieldReplacedStoredThrough(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	c := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	h.p = &c
+	*p = base.With().Ctx(ctx).Logger()
+	h.p.Print("picked, put in a field, the field replaced, stored through") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): the field may hold another pointer by the
+// store, after a store on a branch, so it does not hold p alone there. The
+// store through p is then not seen, even on the path where the field holds p.
+func limitationLoggerPointerPickedInFieldMaybeReplacedStoredThrough(ctx context.Context, base zerolog.Logger, other, cond bool) {
+	a := base
+	b := base
+	c := base.With().Ctx(ctx).Logger()
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	if cond {
+		h.p = &c
+	}
+	*p = base.With().Ctx(ctx).Logger()
+	h.p.Print("picked, put in a field, the field maybe replaced, stored through") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+}
+
+func badLoggerPointerPickedInFieldDeferredReplacedStoredAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	c := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := &phiLoggerPtrBox{p}
+	h.p = &c
+	defer h.p.Print("picked, put in a field, the field replaced, deferred, stored through after") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	*p = base.With().Ctx(ctx).Logger()
+}
+
 // LIMITATION(#115) (false negative): a store to a variable that a Phi of
 // pointers may point to, after a store through the Phi, is a write through
 // another reference. The walk for the stores through the pointer does not

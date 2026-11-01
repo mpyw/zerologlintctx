@@ -1035,6 +1035,30 @@ func() {
 }()
 ```
 
+A place may hold one pointer on every path, where a store through that
+pointer runs. When the guarded place does, the store is through the leaf
+too (`storeGuard.holdsOnly`). So is a store through what the place a value
+that must be the leaf is loaded from holds. So a Phi put in a struct field
+is the pointer read back from the field, when the field holds that Phi
+alone:
+
+```go
+p := &a
+if other {
+    p = &b
+}
+h := box{p}
+*p = base.With().Ctx(ctx).Logger()    // h.p holds p only: through the leaf, on each path
+h.p.Print("x")                        // not reported
+```
+
+A deferred call takes its receiver at the `defer` statement. A store after
+the statement, through the pointer the receiver was loaded as, counts in
+the same way. So `defer (&box{p}).p.Print("x")` before that store is not
+reported. A field that may hold another pointer there, such as after
+`h.p = &c` on a branch, does not hold the Phi alone. Then the store is not
+seen (see [Known Limitations](#known-limitations)).
+
 Where the leaf is made, met before the guard is resolved, drops what the path
 kept: in a loop, that store was to the leaf of a later iteration, and the
 Phi reads the one of the iteration before.
@@ -1463,6 +1487,8 @@ negative is a missed report.
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
 | A pointer read in a closure that is not only called | A closure may read a pointer from a captured variable, such as `h.m` or `*pp`, or the field of a global. The pointer is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it | `closures`, `memory` |
+| A Phi in a field that may hold another pointer | A store through a Phi of pointers is seen through a struct field only when the field holds the Phi alone. After `h.p = &c` on a branch, the store is not seen on the other branch either | `phi` |
+| A pointer made again in a loop, with a `defer` | A deferred call on a pointer made on each iteration, such as `p := newLoggerPtr()`, is read as for a `go` statement. So what the pointer points to before the `defer` statement is still seen. A store with `.Ctx(ctx)` through it after the statement, on the same iteration, does not hide that | `phi` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |

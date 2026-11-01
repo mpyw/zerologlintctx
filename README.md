@@ -754,6 +754,25 @@ e.Msg("hello")
 </td>
 <td>⚠️ <b>Reported (limitation).</b> The same for the check of <code>for range 1</code>. The path that skips the loop is still taken</td>
 </tr>
+<tr>
+<td>
+
+```go
+for range n {
+	p := newLogger()
+	defer p.Print("hello")
+	*p = log.With().Ctx(ctx).Logger()
+}
+
+// elsewhere
+func newLogger() *zerolog.Logger {
+	return new(zerolog.Logger)
+}
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> The pointer is made again on each iteration. So a store through it after the <code>defer</code> may be through a later pointer, and the value before the <code>defer</code> is still seen</td>
+</tr>
 </tbody>
 </table>
 
