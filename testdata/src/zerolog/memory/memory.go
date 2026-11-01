@@ -1071,6 +1071,18 @@ func badPointerFieldStoredThroughMaybeSame(ctx context.Context, logger zerolog.L
 	h.p.l.Info().Msg("stored through a pointer that may be the same") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func badPointerFieldStoredThroughMaybeSameTwice(ctx context.Context, logger zerolog.Logger, cond bool) {
+	p := &pointedLogger{logger.With().Ctx(ctx).Logger()}
+	h := pointedLoggerHolder{p}
+	other := pointedLoggerHolder{p}
+	if cond {
+		other.p = &pointedLogger{logger.With().Ctx(ctx).Logger()}
+	}
+	other.p.l = logger
+	other.p.l = logger
+	h.p.l.Info().Msg("stored twice through a pointer that may be the same") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func badPointerFieldCopiedFromAnother(ctx context.Context, logger zerolog.Logger) {
 	a := pointedLoggerHolder{&pointedLogger{logger}}
 	h := pointedLoggerHolder{a.p}
@@ -2026,6 +2038,18 @@ func badPointerFromStructParamCopiedThenCopyFieldReplaced(ctx context.Context, h
 	b.p = other
 	*b.p = l.With().Ctx(ctx).Logger()
 	h.p.Info().Msg("copied, then the field of the copy replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFromStructParamStoredThroughOnBranchThenCopied(ctx context.Context, h loggerPtrBox, l zerolog.Logger, cond, other bool) {
+	if cond {
+		*h.p = l.With().Ctx(ctx).Logger()
+	}
+	b := h
+	q := b.p
+	if other {
+		*q = l.With().Ctx(ctx).Logger()
+	}
+	q.Info().Msg("stored through on a branch before the copy") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func badPointerFromPointedStructCopied(ctx context.Context, h *loggerPtrBox, l zerolog.Logger, other bool) {
@@ -3650,6 +3674,19 @@ func goodLoggerPtrCopiedFromCapturedParam(ctx context.Context, l *zerolog.Logger
 		b := loggerPtrBox{l}
 		*b.p = zerolog.Ctx(ctx).With().Logger()
 		b.p.Info().Msg("pointer copied from a captured parameter") // OK
+	}()
+}
+
+func goodLoggerPtrCopiedFromCapturedParamStoredInBranches(ctx context.Context, l *zerolog.Logger, cond bool) {
+	func() {
+		b := loggerPtrBox{l}
+		q := b.p
+		if cond {
+			*q = zerolog.Ctx(ctx).With().Logger()
+		} else {
+			*q = zerolog.Ctx(ctx).With().Str("k", "v").Logger()
+		}
+		b.p.Info().Msg("pointer copied from a captured parameter, stored in both branches") // OK
 	}()
 }
 
