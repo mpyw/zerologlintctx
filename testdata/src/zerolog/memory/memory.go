@@ -2156,6 +2156,27 @@ func goodEitherPointerParamOrLoggerOfCtxInLoop(ctx context.Context, l1, l2 *zero
 	}
 }
 
+// The logger of ctx is stored through in the loop, so the Phi is not walked
+// along its paths. Each pointer parameter takes every store that reaches
+// any read of it instead.
+func goodEitherPointerParamOrLoggerOfCtxStoredInLoop(ctx context.Context, l1, l2 *zerolog.Logger, cond bool, n int) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	l1.Info().Msg("after update") // OK
+	copied := *l2
+	copied.Info().Msg("copied after update") // OK
+	p := l1
+	if cond {
+		p = l2
+	}
+	for range n {
+		p.Print("either pointer, or the logger of ctx made in the loop, stored through") // OK
+		q := zerolog.Ctx(ctx)
+		*q = q.With().Ctx(ctx).Logger()
+		p = q
+	}
+}
+
 func badEitherPointerParamOrLoggerOfCtxInLoop(ctx context.Context, l1, l2 *zerolog.Logger, cond bool, n int) {
 	*l1 = l1.With().Ctx(ctx).Logger()
 	p := l1
@@ -2265,6 +2286,23 @@ func badEitherFieldReplacedOrLoggerOfCtxInLoop(ctx context.Context, l zerolog.Lo
 	for range n {
 		p.Print("either field, replaced after, or the logger of ctx made in the loop") // want `zerolog direct logging bypasses context`
 		p = zerolog.Ctx(ctx)
+	}
+}
+
+// The logger of ctx is stored through in the loop, so the Phi is not walked
+// along its paths. Each pointer is traced as a value instead.
+func badEitherFieldReplacedOrLoggerOfCtxStoredInLoop(ctx context.Context, l zerolog.Logger, cond bool, n int) {
+	s := twoLoggerHolder{a: l.With().Ctx(ctx).Logger(), b: l.With().Ctx(ctx).Logger()}
+	p := &s.a
+	if cond {
+		p = &s.b
+	}
+	s = twoLoggerHolder{a: l, b: l}
+	for range n {
+		p.Print("either field, replaced after, or the logger of ctx made in the loop, stored through") // want `zerolog direct logging bypasses context`
+		q := zerolog.Ctx(ctx)
+		*q = q.With().Ctx(ctx).Logger()
+		p = q
 	}
 }
 
@@ -2625,6 +2663,24 @@ func goodVariableIndexPickedOrLoggerOfCtxInLoop(ctx context.Context, base zerolo
 	for range n {
 		p.Print("an element picked on a branch, or the logger of ctx made in the loop") // OK - both elements have ctx
 		p = zerolog.Ctx(ctx)
+	}
+}
+
+// The logger of ctx is stored through in the loop, so the Phi is not walked
+// along its paths. Each pointer is traced as a value instead.
+func goodVariableIndexPickedOrLoggerOfCtxStoredInLoop(ctx context.Context, base zerolog.Logger, i, j int, cond bool, n int) {
+	var arr [2]zerolog.Logger
+	arr[i] = base.With().Ctx(ctx).Logger()
+	arr[j] = base.With().Ctx(ctx).Logger()
+	p := &arr[i]
+	if cond {
+		p = &arr[j]
+	}
+	for range n {
+		p.Print("an element picked on a branch, or the logger of ctx made in the loop, stored through") // OK - both elements have ctx
+		q := zerolog.Ctx(ctx)
+		*q = q.With().Ctx(ctx).Logger()
+		p = q
 	}
 }
 
