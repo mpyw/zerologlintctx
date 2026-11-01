@@ -102,13 +102,15 @@ func walkBackWith[S comparable](
 	atEntry func() bool,
 	edge walkEdge[S],
 ) bool {
-	return WalkBackIn(from, func(instr ssa.Instruction, _ S) WalkStep { return visit(instr) }, atEntry, edge)
+	return WalkBackIn(from, func(instr ssa.Instruction, _ *S) WalkStep { return visit(instr) }, atEntry, edge)
 }
 
-// WalkBackIn is walkBackWith with visit shown the state of the path too.
+// WalkBackIn is walkBackWith with visit shown the state of the path too,
+// which it may change: the path goes on past the instruction in the state
+// visit leaves.
 func WalkBackIn[S comparable](
 	from []WalkFrom[S],
-	visit func(ssa.Instruction, S) WalkStep,
+	visit func(ssa.Instruction, *S) WalkStep,
 	atEntry func() bool,
 	edge walkEdge[S],
 ) bool {
@@ -125,7 +127,7 @@ func WalkBackIn[S comparable](
 		b := s.Point.block
 		step := WalkOn
 		for i := s.Point.index - 1; i >= 0 && step == WalkOn; i-- {
-			step = visit(b.Instrs[i], s.State)
+			step = visit(b.Instrs[i], &s.State)
 		}
 		if step == WalkAbort {
 			return false

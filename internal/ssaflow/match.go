@@ -302,10 +302,10 @@ func (m *MatchedPlaces) KeyOf(at Place) (key PlaceKey, ok bool) {
 // ok is false when key is not such a place, the closure stores to the
 // variable before the load, or the function has no such load.
 func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Instruction) (_ PlaceKey, ok bool) {
-	if _, isLoad := AsLoad(key.base()); !isLoad {
+	if _, isLoad := AsLoad(key.Root()); !isLoad {
 		return key, false
 	}
-	fv, isFreeVar := matchReadFrom(key.base()).(*ssa.FreeVar)
+	fv, isFreeVar := matchReadFrom(key.Root()).(*ssa.FreeVar)
 	if !isFreeVar {
 		return key, false
 	}
@@ -318,9 +318,9 @@ func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Inst
 		if !isValue {
 			continue
 		}
-		if outer, isLoad := AsLoad(v); isLoad && matchAcrossClosure(key.base(), outer, runs) {
+		if outer, isLoad := AsLoad(v); isLoad && matchAcrossClosure(key.Root(), outer, runs) {
 			at, ok := m.KeyOf(PlaceAt(outer))
-			return key.rooted(at.base()), ok
+			return key.rooted(at.Root()), ok
 		}
 	}
 	return key, false
@@ -348,10 +348,10 @@ func (m *MatchedPlaces) SameAtRuns(a, b PlaceKey, fn *ssa.Function) bool {
 	if a == b {
 		return true
 	}
-	_, aLoad := AsLoad(a.base())
-	_, bLoad := AsLoad(b.base())
-	sameSelections := a.rooted(b.base()) == b
-	return sameSelections && aLoad && bLoad && matchSiblingReads(a.base(), b.base(), fn)
+	_, aLoad := AsLoad(a.Root())
+	_, bLoad := AsLoad(b.Root())
+	sameSelections := a.rooted(b.Root()) == b
+	return sameSelections && aLoad && bLoad && matchSiblingReads(a.Root(), b.Root(), fn)
 }
 
 // matchSiblingReads reports whether a and b, read in func literals nested in

@@ -105,8 +105,8 @@ func (k PlaceKey) rooted(root ssa.Value) PlaceKey {
 	return PlaceKey{root: root, path: k.path}
 }
 
-// base returns the root of k.
-func (k PlaceKey) base() ssa.Value {
+// Root returns the root of k.
+func (k PlaceKey) Root() ssa.Value {
 	return k.root
 }
 
