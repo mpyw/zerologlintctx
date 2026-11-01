@@ -852,6 +852,19 @@ a store through the same pointer when the same stores reach that load and the
 call (`matchAcrossClosure`). A closure that is run by a `go` or `defer`
 statement, or passed on, adds nothing.
 
+A path that gets to the entry of the function that makes the closure, when it
+is a closure too that captures the variable in turn, goes on out of it in the
+same way, out to the function the variable is declared in. A closure in
+between that stores to the variable, or through it, as `*pp = other` does,
+may change the pointer: such a path carries a value that is not known.
+
+```go
+(*pp).log = zerolog.Ctx(ctx).With().Logger()
+func() {
+    func() { (*pp).log.Info().Msg("x") }() // not reported
+}()
+```
+
 ```go
 h.m.log = zerolog.Ctx(ctx).With().Logger() // t2 = *&t0.m ; *&t2.log = ...
 func() { h.m.log.Info().Msg("x") }()       // t1 = *&h.m ; Info(&t1.log): not reported

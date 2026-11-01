@@ -793,6 +793,70 @@ func goodCapturedPtrPtrParam(ctx context.Context, pp **ptrHolder) {
 	func() { (*pp).log.Info().Msg("pointer to a pointer") }() // OK
 }
 
+func goodCapturedPtrPtrParamNested(ctx context.Context, pp **ptrHolder) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		func() { (*pp).log.Info().Msg("pointer to a pointer, nested") }() // OK - stored through with ctx
+	}()
+}
+
+func goodCapturedStructFieldPtrNested(ctx context.Context, h monHolder) {
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		func() {
+			func() { h.m.log.Info().Msg("pointer in a captured struct, three levels") }() // OK
+		}()
+	}()
+}
+
+func goodCapturedStructFieldPtrStoredInMiddle(ctx context.Context, h monHolder, logger zerolog.Logger) {
+	h.m.log = logger
+	func() {
+		h.m.log = zerolog.Ctx(ctx).With().Logger()
+		func() { h.m.log.Info().Msg("stored through in the closure in between") }() // OK
+	}()
+}
+
+func badCapturedPtrPtrParamNested(ctx context.Context, pp **ptrHolder, logger zerolog.Logger) {
+	(*pp).log = logger
+	func() {
+		func() { (*pp).log.Info().Msg("pointer to a pointer, nested, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badCapturedPtrPtrParamReplacedInMiddle(ctx context.Context, pp **ptrHolder, other *ptrHolder) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		*pp = other
+		func() { (*pp).log.Info().Msg("another pointer stored in between") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badCapturedPtrPtrReassignedInMiddle(ctx context.Context, pp **ptrHolder, other **ptrHolder) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		pp = other
+		func() { (*pp).log.Info().Msg("the variable reassigned in between") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badCapturedStructFieldPtrNestedOneBranch(ctx context.Context, h monHolder, logger zerolog.Logger, cond bool) {
+	h.m.log = logger
+	func() {
+		if cond {
+			h.m.log = zerolog.Ctx(ctx).With().Logger()
+		}
+		func() { h.m.log.Info().Msg("stored through on one branch in between") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badCapturedReturnedPtrDeclaredInMiddle(ctx context.Context) {
+	func() {
+		p := newPtrHolder()
+		func() { p.log.Info().Msg("declared in the closure in between") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
 func badCapturedStructFieldPtr(ctx context.Context, h monHolder, logger zerolog.Logger) {
 	h.m.log = logger
 	func() { h.m.log.Info().Msg("pointer in a captured struct, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`

@@ -149,17 +149,11 @@ type storePointer struct {
 	// by another goroutine too, so what a load of it read is not known
 	// either: an update of it, which builds on such a load, is left out.
 	global bool
-	// closure, when not nil, is the closure the pointer is read in, for a
-	// walk in the function that makes it: the root of a store there is the
-	// same pointer as matchAcrossClosure tells (see walkPointerOut).
-	closure *storeClosureRun
-}
-
-// storeClosureRun is a run of a closure, a call of mc in the function that
-// makes it.
-type storeClosureRun struct {
-	mc  *ssa.MakeClosure
-	run ssa.Instruction
+	// closure, when not empty, are the runs of the closures the pointer is
+	// read in, innermost first, out to the function of the walk: the root of
+	// a store there is the same pointer as matchAcrossClosure tells (see
+	// walkPointerOut).
+	closure []matchClosureRun
 }
 
 // storePointerOf returns where root, a pointer that is not in a variable, is
@@ -221,13 +215,13 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 		return true
 	}
 	walkBack([]WalkPoint{WalkPointBefore(def, w.positions)}, pastDef, atEntry, nil)
-	if entered {
-		w.walkPointerOut(def.Parent())
+	if fv, isFreeVar := storeReadFrom(from).(*ssa.FreeVar); entered && isFreeVar {
+		w.walkPointerOut(def.Parent(), fv, nil)
 	}
 }
 
 // walkPointerOut goes on from the entry of fn, a closure that reads the root
-// of the walk from the variables it captures, in the function that makes it.
+// of the walk from fv, a variable it captures, in the function that makes it.
 // The walk goes back from each call of the closure, and a store there through
 // a pointer read from the same variable, with the same stores reaching the
 // read as reach the call, is a store through the root:
@@ -236,29 +230,76 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 //	t2 = *&t0.m ; *&t2.log = v        // reaches the read below
 //	func() { h.m.log.Info() }()       // t1 = *&h.m ; Info(&t1.log), and t1 is t2
 //
-// A closure that is not only called where it is made adds nothing.
-func (w *storeWalk) walkPointerOut(fn *ssa.Function) {
+// A path that gets to the entry of that function, when it is a closure that
+// captures the variable in turn, goes on out of it in the same way. When that
+// closure stores to the variable, or through it, as *pp = other does, the
+// pointer may be another one there, and the path carries what is not known.
+// runs are the runs of the closures that the walk went out of to get to fn,
+// innermost first. A closure that is not only called where it is made adds
+// nothing.
+func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []matchClosureRun) {
+	idx := slices.Index(fn.FreeVars, fv)
 	for _, mc := range storeMakersOf(fn) {
-		runs, ok := closureRunsOf(mc)
+		closureRuns, ok := closureRunsOf(mc)
 		if !ok {
 			continue
 		}
-		calls, called := runs.callsOnly()
+		calls, called := closureRuns.callsOnly()
 		if !called {
 			continue
 		}
+		bound, boundFree := mc.Bindings[idx].(*ssa.FreeVar)
 		for _, call := range calls {
+			outRuns := append(slices.Clip(runs), matchClosureRun{mc: mc, run: call})
 			out := &storeWalk{
 				at:        w.at,
 				positions: w.positions,
 				out:       w.out,
-				pointer: &storePointer{
-					same:    make(map[ssa.Value]bool),
-					closure: &storeClosureRun{mc: mc, run: call},
-				},
+				pointer:   &storePointer{same: make(map[ssa.Value]bool), closure: outRuns},
 			}
-			walkBack([]WalkPoint{WalkPointBefore(call, w.positions)}, out.stepAt, nil, nil)
+			atEntry := func() bool {
+				switch {
+				case !boundFree:
+					// The variable is declared in the function that makes mc
+				case storesThrough(bound):
+					w.out.unknown = true
+				default:
+					w.walkPointerOut(mc.Parent(), bound, outRuns)
+				}
+				return true
+			}
+			walkBack([]WalkPoint{WalkPointBefore(call, w.positions)}, out.stepAt, atEntry, nil)
 		}
+	}
+}
+
+// storesThrough reports whether the function of fv, a free variable, stores
+// to it, or to what is read through it: a field or element of it, or what a
+// pointer loaded from it points to, at any depth. A store through a copy of
+// it, or through a pointer passed to a function, is not seen.
+func storesThrough(fv *ssa.FreeVar) bool {
+	for instr := range InstrsIn(fv.Parent()) {
+		store, isStore := instr.(*ssa.Store)
+		if isStore && storeReadFrom(store.Addr) == fv {
+			return true
+		}
+	}
+	return false
+}
+
+// storeReadFrom returns the value that v, an address or a pointer, is read
+// from through loads, fields and elements: v itself when it is none of those.
+func storeReadFrom(v ssa.Value) ssa.Value {
+	for {
+		if load, isLoad := AsLoad(v); isLoad {
+			v = load.X
+			continue
+		}
+		x, _, ok := addrSel(v)
+		if !ok {
+			return v
+		}
+		v = x
 	}
 }
 
@@ -268,8 +309,8 @@ func (p *storePointer) samePointer(root, pointer ssa.Value) bool {
 	same, done := p.same[root]
 	switch {
 	case done:
-	case p.closure != nil:
-		same = matchAcrossClosure(pointer, root, p.closure.mc, p.closure.run)
+	case len(p.closure) > 0:
+		same = matchAcrossClosure(pointer, root, p.closure)
 	default:
 		same = addressesMatch(root, pointer)
 	}
