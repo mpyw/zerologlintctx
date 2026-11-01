@@ -325,8 +325,10 @@ func storeCallsOf(fn *ssa.Function) (calls []ssa.Instruction, ok bool) {
 //
 // A path that gets to the entry of that function, when it is a closure that
 // captures the variable in turn, goes on out of it in the same way. When that
-// closure stores to the variable, or through it, as *pp = other does, the
-// pointer may be another one there, and the path carries what is not known.
+// closure stores to the variable, or through it where the pointer is read
+// from, as *pp = other does, the pointer may be another one there, and the
+// path carries what is not known. A store through the pointer itself, as
+// **pp = l does, leaves the pointer as it is.
 // runs are the runs of the closures that the walk went out of to get to fn,
 // innermost first. A closure that is not only called where it is made adds
 // nothing.
@@ -359,7 +361,7 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 					if alloc, isAlloc := mc.Bindings[idx].(*ssa.Alloc); isAlloc && w.storeHoldsCallerParam(alloc) {
 						w.out.unknown = true
 					}
-				case storesThrough(bound):
+				case storesThrough(bound, storeLoadsIn(w.pointer.from)):
 					w.out.unknown = true
 				default:
 					w.walkPointerOut(mc.Parent(), bound, outRuns)
@@ -372,17 +374,42 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 }
 
 // storesThrough reports whether the function of fv, a free variable, stores
-// to it, or to what is read through it: a field or element of it, or what a
-// pointer loaded from it points to, at any depth. A store through a copy of
-// it, or through a pointer passed to a function, is not seen.
-func storesThrough(fv *ssa.FreeVar) bool {
+// to it, or to what is read through it with at most loads loads: a field or
+// element of it, or what a pointer loaded from it points to. A pointer read
+// from an address that loads loads take from fv may be replaced by such a
+// store, and not by one through the pointer itself, which takes more:
+//
+//	b.p = other               // *&(*b).p = other, one load: replaces b.p
+//	*b.p = l                  // **&(*b).p = l, two loads: writes the Logger only
+//
+// A store through a copy of fv, or through a pointer passed to a function, is
+// not seen.
+func storesThrough(fv *ssa.FreeVar, loads int) bool {
 	for instr := range InstrsIn(fv.Parent()) {
 		store, isStore := instr.(*ssa.Store)
-		if isStore && storeReadFrom(store.Addr) == fv {
+		if isStore && storeReadFrom(store.Addr) == fv && storeLoadsIn(store.Addr) <= loads {
 			return true
 		}
 	}
 	return false
+}
+
+// storeLoadsIn returns how many loads v, an address or a pointer, takes from
+// the value storeReadFrom returns for it.
+func storeLoadsIn(v ssa.Value) int {
+	loads := 0
+	for {
+		if load, isLoad := AsLoad(v); isLoad {
+			v = load.X
+			loads++
+			continue
+		}
+		x, _, ok := addrSel(v)
+		if !ok {
+			return loads
+		}
+		v = x
+	}
 }
 
 // storeReadFrom returns the value that v, an address or a pointer, is read
