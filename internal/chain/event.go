@@ -39,13 +39,13 @@ import (
 // it. Event.CreateDict returns another event, so it is not followed back.
 //
 //declscope:shared // tracing.go takes a func literal's result back to a parameter by it
-func eventOrigin(v ssa.Value) ssa.Value {
+func eventOrigin(v ssa.Value, closures *ssaflow.Closures) ssa.Value {
 	for {
 		call, ok := v.(*ssa.Call)
 		if !ok {
 			return v
 		}
-		c, ok := calleeOf(&call.Call)
+		c, ok := calleeOf(&call.Call, closures)
 		if !ok || c.Recv == nil || c.Embedded != nil || !c.returnsSameEvent() {
 			return v
 		}
@@ -629,7 +629,7 @@ func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) *eventCtxCalls {
 
 // ctxCallOf returns call as a Ctx call, when it is a call of Event.Ctx.
 func (ix *eventIndex) ctxCallOf(call *ssa.Call) (*eventCtxCall, bool) {
-	c, ok := calleeOf(&call.Call)
+	c, ok := calleeOf(&call.Call, ix.closures)
 	if !ok || c.Recv == nil || c.api.Kind != zerologapi.KindSource || c.api.Recv != zerologapi.TypeEvent {
 		return nil, false
 	}
@@ -753,6 +753,7 @@ func (ix *eventIndex) calleeStep(c callee, call ssa.Instruction) eventStep {
 	if c.Embedded == nil {
 		return eventStep{next: []ssa.Value{c.Recv}}
 	}
+	call = c.ReadAt(call)
 	addr, typ, read, ok := c.EmbeddedStart(call)
 	if !ok {
 		return eventStep{sources: []eventSource{{v: c.Recv}}}
@@ -786,7 +787,7 @@ func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 			return eventStep{} // A nil event logs nothing
 		}
 	case *ssa.Call:
-		if c, ok := calleeOf(&val.Call); ok && c.Recv != nil && c.returnsSameEvent() {
+		if c, ok := calleeOf(&val.Call, ix.closures); ok && c.Recv != nil && c.returnsSameEvent() {
 			return ix.calleeStep(c, val)
 		}
 	case *ssa.Phi:
