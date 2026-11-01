@@ -1319,6 +1319,153 @@ func badLoopFieldOfParamKeptAfterCall(ctx context.Context, logger zerolog.Logger
 	}
 }
 
+// The holder declared before the event: a path that reaches where the event
+// is made, without passing its store to the field, does not carry it there
+// (#338).
+
+func goodLoopFieldKeptCtxAfterStoreHolderFirst(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	b := &phiEventHolder{nil}
+	e := logger.Info()
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the holder declared first, ctx after the store") // OK
+		}
+		b.e = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
+func goodLoopFieldKeptCtxBeforeStoreHolderFirst(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	b := &phiEventHolder{nil}
+	e := logger.Info()
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the holder declared first, ctx before the store") // OK
+		}
+		e.Ctx(ctx)
+		b.e = e
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopFieldKeptWithoutCtxHolderFirst(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	b := &phiEventHolder{nil}
+	e := logger.Info()
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the holder declared first, stored without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		b.e = e
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badFieldStoredOnBranchHolderFirst(ctx context.Context, logger zerolog.Logger, cond bool) {
+	b := &phiEventHolder{nil}
+	e := logger.Info()
+	if cond {
+		b.e = e
+	}
+	if b.e != nil {
+		b.e.Msg("the holder declared first, stored on a branch without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+// A store to where a value stored in the field is read from counts only once
+// the path passes the store to the field. A variable captured by a func
+// literal is such a place (#337).
+
+func goodLoopCapturedKeptCtxAfterStore(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	_ = func() { _ = e }
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("a captured event, ctx after the store") // OK
+		}
+		b.e = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopCapturedKeptWithoutCtx(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	_ = func() { _ = e }
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("a captured event, stored without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		b.e = e
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopCapturedKeptWithoutCtxNoCheck(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	_ = func() { _ = e }
+	b := &phiEventHolder{nil}
+	for range n {
+		b.e.Msg("a captured event, stored without ctx, no nil check") // want `zerolog call chain missing .Ctx\(ctx\)`
+		b.e = e
+		e = e2.Ctx(ctx)
+	}
+}
+
+// ===== AN EVENT READ BACK FROM A NEW HOLDER IN A LOOP =====
+
+// A holder made on each iteration holds nil when it is made, but what a path
+// carries there is the value stored into it, which it reads back, not the
+// value read from the holder of the iteration before (#337).
+
+func goodLoopEventReadBackFromBox(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		if cond {
+			e = logger.Warn().Ctx(ctx)
+		}
+		e = (&phiEventHolder{e}).e
+	}
+	e.Msg("every event read back has ctx") // OK
+}
+
+func badLoopEventReadBackFromBox(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		if cond {
+			e = logger.Warn()
+		}
+		e = (&phiEventHolder{e}).e
+	}
+	e.Msg("the event on a branch, read back, lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoopEventReadBackFromBoxWithField(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		if cond {
+			e = logger.Warn()
+		}
+		e = (&phiEventHolder{e}).e.Str("k", "v")
+	}
+	e.Msg("the event on a branch, read back with a field, lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoopEventReadBackFromBoxStoredLater(ctx context.Context, logger zerolog.Logger, n int, cond bool) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		if cond {
+			e = logger.Warn()
+		}
+		b := &phiEventHolder{}
+		b.e = e
+		e = b.e
+	}
+	e.Msg("the event on a branch, stored over the zero value, lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== POINTER TO A VARIABLE DECLARED IN A BRANCH =====
 
 // A Phi of pointers that may point to a variable declared in a branch or a

@@ -326,6 +326,9 @@ type eventQuery struct {
 	// current are the values of values whose Phis decide the edges a path
 	// takes, while it carries this value (see eventIndex.currentIn).
 	current map[ssa.Value]bool
+	// now is where the receiver is read from, on a path that has not passed
+	// a store there (see eventIndex.readNowOf).
+	now eventReadNow
 }
 
 // eventCarried is what a value a path carries is read through, as
@@ -338,6 +341,20 @@ type eventCarried struct {
 	// current are the values of values whose Phis decide the edges a path
 	// takes, while it carries this value (see eventIndex.currentIn).
 	current map[ssa.Value]bool
+	// now is where the value is read from, on a path that has not passed a
+	// store there (see eventIndex.readNowOf).
+	now eventReadNow
+}
+
+// eventReadNow is where a value a path carries is read from, on a path that
+// has not passed a store there (see eventIndex.readNowOf).
+type eventReadNow struct {
+	reads map[ssaflow.PlaceKey]bool
+	// onlyRead reports that the value is no other event than the one read
+	// from reads, a field of an Alloc that only the stores the walk sees
+	// write to (see eventOnlyFieldsOf). A path that gets to where an event is
+	// made without passing a store of it there does not carry that event.
+	onlyRead bool
 }
 
 // eventPick is a load of an event through a Phi of pointers, such as h.e for
@@ -387,6 +404,7 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 	q.sources = ix.expand(q.recv, q.values, q.reads)
 	q.picks = ix.picksIn(q.values)
 	q.current = ix.currentIn(q.recv)
+	q.now = ix.readNowOf(q.carriedValue(nil), q.recv, q.reads)
 	return q
 }
 
@@ -589,6 +607,20 @@ func (q *eventQuery) counts(cc *eventCtxCall, src eventSource) bool {
 // the entry of the function carries src only when the function does not make
 // it, as for a parameter. A path carries another event when it takes an edge
 // of a Phi, or stores a value, that is not src or has context of its own.
+// A path that carries a read from memory, and gets to where src is made
+// without passing a store of it there, does not carry src (see
+// eventReadNow.onlyRead):
+//
+//	b := &holder{nil}       // b.e holds nil on the first iteration
+//	e := logger.Info()      // not in b.e yet on this path
+//	for range n {
+//	    if b.e != nil {
+//	        b.e.Msg("x")    // OK: the event of the iteration before
+//	    }
+//	    b.e = e
+//	    e.Ctx(ctx)
+//	    e = e2.Ctx(ctx)
+//	}
 //
 // A receiver that holds only an earlier run of src, made in a loop, holds an
 // event made before the latest run. A path that reaches the latest run goes
@@ -619,6 +651,8 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 		case eventCtxNone:
 		}
 		switch {
+		case instr == def && (earlier || !runs.onlyEarlier()) && q.carriedBy(p.carried).now.onlyRead:
+			return ssaflow.WalkOn // Read from where src is not stored on this path
 		case instr == def && (earlier || !runs.onlyEarlier()):
 			return ssaflow.WalkAbort // src is made on this path, and Ctx does not run after
 		case instr == def:
@@ -741,7 +775,7 @@ func (q *eventQuery) defOf(src eventSource) ssa.Instruction {
 }
 
 // storesOther reports whether instr stores, where the value a path carries
-// is read from, a value it is read through, which is another event than src,
+// is read from there (see eventIndex.readNowOf), a value it is read through, which is another event than src,
 // or has context of its own:
 //
 //	e := logger.Info()
@@ -767,11 +801,11 @@ func (q *eventQuery) storesOther(instr ssa.Instruction, p eventPath, fresh bool)
 		return key == p.src.at && q.isOther(store.Val, p.src, fresh)
 	}
 	key := at.Key()
-	return q.values[store.Val] && q.reads[key] && q.carriedBy(p.carried).reads[key] && q.isOther(store.Val, p.src, fresh)
+	return q.values[store.Val] && q.reads[key] && q.carriedBy(p.carried).now.reads[key] && q.isOther(store.Val, p.src, fresh)
 }
 
 // holdsNone reports whether, at instr, where the value the path p carries is
-// read from holds no event: instr stores nil there, or is the Alloc it is
+// read from there (see eventIndex.readNowOf) holds no event: instr stores nil there, or is the Alloc it is
 // in, whose zero value is nil. That is known for a field of an Alloc that
 // only the stores the walk sees write to (see eventOnlyFieldsOf). A path that
 // picked its event at a Phi of pointers (see eventQuery.sourcePicked) is
@@ -780,7 +814,7 @@ func (q *eventQuery) holdsNone(instr ssa.Instruction, p eventPath) bool {
 	if p.picked {
 		return false
 	}
-	reads := q.carriedBy(p.carried).reads
+	reads := q.carriedBy(p.carried).now.reads
 	switch in := instr.(type) {
 	case *ssa.Store:
 		at, _ := ssaflow.PlaceOf(in.Addr)
@@ -798,7 +832,8 @@ func (q *eventQuery) holdsNone(instr ssa.Instruction, p eventPath) bool {
 }
 
 // carryStored has the path p carry the value instr stores, when it stores,
-// where the value p carries is read from, a value that is read through. That
+// where the value p carries is read from there (see eventIndex.readNowOf), a
+// value that is read through. That
 // is what the read sees on the path, so it is what the path carries before
 // the store, the event of the iteration before in a loop:
 //
@@ -820,7 +855,7 @@ func (q *eventQuery) carryStored(instr ssa.Instruction, p *eventPath) {
 		return
 	}
 	by := q.carriedBy(p.carried)
-	if at, _ := ssaflow.PlaceOf(store.Addr); by.reads[at.Key()] && by.values[store.Val] {
+	if at, _ := ssaflow.PlaceOf(store.Addr); by.now.reads[at.Key()] && by.values[store.Val] {
 		p.carried = store.Val
 	}
 }
@@ -886,7 +921,7 @@ func (q *eventQuery) carriedValue(carried ssa.Value) ssa.Value {
 // finds once. A nil v is the receiver, read through q.values and q.reads.
 func (q *eventQuery) carriedBy(v ssa.Value) eventCarried {
 	if v == nil {
-		return eventCarried{values: q.values, reads: q.reads, picks: q.picks, current: q.current}
+		return eventCarried{values: q.values, reads: q.reads, picks: q.picks, current: q.current, now: q.now}
 	}
 	if by, ok := q.ix.carried[v]; ok {
 		return by
@@ -895,6 +930,7 @@ func (q *eventQuery) carriedBy(v ssa.Value) eventCarried {
 	q.ix.expand(eventStep{next: []ssa.Value{v}}, by.values, by.reads)
 	by.picks = q.ix.picksIn(by.values)
 	by.current = q.ix.currentIn(eventStep{next: []ssa.Value{v}})
+	by.now = q.ix.readNowOf(v, eventStep{next: []ssa.Value{v}}, by.reads)
 	q.ix.carried[v] = by
 	return by
 }
@@ -1372,6 +1408,47 @@ func (ix *eventIndex) currentIn(start eventStep) map[ssa.Value]bool {
 	}
 	walk(start, nil)
 	return values
+}
+
+// readNowOf returns where v, a value a path carries, with the step start
+// back from it, is read from on a path that has not passed a store there.
+// That is the place of the read v is, back through the methods that return
+// the event they run on, and none for an event v is made as, or for a Phi
+// the path takes an edge of (see eventQuery.carriedInto). The places that
+// what is stored there, or what an edge is, is read from count only once the
+// path passes the store (see eventQuery.carryStored) or takes the edge, as
+// around a loop, where they hold what the iteration before stored:
+//
+//	e := logger.Info().Ctx(ctx)
+//	for range n {
+//	    if cond {
+//	        e = logger.Warn()
+//	    }
+//	    e = (&box{e}).v     // a new box, which holds nil before the store
+//	}
+//	e.Msg("x")              // reported
+//
+// For any other value, such as one with more steps, or one back through a
+// Phi the path takes no edge of, they are all the places read on the way
+// back to its events, which all holds.
+func (ix *eventIndex) readNowOf(v ssa.Value, start eventStep, all map[ssaflow.PlaceKey]bool) eventReadNow {
+	taken, _ := ix.phiOf(v)
+	// pastPhi reports that step is of a Phi the path takes no edge of
+	pastPhi := false
+	for step := start; ; {
+		ix.work++
+		switch {
+		case pastPhi, len(step.more) != 0, step.read == nil && len(step.next) > 1:
+			return eventReadNow{reads: all}
+		case step.read != nil:
+			only := !step.readVariable && eventOnlyFieldsOf(step.read.Root())
+			return eventReadNow{reads: map[ssaflow.PlaceKey]bool{*step.read: true}, onlyRead: only}
+		case len(step.next) == 0 || step.next[0] == taken:
+			return eventReadNow{}
+		}
+		_, pastPhi = step.next[0].(*ssa.Phi)
+		step = ix.stepOf(step.next[0])
+	}
 }
 
 // calleeStep is the step back from the receiver of c, which call runs: the

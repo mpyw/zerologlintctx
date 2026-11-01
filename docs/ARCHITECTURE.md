@@ -498,10 +498,16 @@ a loop that keeps the event for the next iteration, is not the one the read
 sees where the path first gets to the Phi, so it decides no edge there
 (`eventIndex.currentIn`). A path that gets to a store of nil where it is read
 from, or to the Alloc it is in, holds no event, when only the stores the walk
-sees write there (`eventQuery.holdsNone`):
+sees write there (`eventQuery.holdsNone`). Where it is read from is the place
+of the read the value it carries is, not the places read on the way back
+from what is stored there or from the edges of a Phi, which count once the
+path passes the store or takes the edge (`eventIndex.readNowOf`). A path that
+gets to where its event is made, before it passes a store of it there, does
+not carry that event:
 
 ```go
 b := &holder{nil}       // b.e holds nil on the first iteration
+e := logger.Info()      // not in b.e yet on this path
 for range n {
     if b.e != nil {
         b.e.Msg("x")    // OK: the event of the iteration before
