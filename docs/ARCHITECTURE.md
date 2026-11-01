@@ -662,8 +662,23 @@ Phi itself, has what each variable the Phi may point to holds there. Each one
 is walked from the read along the paths on which the Phi points to it: at the
 top of the block of the Phi, the walk goes on through the edges that hold it
 only. Every value that reaches the read must have context. A Phi that may
-point to more than a few variables, or to anything but a variable, a pointer
-parameter or a captured variable, is not walked.
+point to more than a few variables is not walked.
+
+A pointer the Phi picks that is not in a variable, such as `b.p` read from a
+pointer parameter, is walked for as below (see
+[Pointers Not in a Variable](#pointers-not-in-a-variable)), along the same
+paths back to where it is made, and on from there on every path. When no store
+through it is found, or it may be made after the Phi, as in a loop, the Phi
+is not walked. A pointer receiver that a Phi picks is such an address too
+(`Resolver.ResolvesThrough`):
+
+```go
+p := b.p      // b is a pointer parameter, and *b.p has ctx
+if cond {
+    p = l     // *l has ctx too
+}
+p.Info().Msg("x") // reads *b.p on one path, *l on the other: not reported
+```
 
 When the read is not known, such as for an address that a Phi picks, every
 read of the address counts. An instruction that passes the address on, such
@@ -912,8 +927,8 @@ p.Info().Msg("x") // the logger of ctx when cond is false: not reported
 ```
 Only the stores of the function itself are traced. When no path carries one,
 the address is taken as not known to the walk, and the pointer itself is
-traced. For a Phi of pointers with no store through it, the variables it
-picks are walked instead (see [Stores That Reach a Read](#stores-that-reach-a-read)).
+traced. For a Phi of pointers with no store through it, the pointers it
+picks are walked for instead (see [Stores That Reach a Read](#stores-that-reach-a-read)).
 
 A pointer receiver is such a pointer too, when it is read from memory, as
 `b.p` and `(*pl)` are, or when a call returns it, or it is received from a

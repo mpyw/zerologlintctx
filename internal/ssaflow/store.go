@@ -208,7 +208,7 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 		}
 		return w.stepAt(in)
 	}
-	walkBack([]WalkPoint{WalkPointBefore(instr, w.positions)}, toDef, nil, nil)
+	w.walkPickedBack(instr, toDef, nil)
 	from := w.pointer.from
 	if reached && from == nil && len(w.at.path) == 0 {
 		w.out.addMade(w.at.root)
@@ -362,10 +362,15 @@ const storePickedMax = 16
 // An edge that is a Phi itself holds it when one of its own edges does. Every
 // value that reaches read must have context, as for the edges of a Phi.
 //
-// ok is false when an edge is not a pointer to a variable, a pointer
-// parameter or a captured variable, or a field or constant element of one,
-// when phi may point to more than storePickedMax of them, or when read is a
-// go or defer statement, which reads the address later.
+// An edge that is not a pointer to a variable, a pointer parameter or a
+// captured variable, or a field or constant element of one, such as a
+// pointer read from a parameter, is walked for as storesReachingPointer
+// walks for one, back along the same paths to where it is made (see
+// storePick.pointerOf).
+//
+// ok is false when no store through such an edge is found, or it cannot be
+// walked for, when phi may point to more than storePickedMax variables, or
+// when read is a go or defer statement, which reads the address later.
 func storesReachingPicked(
 	phi *ssa.Phi,
 	path []sel,
@@ -382,17 +387,23 @@ func storesReachingPicked(
 	}
 	for _, leaf := range leaves {
 		leafAt, tracked := PlaceOf(leaf)
-		if !tracked {
-			return storeReaching{}, false
-		}
+		pick := &storePick{phi: phi, leaf: leaf}
 		var lr storeReaching
 		w := &storeWalk{
 			at:        leafAt.with(path...),
 			positions: positions,
 			out:       &lr,
-			picked:    &storePick{phi: phi, leaf: leaf},
+			picked:    pick,
+		}
+		if !tracked {
+			if w.pointer, ok = pick.pointerOf(positions); !ok {
+				return storeReaching{}, false
+			}
 		}
 		w.walkBefore(read)
+		if !tracked && lr.isEmpty() {
+			return storeReaching{}, false // What is there was stored where the function cannot see
+		}
 		r.merge(lr)
 	}
 	return r, true
@@ -431,6 +442,20 @@ func storePickedLeaves(phi *ssa.Phi) (leaves []ssa.Value, ok bool) {
 type storePick struct {
 	phi  *ssa.Phi
 	leaf ssa.Value
+}
+
+// pointerOf returns where the leaf, a pointer that is not in a variable, is
+// made, for a walk of the stores through it along the paths on which the Phi
+// is the leaf (see storeWalk.walkPointerBefore). Such a walk keeps to those
+// paths back to where the leaf is made, and goes on from there on every
+// path. ok is false when the leaf may be made after the Phi, as in a loop:
+// a path back from the read may meet it before it meets the Phi.
+func (pk *storePick) pointerOf(positions Positions) (_ *storePointer, ok bool) {
+	p := storePointerOf(pk.leaf)
+	if p.def != nil && positions.reaches(pk.phi, p.def) {
+		return nil, false
+	}
+	return p, true
 }
 
 // holds reports whether p, phi or a Phi that an edge of phi leads to, may be
@@ -528,7 +553,9 @@ func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r store
 // A pointer copied from another one read from memory points to what that one
 // does, as it is read where the copy is made. When that one cannot be
 // followed, as for one read from a pointer parameter, the stores through the
-// same pointer are walked for, as storesReachingPointer does:
+// same pointer are walked for, as storesReachingPointer does. For one that a
+// Phi picks, the walk keeps to the paths on which the Phi picks it, back to
+// where it is made (see storePick.pointerOf):
 //
 //	a := holder{&inner{l: base.With().Ctx(ctx).Logger()}}
 //	h := holder{a.p}                  // t5 = *&a.p ; *&h.p = t5
@@ -555,9 +582,10 @@ func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via [
 				continue
 			}
 			if len(tvia) == 0 && t.picked != nil {
-				return storeReaching{}, false // walkPointerBefore does not keep to the paths of a Phi
-			}
-			if len(tvia) == 0 {
+				if w.pointer, ok = t.picked.pointerOf(p.positions); !ok {
+					return storeReaching{}, false
+				}
+			} else if len(tvia) == 0 {
 				w.pointer = storePointerOf(t.v)
 			}
 		}
@@ -1151,6 +1179,17 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 		w.reachEntry()
 		return true
 	}
+	w.walkPickedBack(instr, w.stepAt, atEntry)
+}
+
+// walkPickedBack walks every path that leads to instr, from the instruction
+// before it, with visit and atEntry as walkBack does. When the walk has a
+// picked variable, it takes only the paths on which the Phi points to it.
+func (w *storeWalk) walkPickedBack(instr ssa.Instruction, visit func(ssa.Instruction) WalkStep, atEntry func() bool) {
+	if w.picked == nil {
+		walkBack([]WalkPoint{WalkPointBefore(instr, w.positions)}, visit, atEntry, nil)
+		return
+	}
 	from := []WalkFrom[*ssa.Phi]{{WalkPointBefore(instr, w.positions), w.picked.phi}}
 	edge := func(b *ssa.BasicBlock, i int, need *ssa.Phi) (*ssa.Phi, bool) {
 		if need == nil || need.Block() != b {
@@ -1158,7 +1197,7 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 		}
 		return w.pickedThrough(need.Edges[i]) // The Phi may not point to the variable on this path
 	}
-	walkBackWith(from, w.stepAt, atEntry, edge)
+	walkBackWith(from, visit, atEntry, edge)
 }
 
 // walkBackFrom walks every path that leads to a point of from, and stops each
