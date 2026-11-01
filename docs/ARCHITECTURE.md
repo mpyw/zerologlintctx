@@ -531,8 +531,11 @@ than the square of the number of terminators.
 
 A `Ctx` call given a fresh context replaces the context of the event, so the
 last `Ctx` call on a path decides. Such a call counts only when it runs on
-the source alone, and on the same run of it (see below). A call that may run
-on another event may leave the context as it was:
+the source alone, and on the same run of it (see below), or on the Phi of
+events that the path carries in place of the receiver there. Whichever event
+that Phi is, the call replaces its context (`eventQuery.freshOnCarried`).
+Any other call that may run on another event may leave the context as it
+was:
 
 | Chain of the receiver | Reported when |
 |-----------------------|---------------|
@@ -545,6 +548,15 @@ if detached {
     e.Ctx(context.Background())
 }
 e.Msg("x") // reported: Background on one path
+```
+
+```go
+e := logger.Info().Ctx(ctx)
+if cond {
+    e = logger.Warn().Ctx(ctx)
+}
+e.Ctx(context.Background()) // on the event e is, on each path
+e.Msg("x")                  // reported
 ```
 
 A store of the event after the fresh `Ctx` call, or a Phi that picks it,

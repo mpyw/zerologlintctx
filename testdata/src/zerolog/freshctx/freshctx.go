@@ -328,6 +328,67 @@ func goodEventCtxBackgroundOnEitherEvent(ctx context.Context, log zerolog.Logger
 	e.Msg("Background on e or another event") // OK - either may be the other
 }
 
+// A fresh context given to Ctx on a Phi of events replaces the context of
+// whichever event the Phi is, so it counts for each (#315).
+
+func badEventCtxBackgroundInPlaceOnPhi(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	e.Ctx(context.Background())
+	e.Msg("Background in place on a Phi of events with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxAfterBackgroundInPlaceOnPhi(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	e.Ctx(context.Background())
+	e.Ctx(ctx)
+	e.Msg("ctx after Background in place on a Phi of events") // OK - ctx is the last
+}
+
+func badEventCtxBackgroundInPlaceOnPhiAfterCtx(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	if cond {
+		e = log.Warn()
+	}
+	e.Ctx(ctx)
+	e.Ctx(context.Background())
+	e.Msg("Background after ctx in place on a Phi of events") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceOnPhiThroughStr(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	e.Str("k", "v").Ctx(context.Background())
+	e.Msg("Background in place on a field of a Phi of events") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceOnPhiInLoop(ctx context.Context, log zerolog.Logger, n int, cond bool) {
+	e := log.Info().Ctx(ctx)
+	for range n {
+		if cond {
+			e = log.Warn().Ctx(ctx)
+		}
+		e.Ctx(context.Background())
+		e.Msg("Background in place on a Phi of events in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+func goodEventCtxBackgroundInPlaceOnPhiOfLastIteration(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info().Ctx(ctx)
+	for range n {
+		e.Msg("Background on the event of the last iteration") // OK - another event is stored after
+		e.Ctx(context.Background())
+		e = log.Warn().Ctx(ctx)
+	}
+}
+
 // LIMITATION (false negative): A fresh context given to Ctx counts only for
 // a receiver that holds the same run of an event made in a loop on every
 // path. last holds the run before, whose Ctx call is not looked at.
