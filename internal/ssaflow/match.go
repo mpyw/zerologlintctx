@@ -250,6 +250,26 @@ func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Inst
 	return key, false
 }
 
+// MatchPlaceAtRun returns the place that the function making mc has for the
+// place load reads, in the func literal of mc, from a variable the func
+// literal captures, as a call of mc runs it: the same selections from the
+// variable bound there. The func literal must not store there before load, so
+// that load sees what is there as the call runs it:
+//
+//	t2 = make closure f$1 [t1] ; t3 = t2()   // f$1: t0 = *last ; Ctx(t0, ctx)
+//	                                          // *last is *t1 at t3
+//
+// ok is false when load is not such a read, or selects an element at an index
+// that is not a constant, which is a value of the func literal.
+func MatchPlaceAtRun(load *ssa.UnOp, mc *ssa.MakeClosure) (_ Place, ok bool) {
+	at, _ := PlaceOf(load.X)
+	fv, isFreeVar := at.root.(*ssa.FreeVar)
+	if !isFreeVar || fv.Parent() != mc.Fn || at.Variable() || !maps.Equal(matchReachingStores(load), map[ssa.Instruction]bool{nil: true}) {
+		return Place{}, false
+	}
+	return Place{root: mc.Bindings[slices.Index(fv.Parent().FreeVars, fv)], path: at.path}, true
+}
+
 // matchFromGlobal reports whether v is a global, or is read from one: a load
 // of it, or a field or element of one, at any depth.
 func matchFromGlobal(v ssa.Value) bool {

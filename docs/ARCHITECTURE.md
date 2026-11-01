@@ -548,6 +548,12 @@ the latest run of the call. It goes on before it, where a `Ctx` call on any
 run counts, and fails at the run before. So a `Ctx` call on each event before
 it is kept for the next iteration counts.
 
+A `Ctx` call in a func literal called in place, on an event it reads from a
+variable it captures, is followed from where the func literal is called: a
+read of the variable bound there, as the call runs it (`recvAtRun`). So
+`func() { last.Ctx(ctx) }()` holds the same runs as `last.Ctx(ctx)` would at
+that call.
+
 Only calls that can run again after they run, in a loop, get this check, so
 the graph is not built for the others.
 

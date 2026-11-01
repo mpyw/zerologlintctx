@@ -689,7 +689,7 @@ func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosu
 			continue
 		}
 		for _, site := range sites {
-			calls.add(site, &eventCtxCall{call: site, sources: ix.sourcesAtRun(cc.sources, mc, site), recv: cc.recv})
+			calls.add(site, &eventCtxCall{call: site, sources: ix.sourcesAtRun(cc.sources, mc, site), recv: ix.recvAtRun(cc, mc, site)})
 		}
 	}
 }
@@ -715,6 +715,43 @@ func (ix *eventIndex) sourcesAtRun(sources *eventSources, mc *ssa.MakeClosure, s
 		mapped.add(src)
 	}
 	return mapped
+}
+
+// recvAtRun returns the step back from the receiver of cc, a Ctx call in the
+// func literal of mc, as the function that makes mc has it where site runs
+// it. A receiver read from a variable the func literal captures is read from
+// the variable bound there, as site runs (see ssaflow.MatchPlaceAtRun), so that
+// eventRunGraph sees the stores to it, which tell the run it holds of an
+// event made in a loop:
+//
+//	var last *zerolog.Event
+//	for range n {
+//	    e := logger.Info()
+//	    if last != nil {
+//	        func() { last.Ctx(ctx) }() // last, read at the call: an earlier run
+//	        last.Msg("x")              // OK
+//	    }
+//	    last = e
+//	}
+//
+// Any other receiver keeps the step back the func literal has.
+func (ix *eventIndex) recvAtRun(cc *eventCtxCall, mc *ssa.MakeClosure, site ssa.Instruction) eventStep {
+	if len(cc.recv.next) != 1 {
+		return cc.recv
+	}
+	load, ok := ssaflow.AsLoad(eventOrigin(cc.recv.next[0], ix.closures))
+	if !ok {
+		return cc.recv
+	}
+	at, ok := ssaflow.MatchPlaceAtRun(load, mc)
+	var sources iter.Seq[ssaflow.Resolved]
+	if ok {
+		sources, ok = ix.resolver().ResolveAt(at, site)
+	}
+	if !ok {
+		return cc.recv
+	}
+	return ix.resolvedStep(sources, at)
 }
 
 // eventRunsOnEveryReturn reports whether cc, or another call of set on the
