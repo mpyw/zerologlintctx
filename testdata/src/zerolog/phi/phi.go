@@ -1522,9 +1522,9 @@ func goodLoggerPointerToVariableSetBeforePick(ctx context.Context, base zerolog.
 	p.Info().Msg("l lacks ctx only on the edge that does not pick it") // OK - p points to l only after the store with ctx
 }
 
-// The logger of ctx made in a loop, after the Phi, cannot be walked along
-// the paths of the Phi. The variable declared in the branch still holds
-// nothing on the other edges.
+// The logger of ctx made in a loop, after the Phi, has no store through it,
+// and is walked along the paths of the Phi. The variable declared in the
+// branch holds nothing on the other edges.
 func goodLoggerPointerToVariableDeclaredInBranchPickedInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
 	p := zerolog.Ctx(ctx)
 	if cond {
