@@ -721,6 +721,90 @@ func goodEventFieldThroughPointerPickedInLoop(ctx context.Context, logger zerolo
 	}
 }
 
+// ===== POINTER TO A VARIABLE DECLARED IN A BRANCH =====
+
+// A Phi of pointers that may point to a variable declared in a branch or a
+// loop takes it only from the edges that run its declaration. On the other
+// edges, the variable holds nothing that the Phi passes on (#232).
+
+func goodLoggerPointerToVariableDeclaredInBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	p.Info().Msg("pointer to a variable declared in a branch") // OK - both loggers have ctx
+}
+
+func goodLoggerPointerToOneOfTwoVariablesDeclaredInBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	a := base.With().Ctx(ctx).Logger()
+	p := &a
+	if cond {
+		b := base.With().Ctx(ctx).Logger()
+		p = &b
+	}
+	p.Info().Msg("one of two variables declared in a branch") // OK - both loggers have ctx
+}
+
+func goodLoggerFieldOfVariableDeclaredInBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	h0 := phiLoggerHolder{l: base.With().Ctx(ctx).Logger()}
+	p := &h0.l
+	if cond {
+		h := phiLoggerHolder{l: base.With().Ctx(ctx).Logger()}
+		p = &h.l
+	}
+	p.Info().Msg("field of a variable declared in a branch") // OK - both loggers have ctx
+}
+
+func goodLoggerPointerToVariableDeclaredInLoop(ctx context.Context, base zerolog.Logger, xs []int) {
+	p := zerolog.Ctx(ctx)
+	for _, x := range xs {
+		l := base.With().Ctx(ctx).Int("x", x).Logger()
+		p = &l
+	}
+	p.Info().Msg("pointer to a variable declared in a loop") // OK - every logger has ctx
+}
+
+func goodLoggerPointerToVariableSetBeforePick(ctx context.Context, base zerolog.Logger, a, b bool) {
+	p := zerolog.Ctx(ctx)
+	if a {
+		l := base
+		if b {
+			l = base.With().Ctx(ctx).Logger()
+			p = &l
+		}
+	}
+	p.Info().Msg("l lacks ctx only on the edge that does not pick it") // OK - p points to l only after the store with ctx
+}
+
+func badLoggerPointerToVariableDeclaredInBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		l := base
+		p = &l
+	}
+	p.Info().Msg("the variable declared in the branch lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPointerToVariableDeclaredInLoop(ctx context.Context, base zerolog.Logger, xs []int) {
+	p := zerolog.Ctx(ctx)
+	for _, x := range xs {
+		l := base.With().Int("x", x).Logger()
+		p = &l
+	}
+	p.Info().Msg("the variable declared in the loop lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPointerToVariableChangedAfterPick(ctx context.Context, base zerolog.Logger, cond bool) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+		l = base
+	}
+	p.Info().Msg("the variable changed after the pick") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== MANY BRANCHES THAT REASSIGN THE EVENT =====
 
 // Each branch adds a Phi whose edges both lead to the previous one. Tracing
