@@ -2,7 +2,6 @@ package chain
 
 import (
 	"go/token"
-	"go/types"
 	"iter"
 	"slices"
 
@@ -101,29 +100,24 @@ type tracer struct {
 	//
 	//declscope:private
 	closures *closures
+	// events finds which event each value of a chain is, for a Ctx call in
+	// place.
+	//
+	//declscope:private
+	events *eventIndex
 }
 
 // newTracer creates a tracer with nothing found yet.
 //
 //declscope:shared // checker.go creates one per package
 func newTracer() *tracer {
-	return &tracer{memo: newTraceMemo(), positions: make(instrPositions), closures: newClosures()}
-}
-
-// eventHasCtx traces an Event value, the receiver of the terminator at, to
-// check if .Ctx() was called.
-func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
-	if tr.traceValue(v, traceEvent) == yes {
-		return true
+	positions, closures := make(instrPositions), newClosures()
+	return &tracer{
+		memo:      newTraceMemo(),
+		positions: positions,
+		closures:  closures,
+		events:    newEventIndex(positions, closures),
 	}
-	done := make(map[tracePointValue]verdict)
-	if tr.traceCtxSetInPlace(v, walkPointBefore(at, tr.positions), done) == yes {
-		return true
-	}
-	if d, deferred := at.(*ssa.Defer); deferred {
-		return tr.traceCtxSetAtReturns(v, d)
-	}
-	return false
 }
 
 // loggerHasCtx traces a Logger value, the receiver of the direct logging
@@ -134,272 +128,6 @@ func (tr *tracer) eventHasCtx(v ssa.Value, at ssa.Instruction) bool {
 //declscope:shared // checker.go asks this of each direct logging call's receiver
 func (tr *tracer) loggerHasCtx(v ssa.Value, at ssa.Instruction) bool {
 	return tr.traceReceiver(v, at, traceLogger) == yes
-}
-
-// traceCtxSetAtReturns reports whether, on every path from d, a deferred
-// terminator on the event v, to a return, Event.Ctx is called on the event.
-// The deferred call runs at the return:
-//
-//	e := logger.Info()
-//	defer e.Msg("x")        // runs at the return, after Ctx
-//	e.Ctx(ctx)
-//
-// A Ctx call on a value that the chain of v is built from counts too, since
-// it is the same event. A path that makes the event again, in a loop, has a
-// new one after. The recover block, reached after a panic, is not looked at,
-// as it has no path from d.
-func (tr *tracer) traceCtxSetAtReturns(v ssa.Value, d *ssa.Defer) bool {
-	calls := make(map[ssa.Instruction]bool)
-	defs := make(map[ssa.Instruction]bool) // Where the event is made, which starts another one in a loop
-	for w := v; w != nil; w = sameEventCalleeRecv(w) {
-		tr.traceCtxCalls(w, d.Parent(), calls, make(map[ssa.Value]bool))
-		if def, ok := w.(ssa.Instruction); ok {
-			defs[def] = true
-		}
-	}
-	if len(calls) == 0 {
-		return false
-	}
-	return walkFwd(walkPointAfter(d, tr.positions), func(instr ssa.Instruction) walkStep {
-		switch {
-		case defs[instr]:
-			return walkAbort // The event is made again, so a Ctx call after is on another one
-		case calls[instr]:
-			return walkStop // Ctx runs on this path
-		}
-		if _, ok := instr.(*ssa.Return); ok {
-			return walkAbort
-		}
-		return walkOn
-	})
-}
-
-// tracePointValue is an event asked about at a point.
-type tracePointValue struct {
-	v     ssa.Value
-	point walkPoint
-}
-
-// traceCtxSetInPlace reports whether Event.Ctx is called on the event v
-// before point, on every path, with its result unused or not. Event.Ctx sets
-// the context on the event it runs on, and returns that same event:
-//
-//	e := logger.Info()
-//	e.Ctx(ctx)              // sets the context of e
-//	e.Str("k", "v").Msg("x")
-//
-// Each method of the event but CreateDict returns the event it runs on, so a
-// Ctx call on any value of the chain counts. For a Phi, each edge must have one before the
-// end of the block it comes from.
-//
-// done holds the verdict for each value already asked about. A value still
-// being worked out is neutral: it is reached again only through an edge of a
-// Phi that leads back to it, which carries the same event. done is worked out
-// for each terminator, and not kept, since a call before one terminator may
-// come after another.
-func (tr *tracer) traceCtxSetInPlace(v ssa.Value, before walkPoint, done map[tracePointValue]verdict) verdict {
-	key := tracePointValue{v: v, point: before}
-	if found, ok := done[key]; ok {
-		return found
-	}
-	done[key] = neutral
-	found := verdictOf(tr.traceCtxCalledBefore(v, before))
-	if found == no {
-		if recv := sameEventCalleeRecv(v); recv != nil {
-			found = tr.traceCtxSetInPlace(recv, before, done)
-		} else if phi, ok := v.(*ssa.Phi); ok {
-			found = tr.traceCtxSetOnEdges(phi, done)
-		}
-	}
-	done[key] = found
-	return found
-}
-
-// traceCtxSetOnEdges reports whether each edge of phi, apart from nil, has
-// Event.Ctx called on it before the end of the block it comes from, or has
-// context of its own. An edge that leads back to phi is neutral.
-func (tr *tracer) traceCtxSetOnEdges(phi *ssa.Phi, done map[tracePointValue]verdict) verdict {
-	return all(func(yield func(verdict) bool) {
-		for i, edge := range phi.Edges {
-			if isNilConst(edge) {
-				continue
-			}
-			pred := phi.Block().Preds[i]
-			found := tr.traceCtxSetInPlace(edge, walkPoint{block: pred, index: len(pred.Instrs)}, done)
-			if found == no {
-				found = tr.traceValue(edge, traceEvent) // An edge with context of its own needs no Ctx call in place
-			}
-			if !yield(found) {
-				return
-			}
-		}
-	})
-}
-
-// traceCtxCalledBefore reports whether, on every path from v to before,
-// Event.Ctx is called on the event v, directly or through a method value. A
-// path that leads back to the entry of the function without passing v does
-// not have v, and needs no call, unless v is a parameter or a free variable,
-// which the entry gives.
-func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before walkPoint) bool {
-	fn := before.block.Parent()
-	calls := make(map[ssa.Instruction]bool)
-	makes := make(map[ssa.Instruction]bool) // Where another event is in v on the path
-	def, made := v.(ssa.Instruction)        // A parameter or a free variable is not made, but given at the entry
-	if overwrites, local, ok := tr.traceCtxCallsInMemory(v, fn, calls); ok {
-		makes = overwrites
-		made = local
-	}
-	if len(makes) == 0 && made {
-		makes[def] = true
-	}
-	tr.traceCtxCalls(v, fn, calls, make(map[ssa.Value]bool))
-	return tr.traceCtxCalledOnEveryPath(calls, makes, made, before)
-}
-
-// traceCtxCallsInMemory adds to calls the Event.Ctx calls in fn on each read
-// of the event v, when v is read from memory: a load, or fields selected one
-// after another from a load of a struct. Each read of the same place counts,
-// a load of it or a selection of it from a load of a struct it is in, as
-// each load of a struct value of a local variable is:
-//
-//	h := holder{logger.Info()}   // type holder struct{ *zerolog.Event }
-//	h.Ctx(ctx)                   // t4 = *t1 ; t5 = t4.Event ; Ctx(t5, ctx)
-//	h.Msg("x")                   // t6 = *t1 ; t7 = t6.Event ; Msg(t7, "x")
-//
-// overwrites holds the instructions after which another event is there, and
-// local reports whether the place is in a local variable, which a path that
-// leads back to the entry does not have yet. ok is false when v is not read
-// from a place in fn whose stores can all be seen.
-func (tr *tracer) traceCtxCallsInMemory(
-	v ssa.Value,
-	fn *ssa.Function,
-	calls map[ssa.Instruction]bool,
-) (overwrites map[ssa.Instruction]bool, local, ok bool) {
-	var fields []int // Selected from the load, outermost first
-	for {
-		f, isField := v.(*ssa.Field)
-		if !isField {
-			break
-		}
-		fields = append(fields, f.Field)
-		v = f.X
-	}
-	slices.Reverse(fields)
-	load, isLoad := asLoad(v)
-	if !isLoad || parentFunc(load.X) != fn {
-		return nil, false, false
-	}
-	base, _ := placeOf(load.X)
-	at := base.withFields(fields)
-	overwrites, ok = tr.traceCtxCallsAt(at, fn, calls)
-	_, local = at.root.(*ssa.Alloc)
-	return overwrites, local, ok
-}
-
-// traceCtxCallsAt adds to calls the Event.Ctx calls in fn on the event at
-// the place at: on each load of it, or selection of it from a load of a
-// struct it is a field of, at any depth. It returns the instructions after
-// which another event is there. ok is false when the stores to the place
-// cannot all be seen.
-func (tr *tracer) traceCtxCallsAt(
-	at place,
-	fn *ssa.Function,
-	calls map[ssa.Instruction]bool,
-) (overwrites map[ssa.Instruction]bool, ok bool) {
-	_, overwrites, ok = storeLoadsAt(at)
-	if !ok {
-		return nil, false
-	}
-	start, fields := at.trailingFields() // An element is selected with Index, which selectedFields does not follow
-	for k := start; k <= len(at.path); k++ {
-		loads, _, _ := storeLoadsAt(at.prefix(k))
-		for _, load := range loads {
-			for _, ev := range selectedFields(load, fields[k-start:]) {
-				tr.traceCtxCalls(ev, fn, calls, make(map[ssa.Value]bool))
-			}
-		}
-	}
-	return overwrites, true
-}
-
-// traceCtxCalledOnEveryPath reports whether every path that leads to before
-// passes one of calls, the Event.Ctx calls on an event, after the last of
-// makes on it, where another event is in its place. Such an instruction that
-// stores an event with context of its own ends a path too. A path that leads
-// back to the entry of the function passes none of makes, and has the event
-// only when made is false: the event is given at the entry.
-func (tr *tracer) traceCtxCalledOnEveryPath(
-	calls, makes map[ssa.Instruction]bool,
-	made bool,
-	before walkPoint,
-) bool {
-	if len(calls) == 0 {
-		return false
-	}
-	visit := func(instr ssa.Instruction) walkStep {
-		switch {
-		case calls[instr]:
-			return walkStop // Ctx runs on this path
-		case !makes[instr]:
-			return walkOn
-		case !tr.traceStoredEventHasCtx(instr):
-			return walkAbort // v is made on this path, and Ctx does not run after
-		}
-		return walkStop // An event with context of its own is stored on this path
-	}
-	atEntry := func() bool { return made }
-	return walkBack([]walkPoint{before}, visit, atEntry, nil)
-}
-
-// traceStoredEventHasCtx reports whether instr, where another event is in a
-// variable on the path, stores an event that has context of its own:
-//
-//	e := logger.Info()
-//	e.Ctx(ctx)                      // in place, on the first iteration
-//	for range n {
-//	    e.Msg("x")
-//	    e = logger.Warn().Ctx(ctx)  // of its own, on the later ones
-//	}
-func (tr *tracer) traceStoredEventHasCtx(instr ssa.Instruction) bool {
-	store, ok := instr.(*ssa.Store)
-	return ok && zerologapi.TypeOf(store.Val.Type()) == zerologapi.TypeEvent && tr.traceValue(store.Val, traceEvent) == yes
-}
-
-// traceCtxCalls adds to calls the Event.Ctx calls in fn on the event v,
-// directly or through a method value, or on a value that a method of v
-// returns, which is the same event. A Ctx call given a fresh
-// context.Background() or TODO() does not count, nor does one on the event
-// Event.CreateDict returns, which is another one.
-func (tr *tracer) traceCtxCalls(v ssa.Value, fn *ssa.Function, calls map[ssa.Instruction]bool, seen map[ssa.Value]bool) {
-	refs := v.Referrers()
-	if seen[v] || refs == nil {
-		return
-	}
-	seen[v] = true
-	for _, ref := range *refs {
-		uses := []ssa.Instruction{ref}
-		if mc, ok := ref.(*ssa.MakeClosure); ok {
-			uses = *mc.Referrers() // A method value bound to v, called later
-		}
-		for _, use := range uses {
-			call, ok := use.(*ssa.Call)
-			if !ok || call.Parent() != fn {
-				continue
-			}
-			c, ok := calleeOf(&call.Call)
-			if !ok || c.recv != v || c.embedded != nil || c.api.Recv != zerologapi.TypeEvent {
-				continue
-			}
-			if c.api.Kind == zerologapi.KindSource {
-				if !tr.givesFreshContext(&call.Call) {
-					calls[call] = true
-				}
-			} else if c.returnsSameEvent() {
-				tr.traceCtxCalls(call, fn, calls, seen)
-			}
-		}
-	}
 }
 
 // traceValue traces an SSA value backwards to find if context was set.
@@ -543,22 +271,11 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 // ok is false when the value it selects from is not loaded from an address
 // whose stores storesReachingAt can find.
 func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState) (found verdict, ok bool) {
-	var selections []sel
-	for {
-		from, s, ok := valueSel(v)
-		if !ok {
-			break
-		}
-		selections = append(selections, s)
-		v = from
-	}
-	load, isLoad := asLoad(v)
-	if !isLoad {
+	at, load, ok := loadedSelection(v)
+	if !ok {
 		return no, false
 	}
-	slices.Reverse(selections)
-	at, _ := placeOf(load.X)
-	sources, ok := tr.resolver(st).resolveAt(at.with(selections...), load)
+	sources, ok := tr.resolver(st).resolveAt(at, load)
 	if !ok {
 		return no, false
 	}
@@ -704,31 +421,30 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState)
 // It is neutral when result is not a parameter: there is no argument to
 // trace in place of it.
 func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args []ssa.Value, st traceState) verdict {
-	for v := result; v != nil; v = sameEventCalleeRecv(v) {
-		param, ok := v.(*ssa.Parameter)
-		if !ok {
-			continue
-		}
-		if idx := slices.Index(fn.Params, param); idx >= 0 && idx < len(args) {
-			return tr.traceValue(args[idx], st)
-		}
-		return no
+	param, ok := eventOrigin(result).(*ssa.Parameter)
+	if !ok {
+		return neutral
 	}
-	return neutral
+	if idx := slices.Index(fn.Params, param); idx >= 0 && idx < len(args) {
+		return tr.traceValue(args[idx], st)
+	}
+	return no
 }
 
 // receiverHasCtx reports whether the event c runs on, the receiver of the
-// terminator at, has context, as eventHasCtx does. For a method expression of
-// a promoted method, the event is read from the struct it is embedded in,
-// and only the context of its own counts.
+// terminator at, has context: its chain has a Ctx call, or one runs on it in
+// place before at (see eventIndex.eventCtxSetInPlace). For a method
+// expression of a promoted method, the event is read from the struct it is
+// embedded in.
 //
 //declscope:shared // checker.go asks this of each terminator
 func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
-	if c.embedded != nil {
-		return tr.traceEmbeddedReceiver(c, at, traceEvent) == yes ||
-			tr.traceEmbeddedCtxSetInPlace(c, at)
+	if tr.traceCalleeReceiver(c, at, traceEvent) == yes {
+		return true
 	}
-	return tr.eventHasCtx(c.recv, at)
+	return tr.events.eventCtxSetInPlace(c, at, func(v ssa.Value) bool {
+		return tr.traceValue(v, traceEvent) == yes
+	})
 }
 
 // traceCalleeReceiver traces the receiver of c, which call runs, as
@@ -756,75 +472,7 @@ func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, st trace
 		return no
 	}
 	at, _ := placeOf(addr)
-	return tr.traceEmbeddedAt(at, typ, c.embedded, read, call, st)
-}
-
-// traceEmbeddedAt traces the receiver at the embedded fields of the struct of
-// type typ at the address at, as read reads it. call is the call
-// of the method expression.
-//
-// An embedded field but the last may be a pointer. The receiver is then at
-// the rest of the fields of what each pointer that can be stored there
-// points to, as call reads it, and every one must have context:
-//
-//	type outer struct{ *inner }
-//	o := outer{&inner{e}}  // t3 = new inner ; *&t3.Event = e ; *&t1.inner = t3
-//	outer.Msg(o, "x")      // reads t1.inner, then t3.Event
-func (tr *tracer) traceEmbeddedAt(
-	at place,
-	typ types.Type,
-	embedded []int,
-	read, call ssa.Instruction,
-	st traceState,
-) verdict {
-	at, n, field := at.withEmbedded(typ, embedded)
-	stored, ok := storesReachingAt(at, read, tr.positions)
-	switch {
-	case n == len(embedded) && ok:
-		return tr.traceResolved(tr.resolver(st).resolveStored(stored), st)
-	case !ok || stored.unknown || len(stored.captured) > 0 || len(stored.params) > 0:
-		return no
-	}
-	elem := field.Underlying().(*types.Pointer).Elem()
-	return all(verdictsOf(stored.values, func(v ssa.Value) verdict {
-		if isNilConst(v) {
-			return neutral // A nil pointer has no event to log
-		}
-		next, _ := placeOf(v)
-		return tr.traceEmbeddedAt(next, elem, embedded[n:], call, call, st)
-	}))
-}
-
-// traceEmbeddedCtxSetInPlace reports whether Event.Ctx is called in place,
-// with its result unused or not, on the event at the embedded fields of
-// c.recv before call reads it, as traceCtxCalledBefore does for an event in
-// memory. A Ctx call on any read of the event where the struct is counts,
-// unless another event is stored there in between: a load of the event, or
-// a selection of it from a load of the struct, or of a struct it is embedded
-// in, as each load of a struct value of a local variable is:
-//
-//	me := myEvent{logger.Info()}
-//	me.Ctx(ctx)            // t4 = *t1 ; t5 = t4.Event ; Ctx(t5, ctx)
-//	myEvent.Msg(me, "x")   // Msg$thunk(t4, "x") reads t4.Event
-//
-// Each embedded field but the last must be a struct, not a pointer to one.
-func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) bool {
-	addr, typ, _, ok := c.embeddedStart(call)
-	if !ok {
-		return false
-	}
-	base, _ := placeOf(addr)
-	at, n, _ := base.withEmbedded(typ, c.embedded)
-	if n < len(c.embedded) {
-		return false // Reading past a pointer is a load, which a path does not take
-	}
-	calls := make(map[ssa.Instruction]bool)
-	overwrites, ok := tr.traceCtxCallsAt(at, call.Parent(), calls)
-	if !ok {
-		return false
-	}
-	_, local := at.root.(*ssa.Alloc)
-	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, walkPointBefore(call, tr.positions))
+	return tr.traceResolved(tr.resolver(st).resolveEmbedded(at, typ, c.embedded, read, call), st)
 }
 
 // traceReceiver traces recv, the receiver of call, a method call. It is the

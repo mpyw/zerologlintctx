@@ -3,8 +3,8 @@
 // with walkFwd. The callers decide what each instruction means to a path;
 // the walk only takes each block once and in the same order.
 //
-// store.go walks back from a read to the stores that reach it, and
-// tracing.go walks to and from an Event.Ctx call. Every declaration is shared
+// store.go walks back from a read to the stores that reach it, and event.go
+// walks to and from an Event.Ctx call. Every declaration is shared
 // with them.
 //
 //declscope:shared

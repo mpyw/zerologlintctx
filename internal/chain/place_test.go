@@ -115,10 +115,10 @@ func TestPlaceOf(t *testing.T) {
 	if arrI1.key() != arrI2.key() {
 		t.Error("two elements at the same variable index have different keys")
 	}
-	if !arrI1.prefix(1).prefixOf(arrI2) || arrI1.prefixOf(arrI2) {
+	if !placePrefix(arrI1, 1).prefixOf(arrI2) || arrI1.prefixOf(arrI2) {
 		t.Error("o.arr is not a prefix of o.arr[i].a, or o.arr[i].a is")
 	}
-	if inB2.prefixOf(arr1) || !inB2.prefix(0).prefixOf(arr1) {
+	if inB2.prefixOf(arr1) || !placePrefix(inB2, 0).prefixOf(arr1) {
 		t.Error("o.in.b is a prefix of o.arr[1].a, or o is not")
 	}
 
@@ -141,13 +141,13 @@ func TestPlaceOf(t *testing.T) {
 func TestPlaceWith(t *testing.T) {
 	fn := placeFunc(t)
 	at, _ := placeOf(placeStores(fn)[0])
-	base := at.prefix(1)
+	base := placePrefix(at, 1)
 	ext := base.with(sel{field: 1})
 	ext.path[0] = sel{field: 3}
 	if base.path[0].field != 1 {
 		t.Error("with shares the path of the place it extends")
 	}
-	if !samePlace(at.prefix(1).with(sel{field: 1}), at) {
+	if !samePlace(placePrefix(at, 1).with(sel{field: 1}), at) {
 		t.Error("o.in with .b is not o.in.b")
 	}
 }
@@ -155,16 +155,9 @@ func TestPlaceWith(t *testing.T) {
 func TestPlaceFields(t *testing.T) {
 	fn := placeFunc(t)
 	addrs := placeStores(fn)
-	inB, _ := placeOf(addrs[0])  // o.in.b
-	arr1, _ := placeOf(addrs[2]) // o.arr[1].a
-	if !samePlace(inB.prefix(0).withFields([]int{1, 1}), inB) {
+	inB, _ := placeOf(addrs[0]) // o.in.b
+	if !samePlace(placePrefix(inB, 0).withFields([]int{1, 1}), inB) {
 		t.Error("o with .in.b is not o.in.b")
-	}
-	if start, fields := inB.trailingFields(); start != 0 || len(fields) != 2 || fields[0] != 1 || fields[1] != 1 {
-		t.Errorf("trailing fields of o.in.b: %d, %v", start, fields)
-	}
-	if start, fields := arr1.trailingFields(); start != 2 || len(fields) != 1 || fields[0] != 0 {
-		t.Errorf("trailing fields of o.arr[1].a: %d, %v", start, fields)
 	}
 }
 
@@ -214,11 +207,11 @@ func TestPlaceOverlaps(t *testing.T) {
 		want bool
 	}{
 		{"the same place", inB, inB, true},
-		{"o and o.in.b", inB.prefix(0), inB, true},
-		{"o.in.b and o", inB, inB.prefix(0), true},
+		{"o and o.in.b", placePrefix(inB, 0), inB, true},
+		{"o.in.b and o", inB, placePrefix(inB, 0), true},
 		{"o.in.b and o.arr[1].a", inB, arr1, false},
 		{"o.arr[i].a and o.arr[1].a", arrI, arr1, true},
-		{"o.arr[1] and o.arr[i]", arr1.prefix(2), arrI.prefix(2), true},
+		{"o.arr[1] and o.arr[i]", placePrefix(arr1, 2), placePrefix(arrI, 2), true},
 		{"o.in.b and o.arr[i].a", inB, arrI, false},
 		{"different roots", inB, param, false},
 	} {
@@ -246,12 +239,12 @@ func TestPlaceCovers(t *testing.T) {
 		want placeCover
 	}{
 		{"the same place", inB, inB, once, coverMust},
-		{"o and o.in.b", inB.prefix(0), inB, once, coverMust},
-		{"o.in.b and o, which it selects from", inB, inB.prefix(0), once, coverNone},
+		{"o and o.in.b", placePrefix(inB, 0), inB, once, coverMust},
+		{"o.in.b and o, which it selects from", inB, placePrefix(inB, 0), once, coverNone},
 		{"o.in.b and o.arr[1].a", inB, arr1, once, coverNone},
 		{"o.arr[i].a and o.arr[i].a, i once", arrI1, arrI2, once, coverMust},
 		{"o.arr[i].a and o.arr[i].a, i again", arrI1, arrI2, again, coverMay},
-		{"o.arr[i] and o.arr[i].a", arrI1.prefix(2), arrI2, once, coverMust},
+		{"o.arr[i] and o.arr[i].a", placePrefix(arrI1, 2), arrI2, once, coverMust},
 		{"o.arr[1].a and o.arr[i].a", arr1, arrI1, once, coverMay},
 		{"o.arr[i].a and o.arr[1].a", arrI1, arr1, once, coverMay},
 		{"different roots", inB, param, once, coverNone},
@@ -262,4 +255,9 @@ func TestPlaceCovers(t *testing.T) {
 			}
 		})
 	}
+}
+
+// placePrefix returns the place that the first n selections of p select.
+func placePrefix(p place, n int) place {
+	return place{root: p.root, path: p.path[:n]}
 }

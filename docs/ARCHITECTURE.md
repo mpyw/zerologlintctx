@@ -16,6 +16,7 @@ zerologlintctx/
 │   │   ├── callee.go          # Resolves and classifies the function a call runs
 │   │   ├── context.go         # Which functions have a context in scope
 │   │   ├── tracing.go         # Trace states, value tracing
+│   │   ├── event.go           # Which event a value is, and Event.Ctx in place
 │   │   ├── verdict.go         # Yes, no or neutral, and how they combine
 │   │   ├── memo.go            # The verdict of each value, and the traces in progress
 │   │   ├── closure.go         # Index of closures and func literals
@@ -74,7 +75,7 @@ to each struct that can be stored there. A plain call or method value of the
 same promoted method reads the event past a load of the pointer, which is
 followed in the same way (see [Pointers Read From Memory](#pointers-read-from-memory)). A `Ctx` call in place on the
 embedded event, such as `me.Ctx(ctx)` with its result unused, counts as it
-does for an event in memory.
+does for an event in memory, through an embedded pointer partway too.
 
 A conversion between types with the same underlying type, such as
 `zerolog.Logger(d)` for `type definedLogger zerolog.Logger`, keeps the value,
@@ -239,8 +240,8 @@ function.
 | `storeWalk.walkBefore`: stores that reach a read | Back | A store to the address, or its declaration | Through a Phi of pointers, the edges that hold the variable picked |
 | `storeWalk.walkDeferred`: stores that reach the returns after a `defer` | Back | The same, or the `defer` | The blocks on a path through the `defer` (`walkThrough`) |
 | `storeWalk.addStoresAfter`: stores after an escape of a variable declared in a loop | Forward | Its declaration on the next iteration | All |
-| `traceCtxCalledOnEveryPath`: an `Event.Ctx` call before a point | Back | A `Ctx` call, or another event in its place | All |
-| `traceCtxSetAtReturns`: an `Event.Ctx` call after a deferred terminator | Forward | A `Ctx` call | All |
+| `eventQuery.ctxRunsBefore`: an `Event.Ctx` call before a terminator | Back | A `Ctx` call on the event, or a store of another event where it is read | Through a Phi it is read through, the edges that carry the event |
+| `eventQuery.ctxRunsAfterDefer`: an `Event.Ctx` call after a deferred terminator | Forward | A `Ctx` call on the event | All |
 
 `walkBackWith` carries a state on each path. A block is walked once in each
 state. `walkBefore` uses it to keep, on each path, the Phi that must still
@@ -340,7 +341,7 @@ l.Info().Ctx(bg).Msg("x") // OK: a closure stores to bg
 `Event.Ctx` sets the context on the event it runs on, and returns that same
 event. So an event whose chain has no `Ctx` call is still accepted when one
 runs on it before the terminator on every path, with its result unused or not
-(`traceCtxSetInPlace`):
+(`eventIndex.eventCtxSetInPlace` in `event.go`):
 
 ```go
 e := logger.Info()
@@ -348,11 +349,29 @@ e.Ctx(ctx)
 e.Msg("x") // OK
 ```
 
-An event in memory is read again at each use. A `Ctx` call on any read of
-the same variable or field counts, unless another event is stored there in
-between (`traceCtxCallsInMemory`). A read is a load of the event, or the
-field it is embedded in, selected from a load of the struct, which is how a
-promoted method of a struct value of a local variable reads it:
+The check is one query over the identity of the event. The sources of a
+value are the events it can be. `eventOrigin` walks back through the methods
+whose result is their receiver (`SameAsRecv` in the API table), such as
+`Event.Str` and `Event.Ctx`, to the call that made the event. A Phi has the
+sources of its edges. A read from memory has the sources of what `resolve.go`
+finds there. An event the function cannot tell, such as the caller's through
+a pointer parameter, is a source of its own for each place it is read from.
+
+| Value | Sources |
+|-------|---------|
+| `logger.Info()` | Itself |
+| `e.Str("k", "v")`, `e.Ctx(ctx)` | Those of `e` |
+| A Phi | Those of each edge but nil |
+| A load, or a field selected from a load of a struct | Those of each value stored that reaches it |
+| The receiver of a method expression of a promoted method | Those of each value stored at the embedded fields |
+| Anything else | Itself |
+
+Each source of the terminator's receiver must then have a `Ctx` call, given
+a context that is not fresh, on every path from the source to the
+terminator. A `Ctx` call counts for a source when it runs on a value that
+can be that source, and on no event the receiver cannot be. So a call on
+another read of the same variable, or on another variable the event was
+copied to, counts:
 
 ```go
 h := holder{logger.Info()} // type holder struct{ *zerolog.Event }
@@ -360,9 +379,27 @@ h.Ctx(ctx)                 // t4 = *t1 ; t5 = t4.Event ; Ctx(t5, ctx)
 h.Msg("x")                 // t6 = *t1 ; t7 = t6.Event ; Msg(t7, "x"), OK
 ```
 
+The walk goes back from the terminator. A path ends at a `Ctx` call on the
+source, and fails at the instruction that makes it. One that leads back to
+the entry of the function fails when the function does not make the source,
+as for a parameter. A path that does not carry the source needs no call for
+it: it takes an edge of a Phi the receiver is read through that is nil,
+another event, or one with context of its own, or it stores such a value
+where the receiver is read from.
+
+```go
+e := logger.Info()
+e.Ctx(ctx)              // in place, on the first iteration
+for range n {
+    e.Msg("x")          // OK
+    e = logger.Warn().Ctx(ctx) // of its own, on the later ones
+}
+```
+
 A deferred terminator runs at each return after the `defer` statement, so for
-one a `Ctx` call that runs on every path from the `defer` to a return counts
-too.
+one a `Ctx` call on the source that runs on every path from the `defer` to a
+return counts too. A path that makes the source again, in a loop, has
+another event there.
 
 ### Common SSA Patterns
 
@@ -701,7 +738,8 @@ Due to SSA analysis constraints:
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE returns and arguments are supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
-- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier read of it counts, a load or a promoted method on a struct value alike, unless another event is stored in between. For a promoted method, one through an embedded pointer partway is not seen
+- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`, or in a func literal `e` is passed to. In the same function, a `Ctx` call on any value that holds the same event counts: an earlier read of the same variable or field, or another variable the event was copied to, unless another event is stored in between
+- **Events stored back**: When a read can see several events, a `Ctx` call on an earlier read that sees the same events counts for each of them, even where a path stores one of those events back over another in between. In the same way, a `Ctx` call on the caller's event at a place counts at later reads of the place, even when it is copied over in between from where no store can be seen
 - **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Elements at an index computed in a loop**: A store at the same index, on the same iteration, is not taken to write the element, so a store without `.Ctx(ctx)` on an earlier iteration, or the caller's value in a slice parameter, may still be what the read sees

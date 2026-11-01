@@ -80,16 +80,55 @@ func (r resolver) resolveAt(at place, read ssa.Instruction) (sources iter.Seq[re
 	return r.resolveWalked(at, read.Parent(), stored), true
 }
 
-// resolveStored yields the sources of what storesReaching found: unknown,
-// when some path carries a value the function cannot tell, what each
-// captured variable holds as the closure runs, what the calls of a func
-// literal pass for its parameters, and the values stored.
+// resolveEmbedded yields the sources of the receiver of a promoted method,
+// at the embedded fields of the struct of type typ at the address at, as read
+// reads it. call is the call of the method expression.
 //
-//declscope:shared // tracing.go traces the receiver at the embedded fields of a struct
-func (r resolver) resolveStored(stored storeReaching) iter.Seq[resolved] {
+// An embedded field but the last may be a pointer. The receiver is then at
+// the rest of the fields of what each pointer that can be stored there points
+// to, as call reads it. A nil pointer has no event to log, and adds nothing:
+//
+//	type outer struct{ *inner }
+//	o := outer{&inner{e}}  // t3 = new inner ; *&t3.Event = e ; *&t1.inner = t3
+//	outer.Msg(o, "x")      // reads t1.inner, then t3.Event
+//
+// A pointer that is not known is an unknown source.
+//
+//declscope:shared // tracing.go and event.go read the receiver of a method expression of a promoted method
+func (r resolver) resolveEmbedded(at place, typ types.Type, embedded []int, read, call ssa.Instruction) iter.Seq[resolved] {
 	return func(yield func(resolved) bool) {
-		r.yieldStored(stored, yield)
+		r.yieldEmbedded(at, typ, embedded, read, call, yield)
 	}
+}
+
+// yieldEmbedded yields what resolveEmbedded does, and reports whether yield
+// asked for more.
+func (r resolver) yieldEmbedded(
+	at place,
+	typ types.Type,
+	embedded []int,
+	read, call ssa.Instruction,
+	yield func(resolved) bool,
+) bool {
+	at, n, field := at.withEmbedded(typ, embedded)
+	stored, ok := storesReachingAt(at, read, r.positions)
+	switch {
+	case n == len(embedded) && ok:
+		return r.yieldStored(stored, yield)
+	case !ok || stored.unknown || len(stored.captured) > 0 || len(stored.params) > 0:
+		return yield(resolved{})
+	}
+	elem := field.Underlying().(*types.Pointer).Elem()
+	for _, v := range stored.values {
+		if isNilConst(v) {
+			continue
+		}
+		next, _ := placeOf(v)
+		if !r.yieldEmbedded(next, elem, embedded[n:], call, call, yield) {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveFreeVar yields the sources of what is at path, the selections from
@@ -112,7 +151,7 @@ func (r resolver) resolveFreeVar(fv *ssa.FreeVar, path []sel) iter.Seq[resolved]
 }
 
 // resolveWalked yields the sources of what a walk of walked found at at, as
-// resolveStored does, after an unknown one when unseenUnknown is set and at
+// yieldStored does, after an unknown one when unseenUnknown is set and at
 // may be written where that walk does not see.
 func (r resolver) resolveWalked(at place, walked *ssa.Function, stored storeReaching) iter.Seq[resolved] {
 	return func(yield func(resolved) bool) {
@@ -136,7 +175,10 @@ func (r resolver) yieldWalked(
 	return r.yieldStored(stored, yield)
 }
 
-// yieldStored yields what resolveStored does, and reports whether yield asked
+// yieldStored yields the sources of what storesReaching found: unknown, when
+// some path carries a value the function cannot tell, what each captured
+// variable holds as the closure runs, what the calls of a func literal pass
+// for its parameters, and the values stored. It reports whether yield asked
 // for more.
 func (r resolver) yieldStored(stored storeReaching, yield func(resolved) bool) bool {
 	if stored.unknown && !yield(resolved{}) {

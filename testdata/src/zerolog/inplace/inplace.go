@@ -174,6 +174,132 @@ func goodEventCtxResultUnusedPointerParamField(ctx context.Context, h *inPlaceHo
 	h.e.Msg("ctx result unused, pointer param field") // OK - .Ctx() set the context of h.e
 }
 
+// Another variable or field the event is copied to holds the same event, so a
+// Ctx call on either counts for both (#215).
+
+func goodEventCtxResultUnusedOnCopy(ctx context.Context, log zerolog.Logger) {
+	var e, copied *zerolog.Event
+	func() { _, _ = e, copied }()
+	e = log.Info()
+	copied = e
+	e.Ctx(ctx)
+	copied.Msg("ctx result unused, on a copy") // OK - copied holds the event of e
+}
+
+func goodEventCtxResultUnusedThenCopiedToField(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	e.Ctx(ctx)
+	h := inPlaceHolder{e}
+	h.e.Msg("ctx result unused, then copied to a field") // OK - h.e holds the event of e
+}
+
+func goodEventCtxResultUnusedOnFieldThenOriginal(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	h := inPlaceHolder{e}
+	h.e.Ctx(ctx)
+	e.Msg("ctx result unused on a field, then the original") // OK - h.e holds the event of e
+}
+
+func badEventCtxResultUnusedOnCopyThenReplaced(ctx context.Context, log zerolog.Logger) {
+	var e, copied *zerolog.Event
+	func() { _, _ = e, copied }()
+	e = log.Info()
+	copied = e
+	e.Ctx(ctx)
+	copied = log.Warn()
+	copied.Msg("ctx result unused, copy replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxResultUnusedFieldUpdated(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	h.e = log.Info()
+	h.e.Ctx(ctx)
+	h.e = h.e.Str("k", "v")
+	h.e.Msg("ctx result unused, field updated") // OK - the update returns the same event
+}
+
+func goodEventCtxResultUnusedOnPhi(ctx context.Context, log zerolog.Logger, cond bool) {
+	var e *zerolog.Event
+	if cond {
+		e = log.Info()
+	} else {
+		e = log.Warn()
+	}
+	e.Ctx(ctx)
+	e.Msg("ctx result unused, after the branches") // OK - Ctx runs on whichever event e is
+}
+
+func goodEventCtxInPlaceOrStoredWithCtx(ctx context.Context, log zerolog.Logger, cond bool) {
+	var h inPlaceHolder
+	h.e = log.Info()
+	if cond {
+		h.e.Ctx(ctx)
+	} else {
+		h.e = log.Warn().Ctx(ctx)
+	}
+	h.e.Msg("ctx in place, or stored with ctx") // OK - each path has ctx one way or the other
+}
+
+func badEventCtxInPlaceOrStoredWithoutCtx(ctx context.Context, log zerolog.Logger, cond bool) {
+	var h inPlaceHolder
+	h.e = log.Info()
+	if cond {
+		h.e.Ctx(ctx)
+	} else {
+		h.e = log.Warn()
+	}
+	h.e.Msg("ctx in place, or stored without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceOnOtherPickedHolder(ctx context.Context, log zerolog.Logger, cond bool, q *inPlaceHolder) {
+	h := &inPlaceHolder{e: log.Info()}
+	h.e.Ctx(ctx)
+	if cond {
+		h = q
+	}
+	h.e.Msg("ctx in place on one holder, the caller's on the other path") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxOnPhiWithAnotherEvent(ctx context.Context, log zerolog.Logger, cond bool) {
+	a := log.Info()
+	e := a
+	if cond {
+		e = log.Warn()
+	}
+	e.Ctx(ctx)
+	a.Msg("ctx on a value that may be another event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func inPlaceEventPointer(log zerolog.Logger) **zerolog.Event {
+	e := log.Info()
+	return &e
+}
+
+func goodEventCtxInPlaceThroughPointerArgument(ctx context.Context, log zerolog.Logger) {
+	func(p **zerolog.Event) {
+		(*p).Ctx(ctx)
+		(*p).Msg("ctx in place through a pointer argument") // OK - both read the event p points to
+	}(inPlaceEventPointer(log))
+}
+
+func goodEventCtxInPlaceThroughPointerArgumentRecursive(ctx context.Context, log zerolog.Logger) {
+	var rec func(p **zerolog.Event, n int)
+	rec = func(p **zerolog.Event, n int) {
+		if n > 0 {
+			rec(p, n-1)
+			return
+		}
+		(*p).Ctx(ctx)
+		(*p).Msg("ctx in place through a pointer argument, recursive") // OK - both read the event p points to
+	}
+	rec(inPlaceEventPointer(log), 1)
+}
+
+func badEventFreshCtxAfterLoggerWithCtx(ctx context.Context, log zerolog.Logger) {
+	withCtx := log.With().Ctx(ctx).Logger()
+	withCtx.Info().Ctx(context.Background()).Msg("fresh ctx replaces the logger's") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A path that stores an event with context of its own needs no Ctx call in
 // place (#184).
 
@@ -321,9 +447,9 @@ func badEventCtxInPlaceEmbeddedOnOneBranch(ctx context.Context, log zerolog.Logg
 }
 
 // LIMITATION(#139) (false positive): An in-place Ctx call is not seen by a
-// terminator in a closure, in a func literal the event is passed to, or on
-// another variable the event was copied to (#139). The event reaches it
-// through another reference, which is not followed back to the calls on it.
+// terminator in a closure, or in a func literal the event is passed to. The
+// event reaches it through another reference, which is not followed back to
+// the calls on it.
 
 func limitationEventCtxResultUnusedClosure(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
@@ -331,15 +457,6 @@ func limitationEventCtxResultUnusedClosure(ctx context.Context, log zerolog.Logg
 	func() {
 		e.Msg("ctx result unused, closure") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
-}
-
-func limitationEventCtxResultUnusedOnCopy(ctx context.Context, log zerolog.Logger) {
-	var e, copied *zerolog.Event
-	func() { _, _ = e, copied }()
-	e = log.Info()
-	copied = e
-	e.Ctx(ctx)
-	copied.Msg("ctx result unused, on a copy") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func limitationEventCtxResultUnusedPassedToFuncLiteral(ctx context.Context, log zerolog.Logger) {
