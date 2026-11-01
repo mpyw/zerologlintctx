@@ -2534,8 +2534,8 @@ func badEitherFieldReplacedOrLoggerOfCtxInLoop(ctx context.Context, l zerolog.Lo
 	}
 }
 
-// The logger of ctx is stored through in the loop, so the Phi is not walked
-// along its paths. Each pointer is traced as a value instead.
+// The logger of ctx is stored through in the loop, after the read. Only the
+// path that picks it, from the iteration before, takes that store.
 func badEitherFieldReplacedOrLoggerOfCtxStoredInLoop(ctx context.Context, l zerolog.Logger, cond bool, n int) {
 	s := twoLoggerHolder{a: l.With().Ctx(ctx).Logger(), b: l.With().Ctx(ctx).Logger()}
 	p := &s.a
@@ -2936,8 +2936,8 @@ func goodVariableIndexPickedOrLoggerOfCtxInLoop(ctx context.Context, base zerolo
 	}
 }
 
-// The logger of ctx is stored through in the loop, so the Phi is not walked
-// along its paths. Each pointer is traced as a value instead.
+// The logger of ctx is stored through in the loop, after the read. Only the
+// path that picks it, from the iteration before, takes that store.
 func goodVariableIndexPickedOrLoggerOfCtxStoredInLoop(ctx context.Context, base zerolog.Logger, i, j int, cond bool, n int) {
 	var arr [2]zerolog.Logger
 	arr[i] = base.With().Ctx(ctx).Logger()

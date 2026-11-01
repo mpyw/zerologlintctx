@@ -1712,8 +1712,8 @@ func goodLoggerPointerToVariableDeclaredInBranchPickedInLoop(ctx context.Context
 	}
 }
 
-// The logger of ctx is stored through in the loop, so the Phi is not walked
-// along its paths. Each pointer is traced as a value instead.
+// The logger of ctx is stored through in the loop, after the read. Only the
+// path that picks it, from the iteration before, takes that store.
 func goodLoggerPointerToVariableDeclaredInBranchPickedStoredInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
 	p := zerolog.Ctx(ctx)
 	if cond {
@@ -1741,8 +1741,8 @@ func badLoggerPointerToVariableChangedAfterPickInLoop(ctx context.Context, base 
 	}
 }
 
-// The logger of ctx is stored through in the loop, so the Phi is not walked
-// along its paths. Each pointer is traced as a value instead.
+// The logger of ctx is stored through in the loop, after the read. Only the
+// path that picks it, from the iteration before, takes that store.
 func badLoggerPointerToVariableChangedAfterPickStoredInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
 	p := zerolog.Ctx(ctx)
 	if cond {
