@@ -457,11 +457,13 @@ as for a parameter. A path that does not carry the source needs no call for
 it: it takes an edge of a Phi the receiver is read through that is nil,
 another event, or one with context of its own, or it stores such a value
 where the receiver is read from. A path that takes the edge of a Phi the
-receiver is, back through the methods that return the event, carries that
+receiver is, back through the methods that return the event and through
+reads from memory that see only that Phi, as `(&box{e}).v` does, carries that
 edge before it, so only a store where the edge is read from ends it
-(`eventQuery.carriedInto`). Only the Phis that edge is read through decide
-where it goes on, so a path back around a loop carries the event stored at
-the end of the iteration up to where it is made or given:
+(`eventQuery.carriedInto`, `eventIndex.phiOf`). Only the Phis that edge is
+read through decide where it goes on, so a path back around a loop carries
+the event stored at the end of the iteration up to where it is made or
+given:
 
 ```go
 e := (&box{logger.Info()}).v.Ctx(ctx)
@@ -469,6 +471,7 @@ if cond {
     e = e2              // this path carries e2, not what is read from the box
 }
 e.Msg("x")              // reported
+(&box{e}).v.Msg("x")    // reported: e, read back
 ```
 
 ```go
@@ -570,8 +573,11 @@ than the square of the number of terminators.
 A `Ctx` call given a fresh context replaces the context of the event, so the
 last `Ctx` call on a path decides. Such a call counts only when it runs on
 the source alone, and on the same run of it (see below), or on the Phi of
-events that the path carries in place of the receiver there. Whichever event
+events that the path carries in place of the receiver there. Either of the
+two may be read back from memory, as `(&box{e}).v` is. Whichever event
 that Phi is, the call replaces its context (`eventQuery.freshOnCarried`).
+A store of such a Phi after the call keeps the fresh context, as a store of
+the source alone does, since a path takes each edge of the Phi in turn.
 Any other call that may run on another event may leave the context as it
 was:
 

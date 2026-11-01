@@ -389,6 +389,70 @@ func goodEventCtxBackgroundInPlaceOnPhiOfLastIteration(ctx context.Context, log 
 	}
 }
 
+// The same holds for a Phi of events read back from memory, on either side of
+// the fresh Ctx call (#325).
+
+func badEventCtxBackgroundInPlaceOnPhiReadBack(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	e.Ctx(context.Background())
+	(&freshEventHolder{e}).e.Msg("Background in place on a Phi of events, read back") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceOnPhiStoredAfter(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	e.Ctx(context.Background())
+	h := &freshEventHolder{e}
+	h.e.Msg("Background in place on a Phi of events, stored after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceOnPhiReadBackForCtx(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	(&freshEventHolder{e}).e.Ctx(context.Background())
+	e.Msg("Background in place on a Phi of events read back") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxAfterBackgroundInPlaceOnPhiReadBack(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	e.Ctx(context.Background())
+	e.Ctx(ctx)
+	(&freshEventHolder{e}).e.Msg("ctx after Background in place on a Phi of events, read back") // OK - ctx is the last
+}
+
+func goodEventCtxBackgroundInPlaceOnPhiReadBackCtxAfter(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	(&freshEventHolder{e}).e.Ctx(context.Background())
+	(&freshEventHolder{e}).e.Ctx(ctx)
+	e.Msg("ctx after Background in place on a Phi of events read back") // OK - ctx is the last
+}
+
+func goodEventCtxBackgroundOnOtherPhiReadBack(ctx context.Context, log zerolog.Logger, cond bool, other *zerolog.Event) {
+	e := log.Info().Ctx(ctx)
+	if cond {
+		e = log.Warn().Ctx(ctx)
+	}
+	f := other
+	if cond {
+		f = log.Error()
+	}
+	(&freshEventHolder{f}).e.Ctx(context.Background())
+	(&freshEventHolder{e}).e.Msg("Background on another Phi of events") // OK
+}
+
 // LIMITATION (false negative): A fresh context given to Ctx counts only for
 // a receiver that holds the same run of an event made in a loop on every
 // path. last holds the run before, whose Ctx call is not looked at.

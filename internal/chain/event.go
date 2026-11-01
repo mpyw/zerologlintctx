@@ -421,25 +421,50 @@ func (q *eventQuery) freshOn(cc *eventCtxCall, src eventSource) bool {
 
 // freshOnCarried reports whether cc, a Ctx call given a fresh context, runs
 // on carried, the value a walk back carries in place of the receiver, as
-// eventQuery.carriedValue has it, and carried is a Phi, back through the
-// methods that return the event (see eventOrigin). Whichever event the Phi
-// is on the path, the call replaces its context:
+// eventQuery.carriedValue has it, and carried is a Phi (see
+// eventIndex.phiOf). Whichever event the Phi is on the path, the call
+// replaces its context:
 //
 //	e := logger.Info().Ctx(ctx)
 //	if cond {
 //	    e = logger.Warn().Ctx(ctx)
 //	}
 //	e.Ctx(context.Background()) // runs on the event e is
-//	e.Msg("x")                  // reported
+//	(&box{e}).v.Msg("x")        // reported: e, read back from the box
 //
 // A path takes an edge of the Phi at the top of its block, so carries the
 // edge before it, and the Phi there is the one the call runs on.
 func (q *eventQuery) freshOnCarried(cc *eventCtxCall, carried ssa.Value) bool {
-	phi, ok := eventOrigin(carried, q.ix.closures).(*ssa.Phi)
+	phi, ok := q.ix.phiOf(carried)
 	if !ok || len(cc.recv.next) != 1 || cc.recv.read != nil || len(cc.recv.more) != 0 {
 		return false
 	}
-	return eventOrigin(cc.recv.next[0], q.ix.closures) == phi
+	on, ok := q.ix.phiOf(cc.recv.next[0])
+	return ok && on == phi
+}
+
+// phiOf returns the Phi of events that v is, back through the methods that
+// return the event they run on (see eventOrigin), and through reads from
+// memory that can see only one value, as (&box{e}).v sees e. ok is false when
+// v is no such Phi, or is nil.
+func (ix *eventIndex) phiOf(v ssa.Value) (_ *ssa.Phi, ok bool) {
+	seen := make(map[ssa.Value]bool)
+	for v != nil && !seen[v] {
+		seen[v] = true
+		v = eventOrigin(v, ix.closures)
+		if phi, isPhi := v.(*ssa.Phi); isPhi {
+			return phi, true
+		}
+		if _, isLoad := ssaflow.AsLoad(v); !isLoad {
+			return nil, false
+		}
+		step := ix.stepOf(v)
+		if len(step.next) != 1 || len(step.sources) != 0 || len(step.more) != 0 {
+			return nil, false
+		}
+		v = step.next[0]
+	}
+	return nil, false
 }
 
 // runsOf returns the runs of src the receiver can hold, or nil when src is
@@ -680,18 +705,19 @@ func (q *eventQuery) storesOther(instr ssa.Instruction, p eventPath, fresh bool)
 // receiver as it goes on from the top of b into its i-th predecessor, when it
 // carries carried at the top of b, or nil for the receiver. A value is taken
 // back through the methods that return the event they run on (see
-// eventOrigin), and a Phi of b takes the path to its edge there. What is read
-// from memory before it is what the edge is read through:
+// eventOrigin), and through reads from memory that see only one value (see
+// eventIndex.phiOf), and a Phi of b takes the path to its edge there. What is
+// read from memory before it is what the edge is read through:
 //
 //	e := (&box{logger.Info()}).v.Ctx(ctx)
 //	if cond {
 //	    e = e2          // e2 on this path, not read from the box
 //	}
-//	e.Msg("x")
+//	(&box{e}).v.Msg("x")
 //
 // Any other value is carried on as it is.
 func (q *eventQuery) carriedInto(b *ssa.BasicBlock, i int, carried ssa.Value) ssa.Value {
-	if phi, ok := eventOrigin(q.carriedValue(carried), q.ix.closures).(*ssa.Phi); ok && phi.Block() == b {
+	if phi, ok := q.ix.phiOf(q.carriedValue(carried)); ok && phi.Block() == b {
 		return phi.Edges[i]
 	}
 	return carried
@@ -814,12 +840,24 @@ func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource, carr
 //
 // With fresh, for a walk back to a Ctx call given a fresh context, a value
 // whose only source is src is src, even with context of its own: a fresh
-// Ctx call on src replaces that context too.
+// Ctx call on src replaces that context too. So is a Phi of events that can
+// be src (see eventIndex.phiOf), as a path that carries it takes each edge
+// of it, which tells on its own (see eventQuery.edgeCarries):
+//
+//	e := logger.Info().Ctx(ctx)
+//	if cond {
+//	    e = logger.Warn().Ctx(ctx)
+//	}
+//	e.Ctx(context.Background())
+//	h := &box{e}            // e, with the context replaced
+//	h.v.Msg("x")            // reported
 func (q *eventQuery) isOther(v ssa.Value, src eventSource, fresh bool) bool {
 	q.ix.work++
 	sources := q.ix.sourcesOf(v)
-	if fresh && len(sources.list) == 1 && sources.has(src) {
-		return false
+	if fresh && sources.has(src) {
+		if _, isPhi := q.ix.phiOf(v); isPhi || len(sources.list) == 1 {
+			return false
+		}
 	}
 	return (len(sources.list) > 0 && !sources.has(src)) || q.hasCtx(v)
 }
