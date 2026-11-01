@@ -528,3 +528,13 @@ func goodZerologCtxWithLogger(ctx context.Context) {
 	derived := logger.With().Str("extra", "field").Logger()
 	derived.Info().Msg("from ctx derived") // OK - started from Ctx(ctx)
 }
+
+// ===== Context.CreateDict =====
+
+// LIMITATION (false positive): Context.CreateDict is not followed back to the
+// Context, so a dict that carries the context from Context.Ctx is taken to
+// have none.
+func limitationContextCreateDictWithCtx(ctx context.Context, logger zerolog.Logger) {
+	d := logger.With().Ctx(ctx).CreateDict()
+	d.Msg("dict of a context with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

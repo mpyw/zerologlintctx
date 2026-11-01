@@ -374,3 +374,17 @@ func badClosureDeferredAndCalled(ctx context.Context, logger zerolog.Logger) {
 	f()
 	l = l.With().Ctx(ctx).Logger()
 }
+
+// ===== PANICS =====
+
+// LIMITATION (false negative): A deferred terminator is checked at the
+// returns after the defer statement. A panic before the Ctx call also runs
+// it, without the context.
+func limitationDeferredTerminatorPanicBeforeCtx(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info()
+	defer e.Msg("deferred, a panic before ctx") // LIMITATION: should report but doesn't
+	if cond {
+		panic("before ctx")
+	}
+	e.Ctx(ctx)
+}

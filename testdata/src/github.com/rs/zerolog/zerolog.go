@@ -113,6 +113,7 @@ func (c Context) IPAddr(key string, ip []byte) Context      { return c }
 func (c Context) Timestamp() Context                        { return c }
 func (c Context) Ctx(ctx context.Context) Context           { return c }
 func (c Context) Logger() Logger                            { return Logger{} }
+func (c Context) CreateDict() *Event                        { return &Event{} }
 
 // Event methods
 func (e *Event) Ctx(ctx context.Context) *Event                   { return e }

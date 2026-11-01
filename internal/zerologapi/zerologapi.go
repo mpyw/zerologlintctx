@@ -145,7 +145,8 @@ var exceptions = map[exception]Method{
 	},
 	// func (l Logger) Write(p []byte) (n int, err error), log.go:
 	// l.Log() ... Msg, so the event takes the context of l, as for Print. Its
-	// two results hide it from the Print case of Classify.
+	// name does not start with Print, so the Print case of Classify does not
+	// find it.
 	// LIMITATION: a use through io.Writer, such as fmt.Fprint(l, ...), is not
 	// seen.
 	{TypeLogger, "Write"}: {Kind: KindDirectLog, Recv: TypeLogger},
