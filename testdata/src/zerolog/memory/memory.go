@@ -1107,6 +1107,57 @@ func goodCapturedReassignedParamStoredOnBranch(ctx context.Context, b, other *lo
 	}()
 }
 
+// A closure in between that stores through the pointer, not to where it is
+// read from, leaves the pointer as it is: the walk goes on out of it (#323).
+func goodNestedCapturedLoggerPtrInStructParamStoredOnBranch(ctx context.Context, b *loggerPtrBox, cond bool) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		if cond {
+			*b.p = b.p.With().Ctx(ctx).Logger()
+		}
+		func() { b.p.Info().Msg("nested, stored through on one branch") }() // OK
+	}()
+}
+
+func goodNestedCapturedLoggerPtrPtrParamStoredOnBranch(ctx context.Context, pl **zerolog.Logger, cond bool) {
+	**pl = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		if cond {
+			**pl = (*pl).With().Ctx(ctx).Logger()
+		}
+		func() { (*pl).Info().Msg("nested, through a pointer to a pointer") }() // OK
+	}()
+}
+
+func badNestedCapturedLoggerPtrInStructParamStoredOnBranch(ctx context.Context, b *loggerPtrBox, cond bool) {
+	func() {
+		if cond {
+			*b.p = b.p.With().Ctx(ctx).Logger()
+		}
+		func() { b.p.Info().Msg("nested, the caller's on the other branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCapturedLoggerPtrInStructParamReplacedOnBranch(ctx context.Context, b *loggerPtrBox, other *zerolog.Logger, cond bool) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		if cond {
+			b.p = other
+		}
+		func() { b.p.Info().Msg("nested, the pointer replaced on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCapturedLoggerPtrPtrParamReplacedOnBranch(ctx context.Context, pl **zerolog.Logger, other *zerolog.Logger, cond bool) {
+	**pl = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		if cond {
+			*pl = other
+		}
+		func() { (*pl).Info().Msg("nested, the pointer replaced on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
 // ===== WRITES THROUGH ANOTHER REFERENCE =====
 
 // LIMITATION(#115) (false negative): A write through another reference to the same

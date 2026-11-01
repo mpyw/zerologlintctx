@@ -1028,8 +1028,10 @@ statement, or passed on, adds nothing.
 A path that gets to the entry of the function that makes the closure, when it
 is a closure too that captures the variable in turn, goes on out of it in the
 same way, out to the function the variable is declared in. A closure in
-between that stores to the variable, or through it, as `*pp = other` does,
-may change the pointer: such a path carries a value that is not known. So
+between that stores to the variable, or through it to where the pointer is
+read from, as `*pp = other` does, may change the pointer: such a path carries
+a value that is not known. A store through the pointer itself, as `**pp = l`
+or `*b.p = l` does, leaves the pointer as it is (`storesThrough`). So
 does a path that gets to the entry of the function the variable is declared
 in, when the variable only holds a parameter, as SSA makes for a parameter a
 closure captures (`storeHoldsCallerParam`).
