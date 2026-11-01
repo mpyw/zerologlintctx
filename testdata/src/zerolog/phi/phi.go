@@ -1110,6 +1110,215 @@ func badLoopReplacedWithEventWithoutCtx(ctx context.Context, logger zerolog.Logg
 	}
 }
 
+// ===== AN EVENT KEPT IN A FIELD FOR THE NEXT ITERATION =====
+
+// A field read before its store in a loop holds nil on the first iteration,
+// and the event stored on the iteration before on the later ones. A Ctx call
+// on that event after the store counts, as it does for a variable (#333).
+
+func goodLoopFieldKeptCtxAfterStore(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the event of the iteration before, ctx after the store") // OK
+		}
+		b.e = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
+func goodLoopVariableKeptCtxAfterStore(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	var last *zerolog.Event
+	for range n {
+		if last != nil {
+			last.Msg("the event of the iteration before, ctx after the store") // OK
+		}
+		last = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
+func goodLoopFieldOfZeroValueKeptCtxAfterStore(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	var b phiEventHolder
+	for range n {
+		if b.e != nil {
+			b.e.Msg("nil on the first iteration, the zero value") // OK
+		}
+		b.e = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
+func goodLoopFieldKeptCtxBeforeStore(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the event of the iteration before, ctx before the store") // OK
+		}
+		e.Ctx(ctx)
+		b.e = e
+		e = e2.Ctx(ctx)
+	}
+}
+
+func goodLoopFieldKeptMadeInLoopCtxAfterStore(ctx context.Context, logger zerolog.Logger, n int) {
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the run before, ctx after the store") // OK
+		}
+		e := logger.Info()
+		b.e = e
+		e.Ctx(ctx)
+	}
+}
+
+func badLoopFieldKeptCtxOnBranch(ctx context.Context, logger zerolog.Logger, n int, cond bool, e2 *zerolog.Event) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("ctx after the store on a branch only") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		b.e = e
+		if cond {
+			e.Ctx(ctx)
+		}
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopFieldKeptCtxBeforeStoreOnSomeIterations(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	for i := range n {
+		if b.e != nil {
+			b.e.Msg("ctx before the store on even iterations only") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		if i%2 == 0 {
+			e.Ctx(ctx)
+		}
+		b.e = e
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopFieldKeptWithoutCtx(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the first event, stored without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		b.e = e
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopFieldKeptReplacedWithoutCtx(ctx context.Context, logger zerolog.Logger, n int) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("an event without ctx stored on each iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		b.e = e
+		e = logger.Warn()
+	}
+}
+
+func badLoopFieldKeptCtxOnNextEventOnly(ctx context.Context, logger zerolog.Logger, n int) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("ctx on the event stored next, not this one") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		b.e = e
+		e = logger.Warn()
+		e.Ctx(ctx)
+	}
+}
+
+func badLoopFieldKeptMadeInLoopWithoutCtx(ctx context.Context, logger zerolog.Logger, n int) {
+	b := &phiEventHolder{nil}
+	for range n {
+		if b.e != nil {
+			b.e.Msg("the run before, stored without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		b.e = logger.Info()
+	}
+}
+
+func badFieldOfZeroValueStored(ctx context.Context, logger zerolog.Logger) {
+	b := &phiEventHolder{}
+	b.e = logger.Info()
+	b.e.Msg("stored over the zero value, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFieldStoredThenNilOnBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	b := &phiEventHolder{nil}
+	b.e = logger.Info()
+	if cond {
+		b.e = nil
+	}
+	b.e.Msg("the event without ctx on the other path") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A field that a call can write to may hold another event than nil, so nil
+// stored there before does not end a path.
+
+func phiFillHolder(b *phiEventHolder, logger zerolog.Logger) {
+	b.e = logger.Warn()
+}
+
+func phiFillEvent(e **zerolog.Event, logger zerolog.Logger) {
+	*e = logger.Warn()
+}
+
+func badLoopFieldKeptAfterCall(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	phiFillHolder(b, logger)
+	for range n {
+		b.e.Msg("the call's event on the first iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		b.e = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopFieldKeptAfterCallWithField(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info()
+	b := &phiEventHolder{nil}
+	phiFillEvent(&b.e, logger)
+	for range n {
+		b.e.Msg("the call's event on the first iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		b.e = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
+func badLoopFieldOfParamKeptAfterCall(ctx context.Context, logger zerolog.Logger, n int, b *phiEventHolder, e2 *zerolog.Event) {
+	e := logger.Info()
+	b.e = nil
+	phiFillHolder(b, logger)
+	for range n {
+		b.e.Msg("the call's event on the first iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		b.e = e
+		e.Ctx(ctx)
+		e = e2.Ctx(ctx)
+	}
+}
+
 // ===== POINTER TO A VARIABLE DECLARED IN A BRANCH =====
 
 // A Phi of pointers that may point to a variable declared in a branch or a

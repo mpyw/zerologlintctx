@@ -288,8 +288,8 @@ the event of the latest run of a call in a loop (see
 [Events made in a loop](#events-made-in-a-loop)).
 
 `walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
-the visit of each instruction too. A block is walked once in each
-state. `walkBefore` uses it to keep, on each path, the Phi that must still
+the visit of each instruction too, which may change it for the rest of the
+path. A block is walked once in each state. `walkBefore` uses it to keep, on each path, the Phi that must still
 point to the variable picked. `ctxRunsBefore` keeps the value the path
 carries in place of the receiver, and the event it carries (`eventPath`).
 
@@ -458,12 +458,12 @@ it: it takes an edge of a Phi the receiver is read through that is nil,
 another event, or one with context of its own, or it stores such a value
 where the receiver is read from. A path that takes the edge of a Phi the
 receiver is, back through the methods that return the event and through
-reads from memory that see only that Phi, as `(&box{e}).v` does, carries that
-edge before it, so only a store where the edge is read from ends it
-(`eventQuery.carriedInto`, `eventIndex.phiOf`). Only the Phis that edge is
-read through decide where it goes on, so a path back around a loop carries
-the event stored at the end of the iteration up to where it is made or
-given:
+reads from memory that see only that Phi, stored there before the read on
+every path, as `(&box{e}).v` does, carries that edge before it, so only a
+store where the edge is read from ends it (`eventQuery.carriedInto`,
+`eventIndex.phiOf`). Only the Phis that edge is read through decide where it
+goes on, so a path back around a loop carries the event stored at the end of
+the iteration up to where it is made or given:
 
 ```go
 e := (&box{logger.Info()}).v.Ctx(ctx)
@@ -488,6 +488,27 @@ e := logger.Info().Ctx(ctx)
 for range n {
     e.Msg("x")          // reported: e2 on the later iterations
     e = e2
+}
+```
+
+A read from memory sees the last store there on a path, so a path that
+passes a store of a value the receiver is read through carries that value
+before it (`eventQuery.carryStored`). A Phi stored only after the read, as in
+a loop that keeps the event for the next iteration, is not the one the read
+sees where the path first gets to the Phi, so it decides no edge there
+(`eventIndex.currentIn`). A path that gets to a store of nil where it is read
+from, or to the Alloc it is in, holds no event, when only the stores the walk
+sees write there (`eventQuery.holdsNone`):
+
+```go
+b := &holder{nil}       // b.e holds nil on the first iteration
+for range n {
+    if b.e != nil {
+        b.e.Msg("x")    // OK: the event of the iteration before
+    }
+    b.e = e
+    e.Ctx(ctx)          // in place, after the store
+    e = e2.Ctx(ctx)
 }
 ```
 
