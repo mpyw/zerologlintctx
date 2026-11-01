@@ -5,7 +5,6 @@
 package chain
 
 import (
-	"go/token"
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
@@ -762,42 +761,6 @@ func storesReachingAt(
 	w := &storeWalk{at: at, positions: positions, out: &r}
 	w.walkToRead(read)
 	return r, true
-}
-
-// storeLoadsAt returns, for at, a local variable, a pointer parameter or a
-// captured variable, or a field or constant element of one, the loads of the
-// same address in the function, and the instructions after which another
-// value is there: the stores to it, or to an aggregate that holds it, and the
-// declaration of a local variable. ok is false for any other address.
-//
-//declscope:shared // tracing.go finds the Ctx calls on an event in memory
-func storeLoadsAt(at place) (loads []*ssa.UnOp, overwrites map[ssa.Instruction]bool, ok bool) {
-	if !isTrackedRoot(at.root) {
-		return nil, nil, false
-	}
-	w := &storeWalk{at: at}
-	overwrites = make(map[ssa.Instruction]bool)
-	fn := parentFunc(at.root)
-	if fv, isFreeVar := at.root.(*ssa.FreeVar); isFreeVar {
-		fn = fv.Parent()
-	}
-	for instr := range instrsIn(fn) {
-		switch in := instr.(type) {
-		case *ssa.UnOp:
-			if n, ok := w.prefixLen(in.X); ok && in.Op == token.MUL && n == len(at.path) {
-				loads = append(loads, in)
-			}
-		case *ssa.Store:
-			if _, ok := w.prefixLen(in.Addr); ok {
-				overwrites[in] = true
-			}
-		case *ssa.Alloc:
-			if in == at.root {
-				overwrites[in] = true
-			}
-		}
-	}
-	return loads, overwrites, true
 }
 
 // storeWalk walks the control flow backwards from a read, and stops each path

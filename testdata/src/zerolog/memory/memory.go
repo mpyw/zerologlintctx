@@ -350,18 +350,25 @@ func badEmbeddedStructCtxBackgroundInPlaceMethodExpression(ctx context.Context, 
 	embeddedHolder.Msg(h, "method expression after a fresh Ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-// LIMITATION(#204) (false positive): Ctx in place is not seen through an embedded
-// pointer partway, which the event is read past with a load.
-func limitationNestedEmbeddedPointerCtxInPlaceMethodExpression(ctx context.Context, logger zerolog.Logger) {
+// Ctx in place is seen through an embedded pointer partway, which the event
+// is read past with a load: each read sees the event stored there (#204).
+func goodNestedEmbeddedPointerCtxInPlaceMethodExpression(ctx context.Context, logger zerolog.Logger) {
 	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
 	h.Ctx(ctx)
-	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer after Ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
+	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer after Ctx in place") // OK - the same event
 }
 
-func limitationNestedEmbeddedPointerCtxInPlacePromoted(ctx context.Context, logger zerolog.Logger) {
+func goodNestedEmbeddedPointerCtxInPlacePromoted(ctx context.Context, logger zerolog.Logger) {
 	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
 	h.Ctx(ctx)
-	h.Msg("promoted through a pointer after Ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
+	h.Msg("promoted through a pointer after Ctx in place") // OK - the same event
+}
+
+func badNestedEmbeddedPointerCtxInPlaceOtherHolder(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
+	h.Ctx(ctx)
+	h.embeddedHolder = &embeddedHolder{logger.Warn()}
+	h.Msg("promoted through a pointer, another holder stored after Ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func goodEmbeddedStructCtxInPlaceInClosureMethodExpression(ctx context.Context, logger zerolog.Logger) {

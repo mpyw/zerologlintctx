@@ -110,25 +110,6 @@ func (p place) withFields(fields []int) place {
 	return at
 }
 
-// trailingFields returns the fields that the last selections of p select,
-// as many as are fields and not elements, outermost first, and start, the
-// number of selections before them.
-func (p place) trailingFields() (start int, fields []int) {
-	start = len(p.path)
-	for start > 0 && p.path[start-1].operand == nil {
-		start--
-	}
-	for _, s := range p.path[start:] {
-		fields = append(fields, s.field)
-	}
-	return start, fields
-}
-
-// prefix returns the place that the first n selections of p select.
-func (p place) prefix(n int) place {
-	return place{root: p.root, path: p.path[:n]}
-}
-
 // prefixOf reports whether p has the root of q, and selects the same as the
 // first selections of q do, as many as p has.
 func (p place) prefixOf(q place) bool {
@@ -265,6 +246,32 @@ func elemSel(index ssa.Value) sel {
 		s.index = c.Value
 	}
 	return s
+}
+
+// loadedSelection returns where v, a field of a struct value or an element of
+// an array value, selected from one loaded whole from an address, is read
+// from: the same selections from that address, and the load. ok is false when
+// v does not select from a load:
+//
+//	t8 = *t4                // the whole struct, loaded
+//	t9 = t8.Logger          // v, read from t4.Logger
+func loadedSelection(v ssa.Value) (at place, load *ssa.UnOp, ok bool) {
+	var selections []sel
+	for {
+		from, s, isSel := valueSel(v)
+		if !isSel {
+			break
+		}
+		selections = append(selections, s)
+		v = from
+	}
+	load, ok = asLoad(v)
+	if !ok || len(selections) == 0 {
+		return place{}, nil, false
+	}
+	slices.Reverse(selections)
+	base, _ := placeOf(load.X)
+	return base.with(selections...), load, true
 }
 
 // asLoad returns v as a load, `*x`, and reports whether it is one.
