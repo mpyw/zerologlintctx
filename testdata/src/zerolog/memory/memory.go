@@ -1320,6 +1320,187 @@ func badNestedCapturedLoggerPtrPtrParamReplacedOnBranch(ctx context.Context, pl 
 	}()
 }
 
+// A copy made in a closure, from a variable it captures, is followed out of
+// that closure to the function that declares the variable (#339).
+func badNestedCopyOfStructPtrParamDerefStoredOnBranch(ctx context.Context, other *loggerPtrBox, cond bool) {
+	func() {
+		b := *other
+		if cond {
+			*b.p = b.p.With().Ctx(ctx).Logger()
+		}
+		func() { b.p.Info().Msg("nested copy of *other, the caller's on the other branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCopyOfStructPtrParamStoredOnBranch(ctx context.Context, other *loggerPtrBox, cond bool) {
+	func() {
+		if cond {
+			*other.p = zerolog.Ctx(ctx).With().Logger()
+		}
+		b := other
+		func() { b.p.Info().Msg("nested copy of other, the caller's on the other branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCopyOfStructParamStoredOnBranch(ctx context.Context, other loggerPtrBox, cond bool) {
+	func() {
+		if cond {
+			*other.p = zerolog.Ctx(ctx).With().Logger()
+		}
+		b := other
+		func() { b.p.Info().Msg("nested copy of a struct, the caller's on the other branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCopyOfStructPtrParamDerefStoredOutsideOnBranch(ctx context.Context, other *loggerPtrBox, cond bool) {
+	if cond {
+		*other.p = other.p.With().Ctx(ctx).Logger()
+	}
+	func() {
+		b := *other
+		func() { b.p.Info().Msg("nested copy of *other, stored outside on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCopyOfLocalStructPtrDeref(ctx context.Context, l zerolog.Logger) {
+	o := &loggerPtrBox{p: &l}
+	func() {
+		b := *o
+		func() { b.p.Info().Msg("nested copy of a local, no store") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCopyOfStructPtrParamDerefReplacedOutside(ctx context.Context, other *loggerPtrBox, l *zerolog.Logger) {
+	*other.p = other.p.With().Ctx(ctx).Logger()
+	other.p = l
+	func() {
+		b := *other
+		func() { b.p.Info().Msg("nested copy of *other, its pointer replaced outside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCopyOfStructPtrParamDerefReplacedInside(ctx context.Context, other *loggerPtrBox, l *zerolog.Logger) {
+	*other.p = other.p.With().Ctx(ctx).Logger()
+	func() {
+		other.p = l
+		b := *other
+		func() { b.p.Info().Msg("nested copy of *other, its pointer replaced inside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badNestedCopyOfStructPtrParamDerefReplacedWhole(ctx context.Context, other, l *loggerPtrBox) {
+	*other.p = other.p.With().Ctx(ctx).Logger()
+	other = l
+	func() {
+		b := *other
+		func() { b.p.Info().Msg("nested copy of *other, other replaced outside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+type loggerPtrBoxBox struct{ q *loggerPtrBox }
+
+func badNestedCopyOfNestedBoxReplacedInside(ctx context.Context, other *loggerPtrBoxBox, l *loggerPtrBox) {
+	*other.q.p = other.q.p.With().Ctx(ctx).Logger()
+	func() {
+		other.q = l
+		b := *other
+		func() { b.q.p.Info().Msg("nested copy, the box replaced inside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodNestedCopyOfNestedBoxStoredOutside(ctx context.Context, other *loggerPtrBoxBox) {
+	*other.q.p = other.q.p.With().Ctx(ctx).Logger()
+	func() {
+		b := *other
+		func() { b.q.p.Info().Msg("nested copy, the box stored through outside") }() // OK
+	}()
+}
+
+type loggerPtrPairBox struct {
+	p, q *zerolog.Logger
+	ps   [2]*zerolog.Logger
+}
+
+func goodNestedCopyOfPairOtherFieldReplacedInside(ctx context.Context, other *loggerPtrPairBox, l *zerolog.Logger) {
+	*other.p = other.p.With().Ctx(ctx).Logger()
+	func() {
+		other.q = l
+		b := *other
+		func() { b.p.Info().Msg("nested copy, another field replaced inside") }() // OK
+	}()
+}
+
+func badNestedCopyOfPairElemReplacedInside(ctx context.Context, other *loggerPtrPairBox, l *zerolog.Logger, i int) {
+	*other.ps[0] = other.ps[0].With().Ctx(ctx).Logger()
+	func() {
+		other.ps[i] = l
+		b := *other
+		func() { b.ps[0].Info().Msg("nested copy, an element maybe replaced inside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodNestedCopyOfStructPtrParamDerefStored(ctx context.Context, other *loggerPtrBox) {
+	func() {
+		b := *other
+		*b.p = b.p.With().Ctx(ctx).Logger()
+		func() { b.p.Info().Msg("nested copy of *other, stored through") }() // OK
+	}()
+}
+
+func goodNestedCopyOfStructPtrParamDerefStoredOutside(ctx context.Context, other *loggerPtrBox) {
+	*other.p = other.p.With().Ctx(ctx).Logger()
+	func() {
+		b := *other
+		func() { b.p.Info().Msg("nested copy of *other, stored outside") }() // OK
+	}()
+}
+
+func goodNestedCopyOfStructParamStoredOutside(ctx context.Context, other loggerPtrBox) {
+	*other.p = other.p.With().Ctx(ctx).Logger()
+	func() {
+		b := other
+		func() { b.p.Info().Msg("nested copy of a struct, stored outside") }() // OK
+	}()
+}
+
+// A struct parameter whose field is stored to holds more than one value, so
+// a path to its entry does not carry the caller's Logger.
+func goodNestedCopyOfStructParamFieldPickedOutside(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	l1 := base.With().Ctx(ctx).Logger()
+	l2 := base.With().Ctx(ctx).Logger()
+	p := &l1
+	if cond {
+		p = &l2
+	}
+	other.p = p
+	func() {
+		b := other
+		func() { b.p.Info().Msg("nested copy of a struct, its field picked outside") }() // OK
+	}()
+}
+
+func badNestedCopyOfStructParamFieldPickedOutside(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	l1 := base.With().Ctx(ctx).Logger()
+	p := &l1
+	if cond {
+		p = &base
+	}
+	other.p = p
+	func() {
+		b := other
+		func() { b.p.Info().Msg("nested copy of a struct, its field picked outside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodNestedCopyOfLocalStructPtrDerefStored(ctx context.Context, l zerolog.Logger) {
+	o := &loggerPtrBox{p: &l}
+	*o.p = l.With().Ctx(ctx).Logger()
+	func() {
+		b := *o
+		func() { b.p.Info().Msg("nested copy of a local, stored outside") }() // OK
+	}()
+}
+
 // ===== WRITES THROUGH ANOTHER REFERENCE =====
 
 // LIMITATION(#115) (false negative): A write through another reference to the same

@@ -1068,7 +1068,8 @@ or `b := other`. The closure then reads the pointer the copy took
 value copied, or, for a struct, from the same field of where it was loaded
 from, is a store through the same pointer, before the copy or after it
 (`matchCopiedLoad`). A store of another pointer there, or over where the
-struct was loaded from before it was loaded, stops a path. A path that gets
+struct was loaded from before it was loaded, or inside it on the way to the
+pointer, as `other.p = l` before `b := *other`, stops a path. A path that gets
 to the entry of the function, or to such a store of a parameter, carries the
 caller's value:
 
@@ -1083,9 +1084,25 @@ if cond {
 func() { h.p.Info().Msg("x") }()            // the caller's Logger when cond is false: reported
 ```
 
+When the copy is made in a closure, from a variable that closure captures,
+as `b := *other` in a func literal does, a path that gets to the entry of
+that closure goes on out of it in the same way, through the variable the
+value copied is read from (#339). Only one copy is followed on the way out:
+
+```go
+func() {
+    b := *other                    // other is a pointer parameter
+    if cond {
+        *b.p = b.p.With().Ctx(ctx).Logger()
+    }
+    func() { b.p.Info().Msg("x") }() // the caller's Logger when cond is false: reported
+}()
+```
+
 When no such copy is found, a path that gets to the entry of the function
 the variable is declared in carries the caller's value when the variable
-only holds a parameter (`storeHoldsCallerParam`).
+only holds a parameter (`storeHoldsCallerParam`). A struct parameter whose
+fields are only loaded holds one value too.
 
 ```go
 (*pp).log = zerolog.Ctx(ctx).With().Logger()
