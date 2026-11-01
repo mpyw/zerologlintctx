@@ -423,6 +423,14 @@ for range n {
 }
 ```
 
+The index keeps the sources of each value it was asked about, as a set, and
+the `Ctx` calls of each function. A function with no `Ctx` call is not
+walked at all. The walk looks at a `Ctx` call only where it meets one, and
+compares the sources of the call with those of the receiver once per query.
+`TestEventQueryWorkIsQuadratic` counts that work for two shapes that took
+more than quadratic time before (#247), and checks that it grows no faster
+than the square of the number of terminators.
+
 A deferred terminator runs at each return after the `defer` statement, so for
 one a `Ctx` call on the source that runs on every path from the `defer` to a
 return counts too. A path that makes the source again, in a loop, has

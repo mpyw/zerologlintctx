@@ -16,7 +16,6 @@ package chain
 
 import (
 	"iter"
-	"slices"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -52,6 +51,29 @@ type eventSource struct {
 	at ssaflow.PlaceKey
 }
 
+// eventSources is a set of events, in the order they were found.
+type eventSources struct {
+	list []eventSource
+	set  map[eventSource]bool
+}
+
+// add adds src, unless it is in the set already.
+func (s *eventSources) add(src eventSource) {
+	if s.set[src] {
+		return
+	}
+	if s.set == nil {
+		s.set = make(map[eventSource]bool)
+	}
+	s.set[src] = true
+	s.list = append(s.list, src)
+}
+
+// has reports whether src is in the set.
+func (s *eventSources) has(src eventSource) bool {
+	return s.set[src]
+}
+
 // eventStep is what a value of a chain is one step back: other values that
 // are the same event, and the events it can be that go back no further.
 type eventStep struct {
@@ -65,7 +87,16 @@ type eventStep struct {
 // the events it can run on.
 type eventCtxCall struct {
 	call    *ssa.Call
-	sources []eventSource
+	sources *eventSources
+}
+
+// eventCtxCalls are the calls of Event.Ctx of a function given a context that
+// is not fresh.
+type eventCtxCalls struct {
+	// at holds each call by its instruction.
+	at map[ssa.Instruction]*eventCtxCall
+	// on holds the calls that can run on each event.
+	on map[eventSource][]*eventCtxCall
 }
 
 // eventIndex finds the events each value of a chain can be, and keeps what it
@@ -85,14 +116,23 @@ type eventIndex struct {
 	//
 	//declscope:private
 	steps map[ssa.Value]eventStep
+	// sources holds the events each value asked about can be.
+	//
+	//declscope:private
+	sources map[ssa.Value]*eventSources
 	// ctxCalls holds the Ctx calls of each function asked about.
 	//
 	//declscope:private
-	ctxCalls map[*ssa.Function][]eventCtxCall
+	ctxCalls map[*ssa.Function]*eventCtxCalls
 	// active holds the parameters of func literals being resolved.
 	//
 	//declscope:private
 	active map[*ssa.Parameter]bool
+	// work counts the values expanded, the instructions and edges walked,
+	// and the events compared, which the tests bound.
+	//
+	//declscope:private
+	work int
 }
 
 // newEventIndex creates an index with nothing found yet.
@@ -103,7 +143,8 @@ func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eve
 		positions: positions,
 		closures:  closures,
 		steps:     make(map[ssa.Value]eventStep),
-		ctxCalls:  make(map[*ssa.Function][]eventCtxCall),
+		sources:   make(map[ssa.Value]*eventSources),
+		ctxCalls:  make(map[*ssa.Function]*eventCtxCalls),
 		active:    make(map[*ssa.Parameter]bool),
 	}
 }
@@ -123,15 +164,18 @@ func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eve
 //
 //declscope:shared // tracing.go asks this of each terminator whose chain has no context
 func (ix *eventIndex) eventCtxSetInPlace(c callee, at ssa.Instruction, hasCtx func(ssa.Value) bool) bool {
-	q := ix.queryOf(c, at, hasCtx)
-	if len(q.sources) == 0 {
+	calls := ix.ctxCallsIn(at.Parent())
+	if len(calls.at) == 0 {
+		return false // No Ctx call to look for
+	}
+	q := ix.queryOf(c, at, hasCtx, calls)
+	if len(q.sources.list) == 0 {
 		return false
 	}
 	before := ssaflow.WalkPointBefore(at, ix.positions)
 	d, deferred := at.(*ssa.Defer)
-	for _, src := range q.sources {
-		calls := q.ctxCallsOn(src)
-		if !q.ctxRunsBefore(src, calls, before) && (!deferred || !q.ctxRunsAfterDefer(src, calls, d)) {
+	for _, src := range q.sources.list {
+		if !q.ctxRunsBefore(src, before) && (!deferred || !q.ctxRunsAfterDefer(src, d)) {
 			return false
 		}
 	}
@@ -144,8 +188,13 @@ type eventQuery struct {
 	ix     *eventIndex
 	fn     *ssa.Function
 	hasCtx func(ssa.Value) bool
+	// calls are the Ctx calls of the function.
+	calls *eventCtxCalls
+	// within holds, for each Ctx call looked at, whether it runs on no event
+	// the receiver cannot be.
+	within map[*eventCtxCall]bool
 	// sources are the events the receiver can be.
-	sources []eventSource
+	sources *eventSources
 	// values are the values the receiver is the same event as, back to the
 	// sources: the Phis it takes an edge of, and the values stored where it
 	// is read from.
@@ -155,11 +204,13 @@ type eventQuery struct {
 }
 
 // queryOf finds the events that c, the terminator at, can run on.
-func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Value) bool) eventQuery {
-	q := eventQuery{
+func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Value) bool, calls *eventCtxCalls) *eventQuery {
+	q := &eventQuery{
 		ix:     ix,
 		fn:     at.Parent(),
 		hasCtx: hasCtx,
+		calls:  calls,
+		within: make(map[*eventCtxCall]bool),
 		values: make(map[ssa.Value]bool),
 		reads:  make(map[ssaflow.PlaceKey]bool),
 	}
@@ -167,16 +218,42 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 	return q
 }
 
-// ctxCallsOn returns the Ctx calls of the function that run on src: on a
-// value that can be src, and no event the receiver cannot be.
-func (q eventQuery) ctxCallsOn(src eventSource) map[ssa.Instruction]bool {
-	calls := make(map[ssa.Instruction]bool)
-	for _, cc := range q.ix.ctxCallsIn(q.fn) {
-		if slices.Contains(cc.sources, src) && eventSourcesWithin(cc.sources, q.sources) {
-			calls[cc.call] = true
+// ctxCallOn reports whether instr is a Ctx call that runs on src: on a value
+// that can be src, and on no event the receiver cannot be.
+func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource) bool {
+	cc, ok := q.calls.at[instr]
+	return ok && q.counts(cc, src)
+}
+
+// hasCtxCallOn reports whether some Ctx call of the function runs on src.
+func (q *eventQuery) hasCtxCallOn(src eventSource) bool {
+	for _, cc := range q.calls.on[src] {
+		if q.counts(cc, src) {
+			return true
 		}
 	}
-	return calls
+	return false
+}
+
+// counts reports whether cc runs on src, and on no event the receiver
+// cannot be. It compares the events of each call once.
+func (q *eventQuery) counts(cc *eventCtxCall, src eventSource) bool {
+	if !cc.sources.has(src) {
+		return false
+	}
+	within, ok := q.within[cc]
+	if !ok {
+		within = true
+		for _, s := range cc.sources.list {
+			q.ix.work++
+			if !q.sources.has(s) {
+				within = false
+				break
+			}
+		}
+		q.within[cc] = within
+	}
+	return within
 }
 
 // ctxRunsBefore reports whether every path that leads to before, and carries
@@ -184,11 +261,12 @@ func (q eventQuery) ctxCallsOn(src eventSource) map[ssa.Instruction]bool {
 // entry of the function carries src only when the function does not make it,
 // as for a parameter. A path carries another event when it takes an edge of a
 // Phi, or stores a value, that is not src or has context of its own.
-func (q eventQuery) ctxRunsBefore(src eventSource, calls map[ssa.Instruction]bool, before ssaflow.WalkPoint) bool {
+func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bool {
 	def := q.defOf(src)
 	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
+		q.ix.work++
 		switch {
-		case calls[instr]:
+		case q.ctxCallOn(instr, src):
 			return ssaflow.WalkStop // Ctx runs on this path
 		case instr == def:
 			return ssaflow.WalkAbort // src is made on this path, and Ctx does not run after
@@ -208,16 +286,17 @@ func (q eventQuery) ctxRunsBefore(src eventSource, calls map[ssa.Instruction]boo
 // terminator, to a return, one of calls runs on src. A path that makes src
 // again, in a loop, has another event after. The recover block, reached after
 // a panic, is not looked at, as it has no path from d.
-func (q eventQuery) ctxRunsAfterDefer(src eventSource, calls map[ssa.Instruction]bool, d *ssa.Defer) bool {
-	if len(calls) == 0 {
+func (q *eventQuery) ctxRunsAfterDefer(src eventSource, d *ssa.Defer) bool {
+	if !q.hasCtxCallOn(src) {
 		return false // A path that never returns does not end the walk
 	}
 	def := q.defOf(src)
 	return ssaflow.WalkFwd(ssaflow.WalkPointAfter(d, q.ix.positions), func(instr ssa.Instruction) ssaflow.WalkStep {
+		q.ix.work++
 		switch {
 		case instr == def:
 			return ssaflow.WalkAbort // The event is made again, so a Ctx call after is on another one
-		case calls[instr]:
+		case q.ctxCallOn(instr, src):
 			return ssaflow.WalkStop // Ctx runs on this path
 		}
 		if _, ok := instr.(*ssa.Return); ok {
@@ -230,7 +309,7 @@ func (q eventQuery) ctxRunsAfterDefer(src eventSource, calls map[ssa.Instruction
 // defOf returns the instruction of the function that makes src, or nil when
 // the function is given it: a parameter, a free variable, an event made in
 // another function, or one it cannot tell.
-func (q eventQuery) defOf(src eventSource) ssa.Instruction {
+func (q *eventQuery) defOf(src eventSource) ssa.Instruction {
 	if instr, ok := src.v.(ssa.Instruction); ok && instr.Parent() == q.fn {
 		return instr
 	}
@@ -247,7 +326,7 @@ func (q eventQuery) defOf(src eventSource) ssa.Instruction {
 //	    e.Msg("x")
 //	    e = logger.Warn().Ctx(ctx)  // of its own, on the later ones
 //	}
-func (q eventQuery) storesOther(instr ssa.Instruction, src eventSource) bool {
+func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource) bool {
 	store, ok := instr.(*ssa.Store)
 	if !ok || !q.values[store.Val] {
 		return false
@@ -260,12 +339,13 @@ func (q eventQuery) storesOther(instr ssa.Instruction, src eventSource) bool {
 // its i-th predecessor carrying src: no Phi of b that the receiver is read
 // through takes nil there, or another event than src, or one with context of
 // its own.
-func (q eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource) bool {
+func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource) bool {
 	for _, instr := range b.Instrs {
 		phi, ok := instr.(*ssa.Phi)
 		if !ok {
 			break
 		}
+		q.ix.work++
 		if !q.values[phi] {
 			continue
 		}
@@ -279,29 +359,23 @@ func (q eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource) bool 
 // isOther reports whether v, a value the receiver is read through, is another
 // event than src, or has context of its own. A value that leads back to
 // itself, as an update in a loop does, can be any of them.
-func (q eventQuery) isOther(v ssa.Value, src eventSource) bool {
+func (q *eventQuery) isOther(v ssa.Value, src eventSource) bool {
+	q.ix.work++
 	sources := q.ix.sourcesOf(v)
-	return (len(sources) > 0 && !slices.Contains(sources, src)) || q.hasCtx(v)
-}
-
-// eventSourcesWithin reports whether each of sources is one of within.
-func eventSourcesWithin(sources, within []eventSource) bool {
-	for _, src := range sources {
-		if !slices.Contains(within, src) {
-			return false
-		}
-	}
-	return true
+	return (len(sources.list) > 0 && !sources.has(src)) || q.hasCtx(v)
 }
 
 // ctxCallsIn returns the calls of Event.Ctx in fn given a context that is not
 // fresh, with the events each runs on. A Ctx call given a fresh
 // context.Background() or TODO() does not set the context.
-func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) []eventCtxCall {
+func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) *eventCtxCalls {
 	if calls, ok := ix.ctxCalls[fn]; ok {
 		return calls
 	}
-	var calls []eventCtxCall
+	calls := &eventCtxCalls{
+		at: make(map[ssa.Instruction]*eventCtxCall),
+		on: make(map[eventSource][]*eventCtxCall),
+	}
 	for instr := range ssaflow.InstrsIn(fn) {
 		call, ok := instr.(*ssa.Call)
 		if !ok {
@@ -314,28 +388,35 @@ func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) []eventCtxCall {
 		if args := call.Call.Args; len(args) > 0 && isFreshContext(args[len(args)-1], ix.positions, ix.closures) {
 			continue
 		}
-		sources := ix.expand(ix.calleeStep(c, call), make(map[ssa.Value]bool), nil)
-		calls = append(calls, eventCtxCall{call: call, sources: sources})
+		cc := &eventCtxCall{call: call, sources: ix.expand(ix.calleeStep(c, call), make(map[ssa.Value]bool), nil)}
+		calls.at[call] = cc
+		for _, src := range cc.sources.list {
+			calls.on[src] = append(calls.on[src], cc)
+		}
 	}
 	ix.ctxCalls[fn] = calls
 	return calls
 }
 
-// sourcesOf returns the events v can be.
-func (ix *eventIndex) sourcesOf(v ssa.Value) []eventSource {
-	return ix.expand(eventStep{next: []ssa.Value{v}}, make(map[ssa.Value]bool), nil)
+// sourcesOf returns the events v can be, which it finds once.
+func (ix *eventIndex) sourcesOf(v ssa.Value) *eventSources {
+	if sources, ok := ix.sources[v]; ok {
+		return sources
+	}
+	sources := ix.expand(eventStep{next: []ssa.Value{v}}, make(map[ssa.Value]bool), nil)
+	ix.sources[v] = sources
+	return sources
 }
 
 // expand returns the events that start can be, adding to values each value
 // it is the same event as on the way, and to reads, when not nil, each place
 // it is read from. A value already in values adds nothing, so a cycle ends.
-func (ix *eventIndex) expand(start eventStep, values map[ssa.Value]bool, reads map[ssaflow.PlaceKey]bool) []eventSource {
-	var sources []eventSource
+func (ix *eventIndex) expand(start eventStep, values map[ssa.Value]bool, reads map[ssaflow.PlaceKey]bool) *eventSources {
+	sources := &eventSources{}
 	add := func(step eventStep) {
+		ix.work += 1 + len(step.sources)
 		for _, src := range step.sources {
-			if !slices.Contains(sources, src) {
-				sources = append(sources, src)
-			}
+			sources.add(src)
 		}
 		if step.read != nil && reads != nil {
 			reads[*step.read] = true
