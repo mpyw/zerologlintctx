@@ -153,3 +153,88 @@ func f(x *T) func() { return x.m }
 		t.Error("storeTargetsReaching of a free variable of a wrapper: ok")
 	}
 }
+
+// TestStoreVariableOnce checks which local variables hold one value wherever
+// they are loaded, and that two loads of one, in a closure that captures it
+// too, are one index value.
+func TestStoreVariableOnce(t *testing.T) {
+	const src = `package p
+
+func use(*int) {}
+
+func f(a int, s []int, cond bool) {
+	_ = s[a]
+	func() { _ = s[a] }()
+	b := 0
+	b++
+	func() { _ = b }()
+	c := 0
+	use(&c)
+	func() { _ = c }()
+	d := 0
+	func() { d = 1 }()
+	_ = d
+	for range s {
+		e := 0
+		func() { _ = e }()
+	}
+	var g int
+	if cond {
+		g = 1
+	}
+	func() { _ = g }()
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := pkg.Func("f")
+	allocs := make(map[string]*ssa.Alloc)
+	for instr := range InstrsIn(fn) {
+		if a, ok := instr.(*ssa.Alloc); ok {
+			allocs[a.Comment] = a
+		}
+	}
+	w := &storeWalk{positions: make(Positions)}
+	for name, want := range map[string]bool{"a": true, "b": false, "c": false, "d": false, "e": false, "g": false} {
+		if got := w.storeVariableOnce(allocs[name]); got != want {
+			t.Errorf("storeVariableOnce(%s) = %v, want %v", name, got, want)
+		}
+	}
+
+	// The load of a in f, and the one in the closure that captures it
+	var outer, inner ssa.Value
+	for instr := range InstrsIn(fn) {
+		if load, ok := AsLoad(storeValueOf(instr)); ok && load.X == allocs["a"] {
+			outer = load
+		}
+	}
+	for instr := range InstrsIn(fn.AnonFuncs[0]) {
+		if load, ok := AsLoad(storeValueOf(instr)); ok {
+			if _, isFreeVar := load.X.(*ssa.FreeVar); isFreeVar && load.Type() == types.Typ[types.Int] {
+				inner = load
+			}
+		}
+	}
+	if outer == nil || inner == nil {
+		t.Fatalf("loads of a: %v in f, %v in the closure", outer, inner)
+	}
+	if !w.indexOnce(outer, inner) {
+		t.Error("indexOnce(two loads of a) = false, want true")
+	}
+	if w.indexOnce(outer, allocs["a"]) {
+		t.Error("indexOnce(a load of a and its address) = true, want false")
+	}
+}
+
+// storeValueOf returns instr as a value, or nil when it is not one.
+func storeValueOf(instr ssa.Instruction) ssa.Value {
+	v, _ := instr.(ssa.Value)
+	return v
+}

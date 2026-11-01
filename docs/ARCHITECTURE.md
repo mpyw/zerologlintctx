@@ -461,6 +461,21 @@ func() { e.Ctx(ctx) }() // counts here
 e.Msg("x")              // OK
 ```
 
+An event the func literal cannot tell, at a place it reads through a pointer
+it loads from a variable it captures, such as the caller's event at `h.e`
+for a pointer parameter `h`, or an element of a captured slice, is taken at
+the call for the event at the same place through the variable bound there.
+That place goes through a load of the variable that the same stores reach as
+reach the call, and the func literal must not store to the variable before
+its own load (`MatchedPlaces.KeyAtRun`):
+
+```go
+func f(ctx context.Context, h *holder) {
+    func() { h.e.Ctx(ctx) }() // the caller's event at h.e
+    h.e.Msg("x")              // OK: the same event
+}
+```
+
 The index keeps the sources of each value it was asked about, as a set, and
 the `Ctx` calls of each function, with those of the func literals it calls
 in place, at each call. A function with no `Ctx` call is not
@@ -644,7 +659,11 @@ p.Info().Msg("x")                  // reported: arr[0] lacks ctx
 
 Two elements at the same index are the same element only when the index has
 one value wherever the walk meets it: a parameter, a free variable, or an
-instruction outside a loop (`storeWalk.indexOnce`). An index that a loop
+instruction outside a loop (`storeWalk.indexOnce`). Two loads of one local
+variable are one index value too, when the variable is stored once, outside a
+loop, before each load and each closure that captures it, and is otherwise
+only loaded (`storeVariableOnce`). A parameter that a closure captures is such
+a variable, so `s[i] = l; func() { s[i].Info() }()` reads the element stored. An index that a loop
 computes, such as the index of a `for i := range arr`, has another value on
 each iteration, so a store at it on an earlier iteration is to another
 element. Each store at it is a may store. A store on the same iteration is
@@ -686,8 +705,8 @@ even one at the same index.
 
 `Place.covers` tells how much of a place a store to another place writes:
 `coverMust`, `coverMay` or `coverNone`. It compares the selections as
-`sel.same` does, and takes two elements at the same index value for the same
-element when the caller says that the index has one value. Any other pair of
+`sel.same` does, and takes two elements for the same element when the
+caller says that their indexes are one value. Any other pair of
 elements, one of them at a variable index, is `coverMay`. See
 [Elements at a Variable Index](#elements-at-a-variable-index).
 

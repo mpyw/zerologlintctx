@@ -1445,6 +1445,26 @@ func badLocalSliceVariableIndex(ctx context.Context, base zerolog.Logger, i int)
 	s[i].Info().Msg("s[1] may be s[i]") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A closure that captures i loads it again, but i holds one value: the
+// parameter, stored once. s[i] in the closure is the element stored before.
+
+func goodSliceVariableIndexInIIFE(ctx context.Context, base zerolog.Logger, s []zerolog.Logger, i int) {
+	s[i] = base.With().Ctx(ctx).Logger()
+	func() { s[i].Info().Msg("s[i] in an IIFE carries ctx") }() // OK
+}
+
+func goodSliceVariableIndexCapturedElsewhere(ctx context.Context, base zerolog.Logger, s []zerolog.Logger, i int) {
+	_ = func() int { return i }
+	s[i] = base.With().Ctx(ctx).Logger()
+	s[i].Info().Msg("s[i] carries ctx, i captured") // OK
+}
+
+func badSliceVariableIndexChangedInIIFE(ctx context.Context, base zerolog.Logger, s []zerolog.Logger, i int) {
+	s[i] = base.With().Ctx(ctx).Logger()
+	i++
+	func() { s[i].Info().Msg("i changed before the IIFE") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func goodVariableIndexPickedDeferred(ctx context.Context, base zerolog.Logger, i, j int, cond bool) {
 	var arr [2]zerolog.Logger
 	arr[i] = base.With().Ctx(ctx).Logger()

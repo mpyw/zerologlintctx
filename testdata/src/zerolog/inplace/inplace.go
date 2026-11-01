@@ -930,6 +930,42 @@ func badEventCtxInPlaceInIIFEOtherEvent(ctx context.Context, log zerolog.Logger)
 	e.Msg("ctx in place on another event") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// The caller's event, read through a pointer the closure loads from the
+// variable it captures, is the one read through the same pointer after it.
+
+func goodEventCtxInPlaceInIIFEPointerParamField(ctx context.Context, h *inPlaceHolder) {
+	func() { h.e.Ctx(ctx) }()
+	h.e.Msg("ctx in place in an IIFE, through a pointer parameter") // OK
+}
+
+func goodEventCtxInPlaceInIIFESliceElement(ctx context.Context, log zerolog.Logger) {
+	s := []*zerolog.Event{log.Info()}
+	func() { s[0].Ctx(ctx) }()
+	s[0].Msg("ctx in place in an IIFE, on a slice element") // OK
+}
+
+func badEventCtxInPlaceInIIFEOtherPointerParam(ctx context.Context, h, g *inPlaceHolder) {
+	func() { g.e.Ctx(ctx) }()
+	h.e.Msg("ctx in place through another pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInIIFEPointerReplaced(ctx context.Context, h, g *inPlaceHolder) {
+	func() { h.e.Ctx(ctx) }()
+	h = g
+	h.e.Msg("ctx in place through a pointer replaced after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): a store by a closure to a variable it captures
+// is not seen after the closure is called, so h.e after the IIFE is not taken
+// for the g.e it set the context of.
+func limitationEventCtxInPlaceInIIFEPointerReplacedInside(ctx context.Context, h, g *inPlaceHolder) {
+	func() {
+		h = g
+		h.e.Ctx(ctx)
+	}()
+	h.e.Msg("ctx in place through the pointer the IIFE stored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func badEventCtxInPlaceInIIFEFreshContext(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
 	func() { e.Ctx(context.Background()) }()

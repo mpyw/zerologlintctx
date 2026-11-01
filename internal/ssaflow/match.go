@@ -69,20 +69,26 @@ func addressesMatch(a, b ssa.Value) bool {
 // recover block, is the nil key. Stores through another reference are not
 // seen, as storesReaching does not see them.
 func matchReachingStores(load *ssa.UnOp) map[ssa.Instruction]bool {
+	return matchStoresBefore(load.X, load)
+}
+
+// matchStoresBefore returns what matchReachingStores does for a load of addr
+// right before at.
+func matchStoresBefore(addr ssa.Value, at ssa.Instruction) map[ssa.Instruction]bool {
 	found := make(map[ssa.Instruction]bool)
-	b := load.Block()
+	b := at.Block()
 	type step struct {
 		block *ssa.BasicBlock
 		from  int // Index of the last instruction of block to look at
 	}
-	queue := []step{{b, slices.Index(b.Instrs, ssa.Instruction(load)) - 1}}
+	queue := []step{{b, slices.Index(b.Instrs, at) - 1}}
 	seen := make(map[*ssa.BasicBlock]bool)
 	for len(queue) > 0 {
 		s := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
 		stopped := false
 		for i := s.from; i >= 0 && !stopped; i-- {
-			if instr := s.block.Instrs[i]; matchOverwrites(instr, load.X) {
+			if instr := s.block.Instrs[i]; matchOverwrites(instr, addr) {
 				found[instr] = true
 				stopped = true
 			}
@@ -155,6 +161,42 @@ func (m *MatchedPlaces) KeyOf(at Place) (key PlaceKey, ok bool) {
 	}
 	m.roots[fn] = append(m.roots[fn], at.root)
 	return at.Key(), true
+}
+
+// KeyAtRun returns the key that the function making mc has for key, the key
+// of a place the func literal of mc reads through a pointer it loads from a
+// variable it captures, as run, a call of mc, runs it. That is the key of the
+// same place through a load of the variable bound there, which the same
+// stores reach as reach run:
+//
+//	t2 = make closure f$1 [t1] ; t3 = t2()   // f$1: t0 = *h ; &t0.e
+//	t4 = *t1 ; t5 = &t4.e                     // the same place: t4 is *h at t3
+//
+// ok is false when key is not such a place, the closure stores to the
+// variable before the load, or the function has no such load.
+func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Instruction) (_ PlaceKey, ok bool) {
+	load, isLoad := AsLoad(key.base())
+	if !isLoad {
+		return key, false
+	}
+	fn := mc.Fn.(*ssa.Function) // Always a function, a func literal or a wrapper
+	fv, isFreeVar := load.X.(*ssa.FreeVar)
+	if !isFreeVar || fv.Parent() != fn || !maps.Equal(matchReachingStores(load), map[ssa.Instruction]bool{nil: true}) {
+		return key, false
+	}
+	bound := mc.Bindings[slices.Index(fn.FreeVars, fv)]
+	want := matchStoresBefore(bound, run)
+	for instr := range InstrsIn(mc.Parent()) {
+		v, isValue := instr.(ssa.Value)
+		if !isValue {
+			continue
+		}
+		if outer, isLoad := AsLoad(v); isLoad && addressesMatch(outer.X, bound) && maps.Equal(matchReachingStores(outer), want) {
+			at, ok := m.KeyOf(PlaceAt(outer))
+			return key.rooted(at.base()), ok
+		}
+	}
+	return key, false
 }
 
 // matchFromGlobal reports whether v is a global, or is read from one: a load
