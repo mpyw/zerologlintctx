@@ -1047,8 +1047,7 @@ func (w *storeWalk) resolve(st *storePath) WalkStep {
 // must be the leaf, the place it loads from must hold it, and past a store to
 // that place, the value stored. A store to the leaf is kept on the path (see
 // storePath), and where the leaf is made drops what is kept. With held, the
-// guard does not change, and a store is to the leaf only as storeCover takes
-// it.
+// guard does not change, as up to a defer statement that takes the pointer.
 func (g *storeGuard) step(w *storeWalk, instr ssa.Instruction, st *storePath, held bool) WalkStep {
 	if instr == g.made {
 		st.must, st.may = nil, nil // Those were to the leaf of a later iteration
@@ -1077,10 +1076,7 @@ func (g *storeGuard) step(w *storeWalk, instr ssa.Instruction, st *storePath, he
 	if st.must != nil {
 		return WalkOn // The path stopped for the leaf already
 	}
-	n, cover := w.storeCover(store.Addr)
-	if !held {
-		n, cover = w.pathCover(store, *st)
-	}
+	n, cover := w.pathCover(store, *st)
 	switch {
 	case cover == coverNone, w.pointer != nil && w.pointer.global && w.updates(store):
 	case cover == coverMust:
@@ -1169,11 +1165,36 @@ func (w *storeWalk) pathCover(store *ssa.Store, st storePath) (int, placeCover) 
 // through reports whether pointer, the root of the address of store, is the
 // pointer that st, a path whose guard is not resolved, needs to be the leaf,
 // where store runs.
+//
+// So it is when the guarded place holds pointer only (see holdsOnly). The
+// same holds for where a value that must be the leaf is loaded from. A
+// pointer put in a struct field is the one read back from it:
+//
+//	h := box{p}                       // p is a Phi of &a and &b
+//	*p = base.With().Ctx(ctx).Logger() // through the leaf: h.p holds p only
+//	h.p.Print("x")                    // h.p must be the leaf
 func (g *storeGuard) through(w *storeWalk, pointer ssa.Value, store *ssa.Store, st storePath) bool {
 	at := g.places[st.at]
 	if st.kind == storeGuardValue {
-		return len(at.path) == 0 && at.root == pointer
+		if len(at.path) == 0 && at.root == pointer {
+			return true
+		}
+		load, isLoad := AsLoad(at.root)
+		if !isLoad {
+			return false
+		}
+		from, _ := PlaceOf(load.X)
+		from, ok := g.pointed(from.with(at.path...))
+		return ok && g.holdsOnly(w, from, load, pointer)
 	}
+	return g.loadedThrough(w, pointer, store, st) || g.holdsOnly(w, at, store, pointer)
+}
+
+// loadedThrough reports whether pointer, the root of the address of store, is
+// loaded from the guarded place of st. The load must be in the same block,
+// with no store to the place between.
+func (g *storeGuard) loadedThrough(w *storeWalk, pointer ssa.Value, store *ssa.Store, st storePath) bool {
+	at := g.places[st.at]
 	load, isLoad := AsLoad(pointer)
 	if !isLoad || load.Block() != store.Block() {
 		return false
@@ -1191,6 +1212,34 @@ func (g *storeGuard) through(w *storeWalk, pointer ssa.Value, store *ssa.Store, 
 		}
 	}
 	return true
+}
+
+// holdsOnly reports whether at, a place in a variable, holds pointer when
+// read runs, on every path. Each store that reaches read stores pointer
+// itself, and no path carries another value. pointer is not in a variable,
+// such as a Phi of pointers: a variable itself is the leaf or not, as a
+// store to it shows.
+func (g *storeGuard) holdsOnly(w *storeWalk, at Place, read ssa.Instruction, pointer ssa.Value) bool {
+	if isTrackedRoot(pointer) {
+		return false
+	}
+	key := storeHeld{at: at.Key(), read: read, pointer: pointer}
+	if held, done := g.pointers.held[key]; done {
+		return held
+	}
+	r, ok := storesReachingAt(at, read, w.positions)
+	held := ok && len(r.values) > 0 && !r.unknown && len(r.captured) == 0 && len(r.params) == 0 && len(r.made) == 0 &&
+		!slices.ContainsFunc(r.values, func(v ssa.Value) bool { return v != pointer })
+	g.pointers.held[key] = held
+	return held
+}
+
+// storeHeld keys what holdsOnly found, for the walks of every leaf of a
+// pointer: whether the place at holds pointer when read runs.
+type storeHeld struct {
+	at      PlaceKey
+	read    ssa.Instruction
+	pointer ssa.Value
 }
 
 // storedAfter reports whether a store that can run after esc may write the
@@ -1250,6 +1299,8 @@ type storePointers struct {
 	// value read. One still being followed is there and not ok, so that
 	// reaching it again, through a store that leads back to it, fails.
 	pointed map[ssa.Value]storePointed
+	// held keeps what storeGuard.holdsOnly found.
+	held map[storeHeld]bool
 }
 
 // storePointed is what a pointer read from memory can point to. ok is false
@@ -1276,6 +1327,7 @@ func newStorePointers(positions Positions) *storePointers {
 	return &storePointers{
 		positions: positions,
 		pointed:   make(map[ssa.Value]storePointed),
+		held:      make(map[storeHeld]bool),
 	}
 }
 
