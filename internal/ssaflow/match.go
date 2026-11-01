@@ -187,10 +187,10 @@ func matchLoadedSels(from *ssa.UnOp, sels []sel, outer ssa.Value, runs []matchCl
 }
 
 // matchSameOrigin reports whether a and b, two loads of a pointer in one
-// function, read the same pointer: each is followed back past the copies of
+// function, read the same pointer. Each is followed back past the copies of
 // a whole aggregate that put the pointer where it is loaded (see
-// matchOriginOf), to the same selections from the same address, and the
-// same stores reach that address there:
+// matchOriginOf). Both must get to the same selections from the same
+// address, and the same stores must reach that address there:
 //
 //	t2 = *t0 ; *t1 = t2               // b := h, for h in t0 and b in t1
 //	t4 = *&t0.p ; *t4 = v             // a: h.p, after the copy
@@ -206,8 +206,8 @@ func matchSameOrigin(a, b ssa.Value) bool {
 }
 
 // matchOriginOfIs reports whether v, a load of a pointer, reads it from o in
-// the end (see matchOriginOf): the same selections from the same address, in
-// the same function, with the same stores reaching both.
+// the end (see matchOriginOf). That is the same selections from the same
+// address, in the same function, with the same stores reaching both.
 //
 //declscope:shared // store.go matches a store through the pointer a copy holds
 func matchOriginOfIs(o matchOrigin, v ssa.Value) bool {
@@ -240,8 +240,8 @@ func matchOriginOf(v ssa.Value) (_ matchOrigin, ok bool) {
 }
 
 // matchOriginAt follows o back past the copies of a whole aggregate that put
-// what is there. When one store reaches o, and it copies a whole aggregate
-// that holds the address, loaded from memory, what is at o is at the same
+// what is there. One store may reach o and copy a whole aggregate that holds
+// the address, loaded from memory. Then what is at o is at the same
 // selections in what that load loaded, as it loaded it:
 //
 //	t2 = *t0 ; *t1 = t2               // the one store that reaches t1.p
@@ -282,9 +282,9 @@ func matchOriginAt(o matchOrigin) matchOrigin {
 func matchSameIndex(a, b ssa.Value) bool { return a == b }
 
 // matchStoresBeforeSels returns what matchStoresBefore does for an address
-// at sels from root, which need not be a value of the function: the stores
-// that may write it, or an aggregate that holds it, and the declaration of
-// the local variable it is in.
+// at sels from root, which need not be a value of the function. That is the
+// stores that may write it, or an aggregate that holds it, and the
+// declaration of the local variable it is in.
 func matchStoresBeforeSels(root ssa.Value, sels []sel, at ssa.Instruction) map[ssa.Instruction]bool {
 	return matchStoresBeforeBy(at, func(instr ssa.Instruction) bool {
 		if alloc, isAlloc := root.(*ssa.Alloc); isAlloc && instr == alloc {
@@ -349,8 +349,8 @@ func matchStoresBefore(addr ssa.Value, at ssa.Instruction) map[ssa.Instruction]b
 }
 
 // matchStoresBeforeBy returns the instructions that overwrites accepts, at
-// which the paths back from at first stop, with nil for a path that leads
-// back to the entry of the function or to its recover block.
+// which the paths back from at first stop. A path that leads back to the
+// entry of the function, or to its recover block, is the nil key.
 func matchStoresBeforeBy(at ssa.Instruction, overwrites func(ssa.Instruction) bool) map[ssa.Instruction]bool {
 	found := make(map[ssa.Instruction]bool)
 	b := at.Block()

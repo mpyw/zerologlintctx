@@ -302,8 +302,8 @@ func f(h, g *holder, hs [1]*holder) {
 }
 
 // TestMatchSameOrigin checks which loads of a pointer read the same pointer
-// in the end, past the copies of whole structs and arrays that put it where
-// it is loaded.
+// in the end. Each is followed past the copies of whole structs and arrays
+// that put it where it is loaded.
 func TestMatchSameOrigin(t *testing.T) {
 	const src = `package p
 
