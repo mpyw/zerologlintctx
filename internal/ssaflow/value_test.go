@@ -1,4 +1,4 @@
-package chain
+package ssaflow
 
 import (
 	"go/ast"
@@ -47,7 +47,7 @@ func valueFunc(t *testing.T) (*ssa.Function, []ssa.Value) {
 		t.Fatal(err)
 	}
 	fn := ssaPkg.Func("f")
-	for instr := range instrsIn(fn) {
+	for instr := range InstrsIn(fn) {
 		if ret, ok := instr.(*ssa.Return); ok {
 			return fn, ret.Results
 		}
@@ -67,11 +67,11 @@ func TestDerivesFromThroughPhiAndDynamicCall(t *testing.T) {
 		_, ok := v.(*ssa.Alloc)
 		return ok
 	}
-	if !derivesFrom(phi, isAlloc, unwrapInner, make(map[ssa.Value]bool)) {
+	if !derivesFrom(phi, isAlloc, UnwrapInner, make(map[ssa.Value]bool)) {
 		t.Error("the Phi does not derive from the allocation of t")
 	}
 	never := func(ssa.Value) bool { return false }
-	if derivesFrom(phi, never, unwrapInner, make(map[ssa.Value]bool)) {
+	if derivesFrom(phi, never, UnwrapInner, make(map[ssa.Value]bool)) {
 		t.Error("derivesFrom found a value that nothing matches")
 	}
 }
@@ -80,7 +80,7 @@ func TestCalleeReceiver(t *testing.T) {
 	t.Parallel()
 	fn, results := valueFunc(t)
 	var dynamic *ssa.Call
-	for instr := range instrsIn(fn) {
+	for instr := range InstrsIn(fn) {
 		if call, ok := instr.(*ssa.Call); ok && call.Call.StaticCallee() == nil {
 			dynamic = call
 		}
@@ -88,15 +88,15 @@ func TestCalleeReceiver(t *testing.T) {
 	if dynamic == nil {
 		t.Fatal("no call of g in f")
 	}
-	if recv := calleeReceiver(&dynamic.Call); recv != dynamic.Call.Args[0] {
-		t.Errorf("calleeReceiver(%v) = %v, want its first argument", dynamic, recv)
+	if recv := CalleeReceiver(&dynamic.Call); recv != dynamic.Call.Args[0] {
+		t.Errorf("CalleeReceiver(%v) = %v, want its first argument", dynamic, recv)
 	}
 	literal, ok := results[3].(*ssa.Call)
 	if !ok {
 		t.Fatalf("the func literal's result is returned as %T, want a Call", results[3])
 	}
-	if recv := calleeReceiver(&literal.Call); recv != nil {
-		t.Errorf("calleeReceiver(%v) = %v, want nil for a func literal", literal, recv)
+	if recv := CalleeReceiver(&literal.Call); recv != nil {
+		t.Errorf("CalleeReceiver(%v) = %v, want nil for a func literal", literal, recv)
 	}
 }
 
@@ -107,14 +107,14 @@ func TestUnwrapInnerElements(t *testing.T) {
 	if !ok {
 		t.Fatalf("m[k] is returned as %T, want a Lookup", results[1])
 	}
-	if got := unwrapInner(lookup); got != fn.Params[2] {
+	if got := UnwrapInner(lookup); got != fn.Params[2] {
 		t.Errorf("unwrapInner(m[k]) = %v, want m", got)
 	}
 	index, ok := results[2].(*ssa.Index)
 	if !ok {
 		t.Fatalf("arr()[1] is returned as %T, want an Index", results[2])
 	}
-	if got := unwrapInner(index); got != index.X {
+	if got := UnwrapInner(index); got != index.X {
 		t.Errorf("unwrapInner(arr()[1]) = %v, want arr()", got)
 	}
 }

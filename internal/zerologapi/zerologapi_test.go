@@ -360,3 +360,39 @@ func TestMakesFreshContext(t *testing.T) {
 		}
 	})
 }
+
+func TestModel(t *testing.T) {
+	pkgs := newPackages(t)
+	zl := pkgs["github.com/rs/zerolog"]
+	event, logger := zl.Scope().Lookup("Event").Type(), zl.Scope().Lookup("Logger").Type()
+	var model zerologapi.Model
+	t.Run("IsHandle", func(t *testing.T) {
+		for _, tt := range []struct {
+			name string
+			typ  types.Type
+			want bool
+		}{
+			{"*Event", types.NewPointer(event), true},
+			{"*Logger", types.NewPointer(logger), false},
+			{"*int", types.NewPointer(types.Typ[types.Int]), false},
+		} {
+			if got := model.IsHandle(tt.typ); got != tt.want {
+				t.Errorf("IsHandle(%s) = %v, want %v", tt.name, got, tt.want)
+			}
+		}
+	})
+	t.Run("LeavesReceiver", func(t *testing.T) {
+		for _, tt := range []struct {
+			recv, name string
+			want       bool
+		}{
+			{"Logger", "UpdateContext", true},
+			{"Logger", "Info", false},
+			{"Event", "Ctx", false},
+		} {
+			if got := model.LeavesReceiver(lookupFunc(t, zl, tt.recv, tt.name)); got != tt.want {
+				t.Errorf("LeavesReceiver(%s.%s) = %v, want %v", tt.recv, tt.name, got, tt.want)
+			}
+		}
+	})
+}

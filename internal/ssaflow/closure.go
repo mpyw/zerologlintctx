@@ -1,10 +1,10 @@
 // closure.go indexes the closures and func literals of a package: where each
 // is made, what each free variable is bound to, the variables that alias a
 // local variable through the closures that capture it, and how each func
-// literal is run. tracing.go asks it through the tracer. store.go asks only
+// literal is run. internal/chain asks it through its tracer. store.go asks only
 // how a closure is run where it is made, which needs no index.
 
-package chain
+package ssaflow
 
 import (
 	"go/token"
@@ -14,44 +14,30 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// closures indexes the closures and func literals of a package. It indexes
+// Closures indexes the Closures and func literals of a package. It indexes
 // the tree of an outermost function, the function and the func literals
 // declared in it at any depth, the first time a query reaches it, and keeps
 // the answer to each query. SSA does not change while a package is analyzed,
 // so an answer never goes stale.
-//
-//declscope:shared // tracing.go keeps one in its tracer
-type closures struct {
+type Closures struct {
 	// indexed holds the outermost functions whose trees are indexed.
-	//
-	//declscope:private
 	indexed map[*ssa.Function]bool
 	// makers holds, for each func literal, the MakeClosure instructions in
 	// the function it is declared in, in block order.
-	//
-	//declscope:private
 	makers map[*ssa.Function][]*ssa.MakeClosure
 	// captures holds, for each value a MakeClosure binds, the free variables
 	// it is bound to.
-	//
-	//declscope:private
 	captures map[ssa.Value][]*ssa.FreeVar
-	// aliases, calls and held keep the answers of aliasesOf, callsOf and
+	// aliases, calls and held keep the answers of aliasesOf, CallsOf and
 	// funcsHeldBy.
-	//
-	//declscope:private
 	aliases map[ssa.Value]map[ssa.Value]bool
-	//declscope:private
-	calls map[*ssa.Function]closureCalls
-	//declscope:private
-	held map[*ssa.Alloc]closureHeld
+	calls   map[*ssa.Function]closureCalls
+	held    map[*ssa.Alloc]closureHeld
 }
 
-// newClosures creates an index with nothing indexed yet.
-//
-//declscope:shared // tracing.go creates one per tracer
-func newClosures() *closures {
-	return &closures{
+// NewClosures creates an index with nothing indexed yet.
+func NewClosures() *Closures {
+	return &Closures{
 		indexed:  make(map[*ssa.Function]bool),
 		makers:   make(map[*ssa.Function][]*ssa.MakeClosure),
 		captures: make(map[ssa.Value][]*ssa.FreeVar),
@@ -72,7 +58,7 @@ func newClosures() *closures {
 // long as that holds.
 //
 //declscope:shared // resolve.go resolves a free variable from where it is bound
-func (c *closures) makersOf(fn *ssa.Function) []*ssa.MakeClosure {
+func (c *Closures) makersOf(fn *ssa.Function) []*ssa.MakeClosure {
 	if fn.Parent() == nil {
 		return nil
 	}
@@ -80,7 +66,7 @@ func (c *closures) makersOf(fn *ssa.Function) []*ssa.MakeClosure {
 	return c.makers[fn]
 }
 
-// callsOf finds every call, go and defer statement that may run fn, a func
+// CallsOf finds every call, go and defer statement that may run fn, a func
 // literal. ok is false when fn is a declared function, or may be called where
 // it cannot be seen.
 //
@@ -100,9 +86,7 @@ func (c *closures) makersOf(fn *ssa.Function) []*ssa.MakeClosure {
 // loaded, or captured. Any other use passes fn on, to be called with anything.
 // A call that may run another func too still counts: every call that may
 // run fn must pass an argument with context.
-//
-//declscope:shared // tracing.go and resolve.go follow the arguments of each call of a func literal
-func (c *closures) callsOf(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
+func (c *Closures) CallsOf(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
 	if found, done := c.calls[fn]; done {
 		return found.calls, found.ok
 	}
@@ -111,8 +95,8 @@ func (c *closures) callsOf(fn *ssa.Function) (calls []ssa.CallInstruction, ok bo
 	return calls, ok
 }
 
-// findCalls does the work of callsOf.
-func (c *closures) findCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
+// findCalls does the work of CallsOf.
+func (c *Closures) findCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok bool) {
 	parent := fn.Parent()
 	if parent == nil {
 		return nil, false // A declared function can be called from anywhere
@@ -120,7 +104,7 @@ func (c *closures) findCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok 
 	vars := make(map[ssa.Value]bool) // The variables that may hold fn, and their aliases
 	phis := make(map[ssa.Value]bool) // The Phis that may be fn
 	mayBeFn := func(v ssa.Value) bool {
-		if load, ok := asLoad(v); ok {
+		if load, ok := AsLoad(v); ok {
 			return vars[load.X]
 		}
 		return phis[v] || isClosureOf(v, fn)
@@ -166,7 +150,7 @@ func (c *closures) findCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok 
 	return calls, true
 }
 
-// funcLiteralsOf returns the func literals that v can be, when it is a func
+// FuncLiteralsOf returns the func literals that v can be, when it is a func
 // literal or a closure of one, a Phi of such values, or a load of a variable
 // that only such values are stored to (see funcsHeldBy):
 //
@@ -175,9 +159,7 @@ func (c *closures) findCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok 
 //	    ev = func() *zerolog.Event { return logger.Debug().Ctx(ctx) }
 //	}
 //	ev().Msg("x")           // ev is a Phi of the two
-//
-//declscope:shared // tracing.go traces the results of the func literals a call runs
-func (c *closures) funcLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.Function, bool) {
+func (c *Closures) FuncLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.Function, bool) {
 	if mc, ok := v.(*ssa.MakeClosure); ok {
 		v = mc.Fn
 	}
@@ -206,7 +188,7 @@ func (c *closures) funcLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.
 	}
 	var fns []*ssa.Function
 	for _, value := range values {
-		more, ok := c.funcLiteralsOf(value, seen)
+		more, ok := c.FuncLiteralsOf(value, seen)
 		if !ok {
 			return nil, false
 		}
@@ -222,7 +204,7 @@ func (c *closures) funcLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.
 //	f := func() *zerolog.Event { return logger.Warn() }
 //	func() { _ = f }()      // f is kept in memory, and loaded to be called
 //	f().Msg("x")
-func (c *closures) funcsHeldBy(v ssa.Value) ([]ssa.Value, bool) {
+func (c *Closures) funcsHeldBy(v ssa.Value) ([]ssa.Value, bool) {
 	for fv, ok := v.(*ssa.FreeVar); ok; fv, ok = v.(*ssa.FreeVar) {
 		v = c.bindingOf(fv)
 	}
@@ -239,7 +221,7 @@ func (c *closures) funcsHeldBy(v ssa.Value) ([]ssa.Value, bool) {
 }
 
 // findHeld does the work of funcsHeldBy for alloc.
-func (c *closures) findHeld(alloc *ssa.Alloc) ([]ssa.Value, bool) {
+func (c *Closures) findHeld(alloc *ssa.Alloc) ([]ssa.Value, bool) {
 	aliases := c.aliasesOf(alloc)
 	var stored []ssa.Value
 	for instr := range instrsWithClosures(alloc.Parent()) {
@@ -266,7 +248,7 @@ func (c *closures) findHeld(alloc *ssa.Alloc) ([]ssa.Value, bool) {
 // bindingOf returns the value bound to fv where its closure is made, or nil
 // when that is not found. With more than one MakeClosure, it takes the last
 // (see makersOf).
-func (c *closures) bindingOf(fv *ssa.FreeVar) ssa.Value {
+func (c *Closures) bindingOf(fv *ssa.FreeVar) ssa.Value {
 	fn := fv.Parent()
 	makers := c.makersOf(fn)
 	if len(makers) == 0 {
@@ -291,7 +273,7 @@ func (c *closures) bindingOf(fv *ssa.FreeVar) ssa.Value {
 // func literal sees.
 //
 //declscope:shared // resolve.go finds the variables whose stores a walk cannot all see
-func (c *closures) writtenUnseen(at place, walked *ssa.Function, via ssa.Instruction) bool {
+func (c *Closures) writtenUnseen(at Place, walked *ssa.Function, via ssa.Instruction) bool {
 	root := at.root
 	for fv, ok := root.(*ssa.FreeVar); ok; fv, ok = root.(*ssa.FreeVar) {
 		root = c.bindingOf(fv)
@@ -307,8 +289,8 @@ func (c *closures) writtenUnseen(at place, walked *ssa.Function, via ssa.Instruc
 			fn = fv.Parent()
 		}
 		other := !closureEncloses(fn, walked)
-		for instr := range instrsIn(fn) {
-			if instr != via && closureWritesUnseen(instr, place{root: alias, path: at.path}, other) {
+		for instr := range InstrsIn(fn) {
+			if instr != via && closureWritesUnseen(instr, Place{root: alias, path: at.path}, other) {
 				return true
 			}
 		}
@@ -318,7 +300,7 @@ func (c *closures) writtenUnseen(at place, walked *ssa.Function, via ssa.Instruc
 
 // aliasesOf returns v, a local variable or a parameter, and the free
 // variables that stand for it in the closures that capture it, at any depth.
-func (c *closures) aliasesOf(v ssa.Value) map[ssa.Value]bool {
+func (c *Closures) aliasesOf(v ssa.Value) map[ssa.Value]bool {
 	if aliases, ok := c.aliases[v]; ok {
 		return aliases
 	}
@@ -341,7 +323,7 @@ func (c *closures) aliasesOf(v ssa.Value) map[ssa.Value]bool {
 
 // index indexes the tree of the outermost function fn is in, unless it is
 // indexed already.
-func (c *closures) index(fn *ssa.Function) {
+func (c *Closures) index(fn *ssa.Function) {
 	root := fn
 	for root.Parent() != nil {
 		root = root.Parent()
@@ -380,12 +362,12 @@ func closureEncloses(fn, inner *ssa.Function) bool {
 // at in a way that may write to it where a walk does not see: a store to it
 // when other is true, as in another closure, or any use but a load, a store
 // to it, a selection of a field or element, or a capture by a closure.
-func closureWritesUnseen(instr ssa.Instruction, at place, other bool) bool {
+func closureWritesUnseen(instr ssa.Instruction, at Place, other bool) bool {
 	for _, op := range instr.Operands(nil) {
 		if *op == nil {
 			continue
 		}
-		if p, _ := placeOf(*op); !p.overlaps(at) {
+		if p, _ := PlaceOf(*op); !p.overlaps(at) {
 			continue
 		}
 		switch in := instr.(type) {
@@ -409,7 +391,7 @@ type closureRuns []ssa.CallInstruction
 // closureRunsOf returns the uses of mc, a closure, where it is made: the
 // calls, go and defer statements that run it, in the order of its
 // referrers. ok is false when it has another use, which passes it on. Unlike
-// callsOf, it does not follow the closure through a variable or a Phi.
+// CallsOf, it does not follow the closure through a variable or a Phi.
 //
 //declscope:shared // store.go reads what a closure that is only called or deferred reads
 func closureRunsOf(mc *ssa.MakeClosure) (runs closureRuns, ok bool) {
@@ -461,7 +443,7 @@ func (runs closureRuns) defersOnly() ([]*ssa.Defer, bool) {
 	return defers, true
 }
 
-// closureCalls is what callsOf found for a func literal.
+// closureCalls is what CallsOf found for a func literal.
 type closureCalls struct {
 	calls []ssa.CallInstruction
 	ok    bool
@@ -514,7 +496,7 @@ func keepsClosureVar(instr ssa.Instruction) bool {
 // declared in it, at any depth.
 func instrsWithClosures(fn *ssa.Function) iter.Seq[ssa.Instruction] {
 	return func(yield func(ssa.Instruction) bool) {
-		for instr := range instrsIn(fn) {
+		for instr := range InstrsIn(fn) {
 			if !yield(instr) {
 				return
 			}

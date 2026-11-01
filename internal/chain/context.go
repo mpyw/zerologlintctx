@@ -10,6 +10,7 @@ import (
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/mpyw/zerologlintctx/internal/ssaflow"
 	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
@@ -135,19 +136,19 @@ func contextParamName(fn *ssa.Function) string {
 // is not fresh.
 //
 //declscope:shared // tracing.go does not count a Ctx call given one
-func isFreshContext(v ssa.Value, positions instrPositions, closures *closures) bool {
+func isFreshContext(v ssa.Value, positions ssaflow.Positions, closures *ssaflow.Closures) bool {
 	f := &contextFreshness{
 		done:   make(map[ssa.Value]verdict),
 		active: make(map[*ssa.Parameter]bool),
 	}
-	f.r = resolver{positions: positions, closures: closures, enter: f.enter, unseenUnknown: true}
+	f.r = ssaflow.Resolver{Positions: positions, Closures: closures, Model: zerologapi.Model{}, Enter: f.enter, UnseenUnknown: true}
 	return f.isFresh(v) == yes
 }
 
 // contextFreshness works out whether values are fresh contexts, for one
 // isFreshContext.
 type contextFreshness struct {
-	r resolver
+	r ssaflow.Resolver
 	// done holds the verdict of each value already asked about. A value
 	// still being worked out is neutral: it is reached again only through an
 	// edge of a Phi that leads back to it, or a store in a loop that reaches
@@ -195,22 +196,22 @@ func (f *contextFreshness) trace(v ssa.Value) verdict {
 	case *ssa.ChangeType:
 		return f.isFresh(val.X)
 	case *ssa.UnOp:
-		if _, isLoad := asLoad(val); !isLoad {
+		if _, isLoad := ssaflow.AsLoad(val); !isLoad {
 			return no
 		}
 		// The stores that reach the load must be known from the function
-		// alone. A global can be changed anywhere, so resolveAt knows nothing
+		// alone. A global can be changed anywhere, so ResolveAt knows nothing
 		// of it
-		at, _ := placeOf(val.X)
-		sources, ok := f.r.resolveAt(at, val)
+		at, _ := ssaflow.PlaceOf(val.X)
+		sources, ok := f.r.ResolveAt(at, val)
 		if !ok {
 			return no
 		}
 		return all(func(yield func(verdict) bool) {
 			for src := range sources {
 				found := no
-				if src.v != nil && !src.pointer {
-					found = f.isFresh(src.v)
+				if src.V != nil && !src.Pointer {
+					found = f.isFresh(src.V)
 				}
 				if !yield(found) {
 					return

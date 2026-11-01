@@ -11,28 +11,47 @@ zerologlintctx/
 ├── cmd/zerologlintctx/        # CLI entry point (singlechecker)
 ├── plugin/                    # golangci-lint module plugin
 ├── internal/                  # Core analysis logic
-│   ├── chain/                 # SSA-based chain analysis
+│   ├── chain/                 # zerolog semantics: the tracer and the checker
 │   │   ├── checker.go         # Checker: checks each call, go and defer
-│   │   ├── callee.go          # Resolves and classifies the function a call runs
-│   │   ├── context.go         # Which functions have a context in scope
+│   │   ├── callee.go          # Classifies the function a call runs by zerologapi
+│   │   ├── context.go         # Which functions have a context in scope, fresh contexts
 │   │   ├── tracing.go         # Trace states, value tracing
 │   │   ├── event.go           # Which event a value is, and Event.Ctx in place
 │   │   ├── verdict.go         # Yes, no or neutral, and how they combine
-│   │   ├── memo.go            # The verdict of each value, and the traces in progress
+│   │   └── memo.go            # The verdict of each value, and the traces in progress
+│   ├── ssaflow/               # Where a value comes from; knows nothing of zerolog
+│   │   ├── doc.go             # Package documentation
+│   │   ├── resolve.go         # Resolver: what a read can see, one source at a time
+│   │   ├── store.go           # The stores that reach a read
 │   │   ├── closure.go         # Index of closures and func literals
-│   │   ├── store.go           # Values stored at an address
+│   │   ├── callee.go          # The declared function a call runs, and its receiver
 │   │   ├── match.go           # Whether two addresses are the same
 │   │   ├── place.go           # An address as a root and its selections
 │   │   ├── walk.go            # Walks the paths of the control flow
+│   │   ├── model.go           # Model: what a library does with memory
 │   │   └── value.go           # SSA plumbing the other files stand on
 │   ├── directive/             # Comment directive handling
 │   │   └── ignore.go          # //zerologlintctx:ignore parsing, directive problems
 │   └── zerologapi/            # What each zerolog function and method does
-│       └── zerologapi.go      # Classify, the exceptions, context types
+│       └── zerologapi.go      # Classify, the exceptions, context types, Model
 ├── testdata/src/              # Test fixtures and library stubs
 ├── analyzer.go                # Public analyzer, directive reporting
 └── analyzer_test.go           # Integration tests
 ```
+
+### Packages
+
+| Package | Knows | Imports |
+|---------|-------|---------|
+| `internal/zerologapi` | The zerolog API: what each function and method does, and what zerolog does with memory (`Model`) | Nothing of this module |
+| `internal/ssaflow` | Where a value of a function in SSA form comes from: places, stores, closures, walks of the control flow | Nothing of this module |
+| `internal/chain` | When a chain or a Logger has context: the tracer, the checker, `Event.Ctx` in place, fresh contexts | `ssaflow`, `zerologapi` |
+| `internal/directive` | The `//zerologlintctx:` comments | Nothing of this module |
+
+`ssaflow` does not import `zerologapi`, and no code in it names zerolog. What
+it must know of a library, it asks a `Model` (see
+[The Library Model](#the-library-model)). `chain` passes it
+`zerologapi.Model`.
 
 ## Detection Logic
 
@@ -53,9 +72,10 @@ the call, such as a parameter of the closure or a local variable that shadows
 it, the context cannot be passed there, and nothing is reported.
 
 Every call is checked the same way, whether it is a plain call, a `go`
-statement or a `defer` statement. `calleeOf` in `callee.go` resolves the
-declared function a call runs, and its receiver, in each of the three forms a
-method can take:
+statement or a `defer` statement. `ssaflow.CalleeOf` resolves the declared
+function a call runs, and its receiver, in each of the three forms a method
+can take, and `calleeOf` in `internal/chain/callee.go` classifies it with
+`zerologapi.Classify`:
 
 | Form | SSA | Receiver |
 |------|-----|----------|
@@ -68,7 +88,7 @@ info()` is traced back to `l`.
 
 A method expression of a method promoted through an embedded field, such as
 `myEvent.Msg(me, "x")` for `type myEvent struct{ *zerolog.Event }`, passes
-the struct in `Args[0]`. `calleeOf` records the embedded fields that lead to
+the struct in `Args[0]`. `CalleeOf` records the embedded fields that lead to
 the receiver, and tracing reads it from the stores to those fields. An
 embedded pointer partway, as in `type outer struct{ *myEvent }`, is followed
 to each struct that can be stored there. A plain call or method value of the
@@ -108,6 +128,9 @@ Most of it comes from the signature:
 
 A method of Event that returns an event returns its receiver. The methods of
 Logger and Context have a value receiver, and return a copy.
+
+`zerologapi.Model` tells `ssaflow` what zerolog does with memory (see
+[The Library Model](#the-library-model)).
 
 A small table of exceptions holds what zerolog's source, not the signature,
 tells. Each row cites zerolog v1.35.1, and `zerologapi_test.go` tests each:
@@ -165,14 +188,17 @@ traced, so they are always reported.
 ## SSA Tracing
 
 The tracing system follows SSA values backwards to find if context was set.
-The `tracer` type in `internal/chain/tracing.go` does it, and the stores
-behind a load are found by `store.go`.
+The `tracer` type in `internal/chain/tracing.go` does it. What a read from
+memory can see is found by `internal/ssaflow`.
 
-`resolve.go` turns what `store.go` found into sources, one at a time: a
-variable a closure captures becomes what the variable bound where the closure
-is made holds when it runs, and a parameter of a func literal becomes what
-each call passes for it, until only values stored, or unknown, are left. The
-tracer judges each source, and every one must have context.
+`ssaflow.Resolver`, in `resolve.go`, turns what `store.go` found into
+sources, one at a time: a variable a closure captures becomes what the
+variable bound where the closure is made holds when it runs, and a parameter
+of a func literal becomes what each call passes for it, until only values
+stored, or unknown, are left. The tracer judges each source, and every one
+must have context. Each `Resolver` is told how its caller marks a parameter
+in progress (`Enter`), so the tracer keeps that in its memo, and the other
+users keep a set of their own.
 
 One tracer serves a whole package. It keeps the verdict of each value it
 traced, so it is not worked out again for the next call that reaches it,
@@ -228,9 +254,9 @@ progress below its own frame, `yes` or `no`, is kept for good.
 
 ### Walking the Control Flow
 
-`walk.go` walks the paths of a function block by block, from a point before
-an instruction. `walkBack` goes backwards, latest instruction first, and
-`walkFwd` goes forwards. The caller's visit function tells what each path
+`ssaflow`'s `walk.go` walks the paths of a function block by block, from a
+point before an instruction. `walkBack` goes backwards, latest instruction
+first, and `WalkFwd` goes forwards. The caller's visit function tells what each path
 does at an instruction: go on, stop there, or end the whole walk. The walk
 takes each block once, and calls back when a path reaches the entry of the
 function.
@@ -243,13 +269,14 @@ function.
 | `eventQuery.ctxRunsBefore`: an `Event.Ctx` call before a terminator | Back | A `Ctx` call on the event, or a store of another event where it is read | Through a Phi it is read through, the edges that carry the event |
 | `eventQuery.ctxRunsAfterDefer`: an `Event.Ctx` call after a deferred terminator | Forward | A `Ctx` call on the event | All |
 
-`walkBackWith` carries a state on each path. A block is walked once in each
+`WalkBackWith` carries a state on each path. A block is walked once in each
 state. `walkBefore` uses it to keep, on each path, the Phi that must still
 point to the variable picked.
 
 ### Closures and Func Literals
 
-The tracer also keeps a `closures` index, in `closure.go`. It indexes the tree
+The tracer also keeps an `ssaflow.Closures` index, in `closure.go`, which it
+shares with its resolvers. It indexes the tree
 of an outermost function, the function and the func literals declared in it at
 any depth, the first time a query reaches it, and keeps each answer:
 
@@ -258,7 +285,7 @@ any depth, the first time a query reaches it, and keeps each answer:
 | `makersOf(fn)` | The `MakeClosure` instructions of `fn` in the function it is declared in |
 | `bindingOf(fv)` | The value bound to a free variable where its closure is made |
 | `aliasesOf(alloc)` | A local variable, and the free variables that stand for it in the closures that capture it, at any depth |
-| `callsOf(fn)` | Every call, go and defer statement that may run a func literal, through variables and Phis, or not ok when it may run where it cannot be seen |
+| `CallsOf(fn)` | Every call, go and defer statement that may run a func literal, through variables and Phis, or not ok when it may run where it cannot be seen |
 | `funcsHeldBy(v)` | The values stored to a variable that is only stored to, loaded and captured |
 
 SSA makes a func literal once, where it is written, so `makersOf` gives at
@@ -320,7 +347,7 @@ set the context. It replaces the context in scope, so tracing stops there and
 reports the chain. `isFreshContext` in `context.go` takes the semantics of
 goroutinectx: every value the argument can be must be a call of one of the
 two. It sees through a Phi and a conversion. For a load, every source that
-`resolve.go` finds must be fresh: the stores that reach it, in a local
+`ssaflow.Resolver` finds must be fresh: the stores that reach it, in a local
 variable, a pointer parameter, a variable a closure captures, or a field of
 one, through where the closure is made and the calls of a func literal. A
 global is not followed. A context derived from one, such as
@@ -353,8 +380,8 @@ The check is one query over the identity of the event. The sources of a
 value are the events it can be. `eventOrigin` walks back through the methods
 whose result is their receiver (`SameAsRecv` in the API table), such as
 `Event.Str` and `Event.Ctx`, to the call that made the event. A Phi has the
-sources of its edges. A read from memory has the sources of what `resolve.go`
-finds there. An event the function cannot tell, such as the caller's through
+sources of its edges. A read from memory has the sources of what
+`ssaflow.Resolver` finds there. An event the function cannot tell, such as the caller's through
 a pointer parameter, is a source of its own for each place it is read from.
 
 | Value | Sources |
@@ -419,9 +446,10 @@ A variable whose address is taken is read from memory. Real zerolog takes that
 address for every `Logger.Info()` call, since the method has a pointer
 receiver, so `l.Info()` reads `l` through `&l`.
 
-`storesReaching` in `store.go` walks the control flow back from the read, and
-stops each path at the first store to the address. Only the stores where a
-path stops can be what the read sees, and every one must have context:
+`storesReaching` in `ssaflow`'s `store.go` walks the control flow back from
+the read, and stops each path at the first store to the address. Only the
+stores where a path stops can be what the read sees, and every one must have
+context:
 
 | Code before `l.Info()` | Stores that reach it | Reported |
 |------------------------|----------------------|----------|
@@ -477,7 +505,7 @@ iteration, since the stores after that are to another variable.
 
 An element at an index that is not a constant, such as `arr[i]`, may be any
 element. A store to an element, through another `IndexAddr` or the same, is
-one of three kinds for a read of `arr[i]` (`place.covers`):
+one of three kinds for a read of `arr[i]` (`Place.covers`):
 
 | Store before the read | Kind | What the walk does |
 |-----------------------|------|--------------------|
@@ -519,13 +547,15 @@ a pointer that is not in a variable (see
 
 `Logger.UpdateContext(fn)` neither stops a path nor reads the Logger.
 zerolog keeps only the fields `fn` writes, and drops the context
-`Context.Ctx` sets in it, so the Logger has the context it had before.
+`Context.Ctx` sets in it, so the Logger has the context it had before. The
+walk learns this from `Model.LeavesReceiver` (see
+[The Library Model](#the-library-model)).
 
 #### Places
 
-`place.go` models an address as a `place`: a root, the variable or pointer
+`place.go` models an address as a `Place`: a root, the variable or pointer
 the address is in, and a path of selections from it, outermost first.
-`placeOf(addr)` builds one from the `FieldAddr` and `IndexAddr` instructions
+`PlaceOf(addr)` builds one from the `FieldAddr` and `IndexAddr` instructions
 of an address. A selection is a `sel`:
 
 | Selection | `sel` |
@@ -540,14 +570,14 @@ same when their values are, whatever the type of the constant. An element at
 a variable index may be any element, so it is the same as no selection, not
 even one at the same index.
 
-`place.covers` tells how much of a place a store to another place writes:
+`Place.covers` tells how much of a place a store to another place writes:
 `coverMust`, `coverMay` or `coverNone`. It compares the selections as
 `sel.same` does, and takes two elements at the same index value for the same
 element when the caller says that the index has one value. Any other pair of
 elements, one of them at a variable index, is `coverMay`. See
 [Elements at a Variable Index](#elements-at-a-variable-index).
 
-`place.key` gives a place in a form that `==` can compare, for a map key. It
+`Place.Key` gives a place in a form that `==` can compare, for a map key. It
 spells each element by its operand: a constant by its value and type, and a
 variable index by the value. So the key, unlike `sel.same`, tells apart
 `a[1]` and `a[uint8(1)]`, and takes two elements at the same variable index
@@ -664,7 +694,7 @@ nested access (`h.inner.event`) never share a value. `addressesMatch`
 compares each selection with `sel.same`, from the outermost in, and takes an
 instruction for the same as itself. So an element at a variable index matches
 only through the same `IndexAddr` instruction. The walk of stores does not use
-it for an element; it uses `place.covers`. Under the selections, two
+it for an element; it uses `Place.covers`. Under the selections, two
 loads of the same address, or two fields of the same struct value, match
 when the same stores reach them.
 
@@ -702,6 +732,17 @@ func() {
     g.l.Info().Msg("x") // reads h.l or g.l: both must be traced
 }()
 ```
+
+### The Library Model
+
+`ssaflow` knows SSA and `go/types`, not zerolog. Two facts about zerolog
+change what a read sees, and the signatures do not tell them. `ssaflow.Model`
+asks for them, and `zerologapi.Model` answers:
+
+| Method | Asked by | zerolog's answer |
+|--------|----------|------------------|
+| `IsHandle(ptr)` | `Resolver.ResolvesThrough`: does a read go through this pointer to what is stored there? | `*zerolog.Event`: an event is the value itself, not a variable it is read from |
+| `LeavesReceiver(fn)` | `storeReadsOf`, for every read of an address: is a call on it a read? | `KindInPlaceUpdate`, as `Logger.UpdateContext` is: it changes the fields of the Logger but not its context |
 
 ## Terminator Detection
 

@@ -1,4 +1,4 @@
-package chain
+package ssaflow
 
 import (
 	"go/ast"
@@ -51,7 +51,7 @@ func closureFunc(t *testing.T) *ssa.Function {
 // closureMakers returns the MakeClosure instructions of fn, in order.
 func closureMakers(fn *ssa.Function) []*ssa.MakeClosure {
 	var makers []*ssa.MakeClosure
-	for instr := range instrsIn(fn) {
+	for instr := range InstrsIn(fn) {
 		if mc, ok := instr.(*ssa.MakeClosure); ok {
 			makers = append(makers, mc)
 		}
@@ -67,7 +67,7 @@ func TestClosures(t *testing.T) {
 		t.Fatalf("got %d MakeClosure, want 3", len(makers))
 	}
 	read, iife, bound := makers[0], makers[1], makers[2]
-	c := newClosures()
+	c := NewClosures()
 
 	if got := c.makersOf(fn); got != nil {
 		t.Errorf("makersOf(f) = %v, want nil for a declared function", got)

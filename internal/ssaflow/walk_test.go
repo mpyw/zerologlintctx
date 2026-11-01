@@ -1,4 +1,4 @@
-package chain
+package ssaflow
 
 import (
 	"go/ast"
@@ -72,8 +72,8 @@ func newWalkRecorder() *walkRecorder {
 
 // visit records instr, and tells the path what step says for its block, or
 // to go on.
-func (r *walkRecorder) visit(step map[string]walkStep) walkVisit {
-	return func(instr ssa.Instruction) walkStep {
+func (r *walkRecorder) visit(step map[string]WalkStep) walkVisit {
+	return func(instr ssa.Instruction) WalkStep {
 		r.instrs[instr]++
 		r.blocks[instr.Block().Comment] = true
 		return step[instr.Block().Comment]
@@ -92,10 +92,10 @@ func (r *walkRecorder) walked() []string {
 
 func TestWalkBack(t *testing.T) {
 	fn, blocks := walkFunc(t)
-	positions := make(instrPositions)
+	positions := make(Positions)
 	done := blocks["for.done"]
 	ret := done.Instrs[len(done.Instrs)-1]
-	from := []walkPoint{walkPointBefore(ret, positions)}
+	from := []WalkPoint{WalkPointBefore(ret, positions)}
 	// for.done holds only the return, which the walk starts before
 	all := []string{"entry", "for.body", "for.loop", "if.done", "if.else", "if.then"}
 
@@ -106,7 +106,7 @@ func TestWalkBack(t *testing.T) {
 		if !walkBack(from, r.visit(nil), atEntry, nil) {
 			t.Fatal("walkBack = false, want true")
 		}
-		for instr := range instrsIn(fn) {
+		for instr := range InstrsIn(fn) {
 			want := 1
 			if instr == ret {
 				want = 0 // The walk starts before it
@@ -124,7 +124,7 @@ func TestWalkBack(t *testing.T) {
 		r := newWalkRecorder()
 		entries := 0
 		atEntry := func() bool { entries++; return true }
-		if !walkBack(from, r.visit(map[string]walkStep{"if.then": walkStop}), atEntry, nil) {
+		if !walkBack(from, r.visit(map[string]WalkStep{"if.then": WalkStop}), atEntry, nil) {
 			t.Fatal("walkBack = false, want true")
 		}
 		if entries != 1 {
@@ -132,14 +132,14 @@ func TestWalkBack(t *testing.T) {
 		}
 		r = newWalkRecorder()
 		entries = 0
-		walkBack(from, r.visit(map[string]walkStep{"if.done": walkStop}), atEntry, nil)
+		walkBack(from, r.visit(map[string]WalkStep{"if.done": WalkStop}), atEntry, nil)
 		if entries != 0 || r.blocks["if.then"] || r.blocks["entry"] {
 			t.Errorf("stopped at if.done, walked %v with %d entries, want none before it", r.walked(), entries)
 		}
 	})
 
 	t.Run("abort ends the walk", func(t *testing.T) {
-		if walkBack(from, newWalkRecorder().visit(map[string]walkStep{"for.loop": walkAbort}), nil, nil) {
+		if walkBack(from, newWalkRecorder().visit(map[string]WalkStep{"for.loop": WalkAbort}), nil, nil) {
 			t.Error("walkBack = true, want false")
 		}
 		if walkBack(from, newWalkRecorder().visit(nil), func() bool { return false }, nil) {
@@ -168,7 +168,7 @@ func TestWalkBack(t *testing.T) {
 			}
 			return s, true
 		}
-		walkBackWith([]walkFrom[int]{{from[0], -1}}, r.visit(nil), atEntry, edge)
+		WalkBackWith([]WalkFrom[int]{{from[0], -1}}, r.visit(nil), atEntry, edge)
 		if entries != 2 {
 			t.Errorf("atEntry called %d times, want 2: once through each branch", entries)
 		}
@@ -182,7 +182,7 @@ func TestWalkBack(t *testing.T) {
 		edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
 			return s, b.Preds[i] != blocks["if.then"]
 		}
-		walkBackWith([]walkFrom[struct{}]{{point: from[0]}}, r.visit(nil), nil, edge)
+		WalkBackWith([]WalkFrom[struct{}]{{Point: from[0]}}, r.visit(nil), nil, edge)
 		if r.blocks["if.then"] || !r.blocks["if.else"] {
 			t.Errorf("walked %v, want if.else but not if.then", r.walked())
 		}
@@ -191,16 +191,16 @@ func TestWalkBack(t *testing.T) {
 
 func TestWalkFwd(t *testing.T) {
 	fn, blocks := walkFunc(t)
-	positions := make(instrPositions)
+	positions := make(Positions)
 	first := blocks["entry"].Instrs[0]
-	from := walkPointAfter(first, positions)
+	from := WalkPointAfter(first, positions)
 
 	t.Run("every path, each instruction once", func(t *testing.T) {
 		r := newWalkRecorder()
-		if !walkFwd(from, r.visit(nil)) {
+		if !WalkFwd(from, r.visit(nil)) {
 			t.Fatal("walkFwd = false, want true")
 		}
-		for instr := range instrsIn(fn) {
+		for instr := range InstrsIn(fn) {
 			want := 1
 			if instr == first {
 				want = 0 // The walk starts after it
@@ -213,19 +213,19 @@ func TestWalkFwd(t *testing.T) {
 
 	t.Run("stop ends a path only", func(t *testing.T) {
 		r := newWalkRecorder()
-		walkFwd(from, r.visit(map[string]walkStep{"if.then": walkStop}))
+		WalkFwd(from, r.visit(map[string]WalkStep{"if.then": WalkStop}))
 		if !r.blocks["for.done"] {
 			t.Errorf("walked %v, want for.done through if.else", r.walked())
 		}
 		r = newWalkRecorder()
-		walkFwd(from, r.visit(map[string]walkStep{"for.loop": walkStop}))
+		WalkFwd(from, r.visit(map[string]WalkStep{"for.loop": WalkStop}))
 		if r.blocks["for.body"] || r.blocks["for.done"] {
 			t.Errorf("walked %v, want nothing after for.loop", r.walked())
 		}
 	})
 
 	t.Run("abort ends the walk", func(t *testing.T) {
-		if walkFwd(from, newWalkRecorder().visit(map[string]walkStep{"for.done": walkAbort})) {
+		if WalkFwd(from, newWalkRecorder().visit(map[string]WalkStep{"for.done": WalkAbort})) {
 			t.Error("walkFwd = true, want false")
 		}
 	})
@@ -233,7 +233,7 @@ func TestWalkFwd(t *testing.T) {
 
 func TestWalkThrough(t *testing.T) {
 	_, blocks := walkFunc(t)
-	positions := make(instrPositions)
+	positions := make(Positions)
 	through := walkThrough(blocks["if.then"].Instrs[0], positions)
 	for name, b := range blocks {
 		want := name != "entry" && name != "if.else"

@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/mpyw/zerologlintctx/internal/ssaflow"
 	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
@@ -82,7 +83,7 @@ func (st traceState) receiverState(m zerologapi.Method) (traceState, bool) {
 
 // tracer follows SSA values backwards to find whether context was set.
 //
-//declscope:shared // checker.go holds one per checked function
+//declscope:shared // checker.go holds one per package
 type tracer struct {
 	// memo keeps the verdict of each value traced, per trace state, so that
 	// it is not worked out again for the next call that reaches it. Without
@@ -91,15 +92,15 @@ type tracer struct {
 	//
 	//declscope:private
 	memo traceMemo
-	// positions finds where each instruction is in its block, for
-	// storesReaching, which walks back from a read once per trace of it.
+	// positions finds where each instruction is in its block, for the
+	// resolver, which walks back from a read once per trace of it.
 	//
 	//declscope:private
-	positions instrPositions
+	positions ssaflow.Positions
 	// closures indexes the closures and func literals of the package.
 	//
 	//declscope:private
-	closures *closures
+	closures *ssaflow.Closures
 	// events finds which event each value of a chain is, for a Ctx call in
 	// place.
 	//
@@ -111,7 +112,7 @@ type tracer struct {
 //
 //declscope:shared // checker.go creates one per package
 func newTracer() *tracer {
-	positions, closures := make(instrPositions), newClosures()
+	positions, closures := make(ssaflow.Positions), ssaflow.NewClosures()
 	return &tracer{
 		memo:      newTraceMemo(),
 		positions: positions,
@@ -149,7 +150,7 @@ func (tr *tracer) loggerHasCtx(v ssa.Value, at ssa.Instruction) bool {
 //	│     │     ├─ Func literal? → trace return values                │
 //	│     │     │                                                      │
 //	│     │     ├─ Sets context? → yes                                │
-//	│     │     ├─ Handoff? → trace receiver with its own tracer      │
+//	│     │     ├─ Handoff? → trace receiver in the state of its type │
 //	│     │     └─ Receiver of the traced type? → trace receiver      │
 //	│     │                                                            │
 //	│     └─ Not a Call → traceCommon (Phi, UnOp, Alloc, etc.)        │
@@ -172,11 +173,13 @@ func (tr *tracer) traceUncached(v ssa.Value, st traceState) verdict {
 		if found, ok := tr.traceFuncLiteralResult(call, 0, st); ok {
 			return found
 		}
-		if call.Call.StaticCallee() != nil || len(call.Call.Args) == 0 {
+		// Dynamic dispatch: the method is not known, and the first argument
+		// is taken for its receiver
+		recv := ssaflow.CalleeReceiver(&call.Call)
+		if recv == nil {
 			return no
 		}
-		// Dynamic dispatch: the method is not known
-		return tr.traceReceiver(call.Call.Args[0], call, st)
+		return tr.traceReceiver(recv, call, st)
 	}
 
 	if st.setsCtx(c.api) {
@@ -200,7 +203,7 @@ func (tr *tracer) givesFreshContext(cc *ssa.CallCommon) bool {
 // traceSource traces v, one of the values something can be, such as an edge
 // of a Phi or a value stored. A nil event logs nothing, so it is neutral.
 func (tr *tracer) traceSource(v ssa.Value, st traceState) verdict {
-	if isNilConst(v) {
+	if ssaflow.IsNilConst(v) {
 		return neutral
 	}
 	return tr.traceValue(v, st)
@@ -235,9 +238,9 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 	case *ssa.Alloc:
 		return tr.traceAlloc(val, st)
 	case *ssa.FreeVar:
-		return tr.traceResolved(tr.resolver(st).resolveFreeVar(val, nil), st)
+		return tr.traceResolved(tr.resolver(st).ResolveFreeVar(val, nil), st)
 	case *ssa.Parameter:
-		// A pointer parameter can be updated in place; see storesReaching.
+		// A pointer parameter can be updated in place; see Resolver.Resolve.
 		// Otherwise, or failing that, the arguments give it
 		found, ok := tr.traceAddressAt(val, nil, st)
 		if !ok {
@@ -249,12 +252,12 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 		// pointer method, such as Logger.Info on s.log. Failing that, the
 		// value it is the address in may have context
 		if found, ok := tr.traceStoredValues(val, nil, st); ok {
-			return found.or(func() verdict { return tr.traceValue(unwrapInner(v), st) })
+			return found.or(func() verdict { return tr.traceValue(ssaflow.UnwrapInner(v), st) })
 		}
 	}
 
 	// Handle simple wrapper types that just need inner value tracing
-	if inner := unwrapInner(v); inner != nil {
+	if inner := ssaflow.UnwrapInner(v); inner != nil {
 		return tr.traceValue(inner, st)
 	}
 
@@ -269,13 +272,13 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 //	t9 = t8.Logger          // v, read by value
 //
 // ok is false when the value it selects from is not loaded from an address
-// whose stores storesReachingAt can find.
+// whose stores Resolver.ResolveAt can find.
 func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState) (found verdict, ok bool) {
-	at, load, ok := loadedSelection(v)
+	at, load, ok := ssaflow.LoadedSelection(v)
 	if !ok {
 		return no, false
 	}
-	sources, ok := tr.resolver(st).resolveAt(at, load)
+	sources, ok := tr.resolver(st).ResolveAt(at, load)
 	if !ok {
 		return no, false
 	}
@@ -305,14 +308,14 @@ func (tr *tracer) traceAlloc(alloc *ssa.Alloc, st traceState) verdict {
 }
 
 // traceStoredValues traces the values that can be at addr when read runs,
-// or at any read of addr when read is nil. ok is false when storesReaching
+// or at any read of addr when read is nil. ok is false when Resolver.Resolve
 // knows nothing of addr.
 //
 // Like the edges of a Phi, every value must have context, and a value that
 // is already being traced is neutral: it is an update in a loop, which keeps
 // the context of the value before it.
 func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, st traceState) (found verdict, ok bool) {
-	sources, ok := tr.resolver(st).resolve(addr, read)
+	sources, ok := tr.resolver(st).Resolve(addr, read)
 	if !ok {
 		return no, false
 	}
@@ -323,16 +326,16 @@ func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, st tra
 // traceSource judges each: every one must have context. An unknown source
 // has none, and a pointer that the resolver could not follow is traced as a
 // value, through what it points to.
-func (tr *tracer) traceResolved(sources iter.Seq[resolved], st traceState) verdict {
+func (tr *tracer) traceResolved(sources iter.Seq[ssaflow.Resolved], st traceState) verdict {
 	return all(func(yield func(verdict) bool) {
 		for src := range sources {
 			found := no
 			switch {
-			case src.v == nil:
-			case src.pointer:
-				found = tr.traceValue(src.v, st)
+			case src.V == nil:
+			case src.Pointer:
+				found = tr.traceValue(src.V, st)
 			default:
-				found = tr.traceSource(src.v, st)
+				found = tr.traceSource(src.V, st)
 			}
 			if !yield(found) {
 				return
@@ -345,11 +348,12 @@ func (tr *tracer) traceResolved(sources iter.Seq[resolved], st traceState) verdi
 // literal that it resolves is in progress in the memo, as a value is, so
 // that reaching it again, through a recursive call, is neutral, and a
 // verdict that depends on that is kept no longer than it holds.
-func (tr *tracer) resolver(st traceState) resolver {
-	return resolver{
-		positions: tr.positions,
-		closures:  tr.closures,
-		enter: func(param *ssa.Parameter, expand func()) {
+func (tr *tracer) resolver(st traceState) ssaflow.Resolver {
+	return ssaflow.Resolver{
+		Positions: tr.positions,
+		Closures:  tr.closures,
+		Model:     zerologapi.Model{},
+		Enter: func(param *ssa.Parameter, expand func()) {
 			tr.memo.trace(memoKey{v: param, st: st, param: true}, false, func() verdict {
 				expand()
 				return neutral
@@ -361,9 +365,9 @@ func (tr *tracer) resolver(st traceState) resolver {
 // traceAddressAt traces addr, an address that read uses, such as the
 // receiver of Logger.Info, which has a pointer receiver. A nil read stands
 // for every read of addr. ok is false when addr is not one whose stores
-// storesReaching can find.
+// Resolver.Resolve can find.
 func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, st traceState) (found verdict, ok bool) {
-	if !resolvesThrough(addr) {
+	if !tr.resolver(st).ResolvesThrough(addr) {
 		return no, false
 	}
 	return tr.traceStoredValues(addr, read, st)
@@ -378,7 +382,7 @@ func (tr *tracer) traceAddressAt(addr ssa.Value, read ssa.Instruction, st traceS
 //	}(logger.Info().Ctx(ctx))
 func (tr *tracer) traceArguments(param *ssa.Parameter, st traceState) verdict {
 	fn := param.Parent()
-	calls, ok := tr.closures.callsOf(fn)
+	calls, ok := tr.closures.CallsOf(fn)
 	if !ok || len(calls) == 0 {
 		return no
 	}
@@ -397,7 +401,7 @@ func (tr *tracer) traceArguments(param *ssa.Parameter, st traceState) verdict {
 // as a closure. Every func literal must return a value with context. ok is
 // false when call runs no func literal that is known.
 func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState) (found verdict, ok bool) {
-	fns, ok := tr.closures.funcLiteralsOf(call.Call.Value, make(map[ssa.Value]bool))
+	fns, ok := tr.closures.FuncLiteralsOf(call.Call.Value, make(map[ssa.Value]bool))
 	if sfn := call.Call.StaticCallee(); sfn != nil {
 		fns, ok = []*ssa.Function{sfn}, sfn.Parent() != nil
 	}
@@ -450,14 +454,14 @@ func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
 // traceCalleeReceiver traces the receiver of c, which call runs, as
 // traceReceiver does, or through the struct it is embedded in.
 func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, st traceState) verdict {
-	if c.embedded != nil {
+	if c.Embedded != nil {
 		return tr.traceEmbeddedReceiver(c, call, st)
 	}
-	return tr.traceReceiver(c.recv, call, st)
+	return tr.traceReceiver(c.Recv, call, st)
 }
 
 // traceEmbeddedReceiver traces the receiver of c, a method expression of a
-// promoted method, which call runs. c.recv is the struct the receiver is
+// promoted method, which call runs. c.Recv is the struct the receiver is
 // embedded in, or a pointer to it, and the receiver is what the stores that
 // reach call left at the embedded fields of it:
 //
@@ -465,14 +469,14 @@ func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, st traceSt
 //	t6 = (myEvent).Msg$thunk(t5, "x")      // reads t1.Event
 //
 // The struct must be loaded from an address, or be a pointer, whose stores
-// storesReachingAt can find. Otherwise nothing is found.
+// Resolver.ResolveEmbedded can find. Otherwise nothing is found.
 func (tr *tracer) traceEmbeddedReceiver(c callee, call ssa.Instruction, st traceState) verdict {
-	addr, typ, read, ok := c.embeddedStart(call)
+	addr, typ, read, ok := c.EmbeddedStart(call)
 	if !ok {
 		return no
 	}
-	at, _ := placeOf(addr)
-	return tr.traceResolved(tr.resolver(st).resolveEmbedded(at, typ, c.embedded, read, call), st)
+	at, _ := ssaflow.PlaceOf(addr)
+	return tr.traceResolved(tr.resolver(st).ResolveEmbedded(at, typ, c.Embedded, read, call), st)
 }
 
 // traceReceiver traces recv, the receiver of call, a method call. It is the
@@ -494,7 +498,7 @@ func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, args []ssa.Val
 	// A result of another type, such as an interface, is traced through to
 	// the value it holds.
 	return all(func(yield func(verdict) bool) {
-		for instr := range instrsIn(fn) {
+		for instr := range ssaflow.InstrsIn(fn) {
 			ret, ok := instr.(*ssa.Return)
 			if !ok {
 				continue
