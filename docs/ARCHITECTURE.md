@@ -71,7 +71,9 @@ A method expression of a method promoted through an embedded field, such as
 the struct in `Args[0]`. `calleeOf` records the embedded fields that lead to
 the receiver, and tracing reads it from the stores to those fields. An
 embedded pointer partway, as in `type outer struct{ *myEvent }`, is followed
-to each struct that can be stored there. A `Ctx` call in place on the
+to each struct that can be stored there. A plain call or method value of the
+same promoted method reads the event past a load of the pointer, which is
+followed in the same way (see [Pointers Read From Memory](#pointers-read-from-memory)). A `Ctx` call in place on the
 embedded event, such as `me.Ctx(ctx)` with its result unused, counts as it
 does for an event in memory.
 
@@ -522,7 +524,52 @@ for the same.
 `isTrackedRoot` tells whether every store to a place with that root can be
 seen in the function alone: a local variable, a parameter, or a variable a
 closure captures. A global, or a pointer the function loads, can be changed
-anywhere. A walk back from a read is only done for a tracked root.
+anywhere. A walk back from a read is only done for a tracked root, or for a
+root that is a pointer read from memory, through what it points to (below).
+
+#### Pointers Read From Memory
+
+A struct reached through a pointer in a field, embedded or not, is at an
+address whose root is the pointer, loaded from that field:
+
+```
+t1 = new pointedLogger (complit)
+*&t1.l = base                 // the logger, stored in the struct pointed to
+*&t0.p = t1                   // h := pointedLoggerHolder{p: t1}
+t3 = *&t0.p                   // the pointer, read from h.p
+Info(&t3.l)                   // h.p.l.Info(): t3 is t1
+```
+
+`storePointers` follows such a pointer to what it can point to: what the
+stores that reach its read left in the field. The address is then walked for
+as an address in each of those, with the same selections, from the read
+(`t1.l` above), and every value that reaches it must have context. A Phi of
+pointers is walked for each pointer it picks, as `storesReachingPicked` does,
+and is not followed when it picks more than `storePickedMax`.
+
+| The pointer is read | What it can point to |
+|---------------------|----------------------|
+| From a field or element of a tracked root, or of a struct value loaded from one | What the stores to that place left there |
+| From what another such pointer points to | The same, through that pointer first |
+| And a store reaches it from a pointer parameter, a captured variable or anything else not known | Not followed. The address is matched as before (`findStores`) |
+
+A nil pointer has nothing to read, and is left out. So is a path of the walk
+that leads back to the entry of the function without making the struct a
+pointer points to: the pointer is another one there. In the walk for each
+variable, a store through another read of a pointer is a store to the
+variable when that pointer can point to it: one that stops the path when it
+can point to that variable only, and a may store otherwise. A pointer that
+cannot be followed is taken to point elsewhere, as a write through another
+reference is not seen (see [Known Limitations](#known-limitations)).
+
+```go
+h := pointedLoggerHolder{&pointedLogger{base}}
+h.p.l = base.With().Ctx(ctx).Logger() // through another read of h.p: stops the path
+h.p.l.Info().Msg("x")                 // not reported
+```
+
+`storePointers` keeps what each pointer can point to, and a pointer reached
+again while it is followed is not followed again.
 
 #### Address Matching
 
