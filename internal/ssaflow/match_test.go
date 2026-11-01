@@ -223,3 +223,80 @@ func f(x **int) {
 		}
 	}
 }
+
+// TestMatchedPlacesSameAtRuns checks which places that func literals nested in
+// f$1 read are the same place as f$1 runs them.
+func TestMatchedPlacesSameAtRuns(t *testing.T) {
+	const src = `package p
+
+type holder struct{ e, f *int }
+
+func f(h, g *holder, hs [1]*holder) {
+	func() {
+		func() { _ = h.e }()
+		func() { _ = h.e }()
+		func() { _ = g.e }()
+		func() { _ = h.f }()
+		func() { func() { _ = h.e }() }()
+		func(pk **holder) { _ = (*pk).e }(&h)
+		func() { _ = hs[0].e }()
+		func() { _ = hs[0].e }()
+	}()
+	func() { _ = h.e }()
+	func() {
+		func() { _ = h.e }()
+		func() { _ = h.e }()
+		h = g
+	}()
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := pkg.Func("f")
+	// keyIn returns the key of the field the func literal at path reads,
+	// through the anonymous functions of fn, outermost first.
+	keyIn := func(path ...int) PlaceKey {
+		lit := fn
+		for _, i := range path {
+			lit = lit.AnonFuncs[i]
+		}
+		for instr := range InstrsIn(lit) {
+			if fa, ok := instr.(*ssa.FieldAddr); ok {
+				at, _ := PlaceOf(fa)
+				return at.Key()
+			}
+		}
+		t.Fatalf("no field read in %s", lit)
+		return PlaceKey{}
+	}
+	outer, stored := fn.AnonFuncs[0], fn.AnonFuncs[2]
+	m := NewMatchedPlaces()
+	for _, tc := range []struct {
+		name string
+		a, b PlaceKey
+		fn   *ssa.Function
+		want bool
+	}{
+		{"h.e on two func literals", keyIn(0, 0), keyIn(0, 1), outer, true},
+		{"h.e two func literals down", keyIn(0, 0), keyIn(0, 4, 0), outer, true},
+		{"h.e and g.e", keyIn(0, 0), keyIn(0, 2), outer, false},
+		{"h.e and h.f", keyIn(0, 0), keyIn(0, 3), outer, false},
+		{"h.e and itself", keyIn(0, 0), keyIn(0, 0), outer, true},
+		{"h.e and (*pk).e for a parameter pk", keyIn(0, 0), keyIn(0, 5), outer, false},
+		{"hs[0].e on two func literals", keyIn(0, 6), keyIn(0, 7), outer, true},
+		{"h.e out of the func literal", keyIn(0, 0), keyIn(1), outer, false},
+		{"h.e where h is stored to", keyIn(2, 0), keyIn(2, 1), stored, false},
+		{"the parameters themselves", PlaceAt(fn.Params[0]).Key(), PlaceAt(fn.Params[1]).Key(), fn, false},
+	} {
+		if got := m.SameAtRuns(tc.a, tc.b, tc.fn); got != tc.want {
+			t.Errorf("%s: SameAtRuns = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

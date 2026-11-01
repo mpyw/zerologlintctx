@@ -258,6 +258,78 @@ func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Inst
 	return key, false
 }
 
+// SameAtRuns reports whether a and b, keys of places that two func literals
+// nested in fn read through pointers they load from variables they capture,
+// are the same place as fn runs them: the same selections through the same
+// loads of the same variable of fn, which fn captures in turn. KeyAtRun maps
+// such a key to one of a load in the function, and finds none in fn when fn
+// reads the place only through the func literals:
+//
+//	func() {                          // fn: captures p, and reads p.e only below
+//	    if cond {
+//	        func() { p.e.Ctx(ctx) }() // t0 = *p ; &t0.e
+//	    } else {
+//	        func() { p.e.Ctx(ctx) }() // t0 = *p ; &t0.e: the same place
+//	    }
+//	}()
+//
+// Each load must see what is at its address as its func literal starts, and
+// fn and each func literal in between must store nothing to the variable or
+// through it, so that both see what the function that makes fn left there.
+func (m *MatchedPlaces) SameAtRuns(a, b PlaceKey, fn *ssa.Function) bool {
+	if a == b {
+		return true
+	}
+	_, aLoad := AsLoad(a.base())
+	_, bLoad := AsLoad(b.base())
+	sameSelections := a.rooted(b.base()) == b
+	return sameSelections && aLoad && bLoad && matchSiblingReads(a.base(), b.base(), fn)
+}
+
+// matchSiblingReads reports whether a and b, read in func literals nested in
+// fn, are read the same way from the same variable of fn, as
+// MatchedPlaces.SameAtRuns has it.
+func matchSiblingReads(a, b ssa.Value, fn *ssa.Function) bool {
+	entry := map[ssa.Instruction]bool{nil: true}
+	switch x := a.(type) {
+	case *ssa.FreeVar:
+		y, ok := b.(*ssa.FreeVar)
+		if !ok {
+			return false
+		}
+		bx, okX := matchCapturedIn(x, fn)
+		by, okY := matchCapturedIn(y, fn)
+		return okX && okY && bx == by
+	case *ssa.UnOp:
+		y, ok := b.(*ssa.UnOp)
+		return ok && x.Op == token.MUL && y.Op == token.MUL && matchSiblingReads(x.X, y.X, fn) &&
+			maps.Equal(matchReachingStores(x), entry) && maps.Equal(matchReachingStores(y), entry)
+	}
+	xa, sa, okA := addrSel(a)
+	xb, sb, okB := addrSel(b)
+	return okA && okB && sa.same(sb) && matchSiblingReads(xa, xb, fn)
+}
+
+// matchCapturedIn returns the variable of fn that fv, a variable that fn or
+// a func literal nested in it captures, is bound to, through the func
+// literals in between. ok is false when fv is not captured from a variable
+// that fn captures, or a func literal in between stores to it or through it,
+// or fn does. A func literal that is not nested in fn is bound, at the end,
+// to a variable of a function that is not a func literal.
+func matchCapturedIn(fv *ssa.FreeVar, fn *ssa.Function) (_ *ssa.FreeVar, ok bool) {
+	for lit := fv.Parent(); lit != fn; lit = fv.Parent() {
+		idx := slices.Index(lit.FreeVars, fv)
+		for instr := range InstrsIn(lit.Parent()) {
+			if mc, isMaker := instr.(*ssa.MakeClosure); isMaker && mc.Fn == lit {
+				if fv, ok = mc.Bindings[idx].(*ssa.FreeVar); !ok || matchStoredThrough(fv) {
+					return nil, false
+				}
+			}
+		}
+	}
+	return fv, true
+}
+
 // MatchPlaceAtRun returns the place that the function making mc has for the
 // place load reads, in the func literal of mc or one nested in it, from a
 // variable the func literal captures, as a call of mc runs it: the same
