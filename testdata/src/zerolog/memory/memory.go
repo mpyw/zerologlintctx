@@ -1619,6 +1619,101 @@ func badLoggerPtrCopiedFromStructParamOnBranch(ctx context.Context, b, c *logger
 	h.p.Info().Msg("either pointer copied") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// In a func literal, the pointer copied is read from the variable that holds
+// the captured parameter, one load more than at the top level. A store
+// through the copy is still a store through the parameter (#298).
+
+func goodLoggerPtrCopiedFromCapturedParam(ctx context.Context, l *zerolog.Logger) {
+	func() {
+		b := loggerPtrBox{l}
+		*b.p = zerolog.Ctx(ctx).With().Logger()
+		b.p.Info().Msg("pointer copied from a captured parameter") // OK
+	}()
+}
+
+func badLoggerPtrCopiedFromCapturedParam(ctx context.Context, l *zerolog.Logger, base zerolog.Logger) {
+	func() {
+		b := loggerPtrBox{l}
+		*b.p = base
+		b.p.Info().Msg("pointer copied from a captured parameter, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badLoggerPtrCopiedFromCapturedParamOther(ctx context.Context, l, other *zerolog.Logger) {
+	func() {
+		b := loggerPtrBox{l}
+		*other = zerolog.Ctx(ctx).With().Logger()
+		b.p.Info().Msg("stored through another pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodMonitorPtrCopiedToArrayInFuncLiteral(ctx context.Context, m *reloadedMonitor) {
+	func() {
+		var arr [1]*reloadedMonitor
+		arr[0] = m
+		arr[0].log = zerolog.Ctx(ctx).With().Logger()
+		arr[0].log.Info().Msg("pointer copied to an array") // OK
+	}()
+}
+
+func badMonitorPtrCopiedToArrayInFuncLiteral(ctx context.Context, m *reloadedMonitor, base zerolog.Logger) {
+	func() {
+		var arr [1]*reloadedMonitor
+		arr[0] = m
+		arr[0].log = base
+		arr[0].log.Info().Msg("pointer copied to an array, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodMonitorPtrReassignedInFuncLiteral(ctx context.Context, m, n *reloadedMonitor) {
+	func() {
+		p := m
+		p = n
+		p.log = zerolog.Ctx(ctx).With().Logger()
+		p.log.Info().Msg("pointer reassigned in a func literal") // OK
+		go func() { _ = p }()
+	}()
+}
+
+func badMonitorPtrReassignedInFuncLiteral(ctx context.Context, m, n *reloadedMonitor) {
+	func() {
+		p := n
+		m.log = zerolog.Ctx(ctx).With().Logger()
+		p = m
+		p = n
+		p.log.Info().Msg("the store is through the other pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+		go func() { _ = p }()
+	}()
+}
+
+type loggerPtrPair struct{ a, b *zerolog.Logger }
+
+func goodLoggerPtrsSwappedInLoop(ctx context.Context, l *zerolog.Logger, base zerolog.Logger, n int) {
+	other := zerolog.Ctx(ctx).With().Logger()
+	o := loggerPtrBox{&other}
+	h := loggerPtrPair{a: l, b: l}
+	for range n {
+		x := h.a
+		h.b = x
+		y := h.b
+		h.a = y
+		*y = base // Through l, which each pointer copied back and forth is
+	}
+	o.p.Info().Msg("pointers copied back and forth in a loop") // OK
+}
+
+func badLoggerPtrsSwappedInLoop(ctx context.Context, l *zerolog.Logger, base zerolog.Logger, n int) {
+	h := loggerPtrPair{a: l, b: l}
+	for range n {
+		x := h.a
+		h.b = x
+		y := h.b
+		h.a = y
+		*y = zerolog.Ctx(ctx).With().Logger()
+	}
+	h.a.Info().Msg("pointers copied back and forth in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== A POINTER PICKED ON A BRANCH, TO A VARIABLE CHANGED ELSEWHERE =====
 
 var sinkLoggerPtr *zerolog.Logger

@@ -802,7 +802,10 @@ that leads back to the entry of the function without making the struct a
 pointer points to: the pointer is another one there. In the walk for each
 variable, a store through another read of a pointer is a store to the
 variable when that pointer can point to it: one that stops the path when it
-can point to that variable only, and a may store otherwise. A pointer that
+can point to that variable only, and a may store otherwise. That pointer
+may point to another pointer read from memory, as one copied from a captured
+parameter in a func literal does, and it is followed through each in turn.
+A pointer copied back and forth, in a loop, is followed once. A pointer that
 cannot be followed is taken to point elsewhere, as a write through another
 reference is not seen (see [Known Limitations](#known-limitations)).
 
