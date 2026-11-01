@@ -1023,6 +1023,44 @@ func badEventCtxInPlaceInIIFEPointerReplaced(ctx context.Context, h, g *inPlaceH
 	h.e.Msg("ctx in place through a pointer replaced after") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func goodEventCtxInPlaceInIIFEPointerParamFieldInside(ctx context.Context, h *inPlaceHolder) {
+	func() {
+		h.e.Ctx(ctx)
+		h.e.Msg("ctx in place and terminator in an IIFE, through a pointer parameter") // OK
+	}()
+}
+
+func goodEventCtxInPlaceInIIFEPointerParamFieldOnBranches(ctx context.Context, h *inPlaceHolder, cond bool) {
+	if cond {
+		func() { h.e.Ctx(ctx) }()
+		h.e.Msg("ctx in place in an IIFE, on the first branch") // OK
+	} else {
+		func() { h.e.Ctx(ctx) }()
+		h.e.Msg("ctx in place in an IIFE, on the second branch") // OK
+	}
+}
+
+func badEventCtxInPlaceInIIFEPointerParamFieldOtherBranch(ctx context.Context, h *inPlaceHolder, cond bool) {
+	if cond {
+		func() { h.e.Ctx(ctx) }()
+		h.e.Msg("ctx in place in an IIFE, on this branch") // OK
+	} else {
+		func() { _ = h }()
+		h.e.Msg("ctx in place in an IIFE on the other branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+func goodEventCtxInPlaceInIIFEPointerToPointer(ctx context.Context, pp **inPlaceHolder) {
+	func() { (*pp).e.Ctx(ctx) }()
+	(*pp).e.Msg("ctx in place in an IIFE, through two loads") // OK
+}
+
+func badEventCtxInPlaceInIIFEPointerToPointerReplaced(ctx context.Context, pp **inPlaceHolder, g *inPlaceHolder) {
+	func() { (*pp).e.Ctx(ctx) }()
+	*pp = g
+	(*pp).e.Msg("ctx in place through two loads, the pointer replaced after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // LIMITATION (false positive): a store by a closure to a variable it captures
 // is not seen after the closure is called, so h.e after the IIFE is not taken
 // for the g.e it set the context of.

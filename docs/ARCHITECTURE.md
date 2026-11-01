@@ -466,9 +466,10 @@ An event the func literal cannot tell, at a place it reads through a pointer
 it loads from a variable it captures, such as the caller's event at `h.e`
 for a pointer parameter `h`, or an element of a captured slice, is taken at
 the call for the event at the same place through the variable bound there.
-That place goes through a load of the variable that the same stores reach as
-reach the call, and the func literal must not store to the variable before
-its own load (`MatchedPlaces.KeyAtRun`):
+That place goes through the same loads of the variable, such as both of
+`(*pp).e`, which the same stores reach as reach the call, and the func
+literal must not store to the variable before its own load
+(`MatchedPlaces.KeyAtRun`):
 
 ```go
 func f(ctx context.Context, h *holder) {

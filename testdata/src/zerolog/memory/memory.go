@@ -379,9 +379,15 @@ func goodEmbeddedStructCtxInPlaceInClosureMethodExpression(ctx context.Context, 
 	}()
 }
 
-func badEmbeddedStructOfPointerParamPointerMethodExpression(ctx context.Context, p **embeddedHolder) {
+func goodEmbeddedStructOfPointerParamPointerMethodExpression(ctx context.Context, p **embeddedHolder) {
 	(*p).Ctx(ctx)
-	(*embeddedHolder).Msg(*p, "pointer method expression of a pointer loaded again") // want `zerolog call chain missing .Ctx\(ctx\)`
+	(*embeddedHolder).Msg(*p, "pointer method expression of a pointer loaded again") // OK - the same pointer, loaded again
+}
+
+func badEmbeddedStructOfPointerParamPointerMethodExpressionReplaced(ctx context.Context, p **embeddedHolder, q *embeddedHolder) {
+	(*p).Ctx(ctx)
+	*p = q
+	(*embeddedHolder).Msg(*p, "pointer method expression of a pointer replaced after Ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func badEmbeddedStructOfGlobalMethodExpression(ctx context.Context) {
