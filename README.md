@@ -1068,7 +1068,7 @@ e.Msg("hello")
 To silence one of these reports, write [`//zerologlintctx:ignore`](#ignoring-a-report) on the line. For the helper, `newEvent(ctx, log).Ctx(ctx)` also passes. For the closure, let it return the event, and write `e := f()`.
 
 <details>
-<summary>All cases (7)</summary>
+<summary>All cases (8)</summary>
 
 <table>
 <thead>
@@ -1174,6 +1174,18 @@ func newLogger() *zerolog.Logger {
 
 </td>
 <td>⚠️ <b>Reported (limitation).</b> The pointer is made again on each iteration. So a store through it after the <code>defer</code> may be through a later pointer, and the value before the <code>defer</code> is still seen</td>
+</tr>
+<tr>
+<td>
+
+```go
+h := box{p: m.f}
+*h.p = log.With().Ctx(ctx).Logger()
+m.f.Info().Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> The calls that make the Logger run between the two reads of <code>m.f</code>. A call may put another pointer at <code>m.f</code>, so the store through <code>h.p</code> is not followed</td>
 </tr>
 <tr>
 <td>
