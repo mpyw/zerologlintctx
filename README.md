@@ -5,78 +5,118 @@
 [![Codecov](https://codecov.io/gh/mpyw/zerologlintctx/graph/badge.svg)](https://codecov.io/gh/mpyw/zerologlintctx)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Go linter that checks zerolog logging chains for missing context propagation.
+Go linter that reports a [zerolog](https://pkg.go.dev/github.com/rs/zerolog) chain that does not pass on the available context.
 
 ## Overview
 
-`zerologlintctx` detects cases where a [`context.Context`](https://pkg.go.dev/context#Context) is available in function parameters but not properly passed to [zerolog](https://pkg.go.dev/github.com/rs/zerolog) logging chains via [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx).
+```go
+package app
 
-## Requirements
+import (
+	"context"
 
-Go 1.27 or later. The analyzed code may target any Go version.
+	"github.com/rs/zerolog"
+)
 
-## Installation & Usage
+func Place(
+	ctx context.Context,
+	log zerolog.Logger,
+	id string,
+) {
+	log.Info().
+		Str("order", id).
+		Msg("order placed")
+}
+```
 
-### <a href="https://mise.jdx.dev/"><img src="https://mise.jdx.dev/logo.svg" height="28" alt=""></a> Using [mise](https://mise.jdx.dev/) (macOS/Linux/Windows)
+```console
+$ zerologlintctx ./...
+order.go:16:6: zerolog call chain missing .Ctx(ctx)
+```
 
-**Recommended.** zerologlintctx is installable directly from GitHub Releases via mise's `github` backend — no extra registry required, and no Go toolchain needed because the binaries are prebuilt:
+The function has a [`context.Context`](https://pkg.go.dev/context#Context). The event does not get it, because the chain has no [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx). A [hook](https://pkg.go.dev/github.com/rs/zerolog#Hook) reads the context of the event with [`Event.GetCtx`](https://pkg.go.dev/github.com/rs/zerolog#Event.GetCtx):
+
+<table>
+<thead>
+<tr><th>Code</th><th>What the hook sees</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+log.Info().
+	Str("order", id).
+	Msg("order placed")
+```
+
+</td>
+<td><b>No context.</b> <code>GetCtx</code> returns <code>context.Background()</code>. A trace ID in <code>ctx</code> is not in the log line</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info().
+	Ctx(ctx).
+	Str("order", id).
+	Msg("order placed")
+```
+
+</td>
+<td><b>The caller's context.</b> <code>GetCtx</code> returns <code>ctx</code></td>
+</tr>
+</tbody>
+</table>
+
+The code compiles, and the line is still logged. zerologlintctx finds it from the source.
+
+## Install
+
+| Method | Command | Needs |
+| --- | --- | --- |
+| **[mise](https://mise.jdx.dev/)** *(recommended)* | `mise use "github:mpyw/zerologlintctx@0.13.1"` | Nothing. Installs the prebuilt binary |
+| [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool) | `go get -tool github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest` | Go 1.27+ |
+| [`go install`](https://pkg.go.dev/cmd/go#hdr-Compile_and_install_packages_and_dependencies) | `go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest` | Go 1.27+ |
+| [`go run`](https://pkg.go.dev/cmd/go#hdr-Compile_and_run_Go_program) | `go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...` | Go 1.27+ |
+| Release archive | See below | Nothing |
 
 ```bash
-mise use "github:mpyw/zerologlintctx@0.13.1"
 zerologlintctx ./...
 ```
 
-Run it in the project root. It pins the version in the project's `mise.toml`, so every checkout and CI run the same one:
+### Requirements
+
+Building from source needs Go 1.27 or later. The analyzed code may target any Go version.
+
+> [!CAUTION]
+> To prevent supply chain attacks, pin a version tag instead of `@latest` in CI/CD pipelines, such as `@v0.13.1`.
+
+<details>
+<summary>Pin a version, run through <code>go vet</code> or golangci-lint, or install from an archive</summary>
+
+`mise use` pins the version in the project's `mise.toml`, so every checkout and CI run the same one. Run it in the project root. Add `-g` to install it for every project on your machine instead.
 
 ```toml
 [tools]
 "github:mpyw/zerologlintctx" = "0.13.1"
 ```
 
-Add `-g` to install it for every project on your machine instead.
-
-> [!IMPORTANT]
-> The `go`-based methods below build zerologlintctx from source, which requires **Go 1.27 or later** (see [Requirements](#requirements)).
-
-### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool)
+As a tool dependency in `go.mod`:
 
 ```bash
-# Add to go.mod as a tool dependency
 go get -tool github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
-
-# Run via go tool
 go tool zerologlintctx ./...
 ```
 
-### Using [`go install`](https://pkg.go.dev/cmd/go#hdr-Compile_and_install_packages_and_dependencies)
-
-```bash
-go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
-zerologlintctx ./...
-```
-
-### Using [`go vet`](https://pkg.go.dev/cmd/go#hdr-Report_likely_mistakes_in_packages)
-
-Since zerologlintctx has no custom flags, it can be run via `go vet`:
+Through [`go vet`](https://pkg.go.dev/cmd/go#hdr-Report_likely_mistakes_in_packages). zerologlintctx has no flags of its own, so `go vet` can run it:
 
 ```bash
 go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest
 go vet -vettool=$(which zerologlintctx) ./...
 ```
 
-### Using [`go run`](https://pkg.go.dev/cmd/go#hdr-Compile_and_run_Go_program)
-
-```bash
-go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...
-```
-
-> [!CAUTION]
-> To prevent supply chain attacks, pin to a specific version tag instead of `@latest` in CI/CD pipelines (e.g., `@v0.13.1`).
-
-<details>
-<summary><a href="https://curl.se/"><img src="https://cdn.simpleicons.org/curl" height="20" alt=""></a> Downloading the tarball directly (macOS/Linux/Windows)</summary>
-
-No package manager? Grab the archive for your platform from [GitHub Releases](https://github.com/mpyw/zerologlintctx/releases):
+From a release archive on [GitHub Releases](https://github.com/mpyw/zerologlintctx/releases), verified against the published checksums:
 
 ```bash
 export VERSION=0.13.1
@@ -97,12 +137,7 @@ sudo mv zerologlintctx /usr/local/bin/
 
 On Windows, download `zerologlintctx_${VERSION}_windows_${ARCH}.zip` and extract `zerologlintctx.exe` somewhere on your `PATH`.
 
-</details>
-
-<details>
-<summary>Running inside golangci-lint</summary>
-
-zerologlintctx is not bundled with golangci-lint. Build a golangci-lint binary that holds it as a [module plugin](https://golangci-lint.run/plugins/module-plugins/). Write `.custom-gcl.yml`:
+Inside golangci-lint, as a [module plugin](https://golangci-lint.run/plugins/module-plugins/). zerologlintctx is not bundled with golangci-lint, so build a binary that holds it. Write `.custom-gcl.yml`:
 
 ```yaml
 version: v2.15.0  # the golangci-lint release to build
@@ -138,127 +173,591 @@ golangci-lint custom  # writes ./custom-gcl
 ## Flags
 
 | Flag | Default | Description |
-|------|---------|-------------|
-| `-test` | `true` | Analyze test files (`*_test.go`) — built-in driver flag |
-
-Generated files (containing `// Code generated ... DO NOT EDIT.`) are always excluded and cannot be opted in.
-
-### Examples
+| --- | --- | --- |
+| `-test` | `true` | Analyze test files (`*_test.go`). This is a flag of the built-in driver |
 
 ```bash
 # Exclude test files from analysis
 zerologlintctx -test=false ./...
 ```
 
-## What It Checks
-
-### Missing `.Ctx(ctx)` in Event Chains
-
-Detects zerolog logging chains missing [`.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Event.Ctx):
+A generated file is never analyzed, and no flag turns it on:
 
 ```go
-func handler(ctx context.Context, log zerolog.Logger) {
-    // Bad: missing .Ctx(ctx)
-    log.Info().Str("key", "value").Msg("hello")
+// Code generated by mockgen. DO NOT EDIT.
 
-    // Good: includes .Ctx(ctx)
-    log.Info().Ctx(ctx).Str("key", "value").Msg("hello")
+package app
 
-    // Also accepted: the logger stored in ctx
-    // (zerolog.Ctx() or log.Ctx() of zerolog/log)
-    zerolog.Ctx(ctx).Info().Str("key", "value").Msg("hello")
+func Place(ctx context.Context, log zerolog.Logger) {
+	log.Info().Msg("order placed") // ✅️ not reported
 }
 ```
+
+## What it checks
+
+A function is checked when it has a `context.Context` parameter. The report names that parameter, such as `.Ctx(ctx)` or `.Ctx(c)`.
+
+The examples below are bodies of this function:
+
+```go
+func handler(
+	ctx context.Context,
+	log zerolog.Logger,
+	verbose bool,
+	failed bool,
+) {
+	// example
+}
+```
+
+### Event chains
+
+Every chain that sends an event, with `Msg`, `Msgf`, `MsgFunc` or `Send`, must carry the context:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+log.Info().
+	Str("key", "value").
+	Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> The chain has no <code>.Ctx(ctx)</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info().
+	Ctx(ctx).
+	Str("key", "value").
+	Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The event carries <code>ctx</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+l := log.With().
+	Ctx(ctx).
+	Logger()
+l.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The logger carries <code>ctx</code>, and its events take it</td>
+</tr>
+<tr>
+<td>
+
+```go
+zerolog.Ctx(ctx).
+	Info().
+	Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The logger is taken from <code>ctx</code>. <code>log.Ctx(ctx)</code> of <code>zerolog/log</code> is the same</td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+e = e.Ctx(ctx)
+e.Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> A variable is followed to the chain it holds</td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+if verbose {
+	e = e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> On the path where <code>verbose</code> is false, the event has no context</td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info().Ctx(ctx)
+func() {
+	e.Msg("hello")
+}()
+```
+
+</td>
+<td>✅️ <b>Passes.</b> A closure is followed to the variable it captures</td>
+</tr>
+<tr>
+<td>
+
+```go
+defer log.Info().Msg("done")
+go log.Info().Msg("started")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Both lines. A <code>go</code> or <code>defer</code> statement is checked as a plain call</td>
+</tr>
+</tbody>
+</table>
 
 > [!NOTE]
-> [`zerolog.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Ctx) returns the logger stored in `ctx`. It does not attach `ctx` to the events of that logger. zerologlintctx accepts it anyway, since taking the logger from the context is a deliberate use of it. Add `.Ctx(ctx)` too if hooks need the context.
+> [`zerolog.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Ctx) returns the logger stored in `ctx`. It does not attach `ctx` to the events of that logger. Still, zerologlintctx accepts it, because taking the logger from the context is a deliberate use of it. Add `.Ctx(ctx)` too if hooks need the context:
+>
+> ```go
+> zerolog.Ctx(ctx).
+> 	Info().
+> 	Ctx(ctx).
+> 	Msg("hello")
+> ```
 
-Some calls do not pass on the context, so they do not count:
-
-| Call | Why it does not count |
-|------|-----------------------|
-| `.Ctx(context.Background())`, `zerolog.Ctx(context.TODO())` | A fresh context carries nothing of the caller's. A local variable that only holds such contexts is fresh too |
-| `.With().Ctx(ctx).Logger().Output(w)` | [`Logger.Output`](https://pkg.go.dev/github.com/rs/zerolog#Logger.Output) builds a new logger and drops the context. A logger from `zerolog.Ctx(ctx)` still counts after `Output` |
-| `e.CreateDict().Ctx(ctx)` | [`Event.CreateDict`](https://pkg.go.dev/github.com/rs/zerolog#Event.CreateDict) returns a new event. The context is set on the dict, not on `e` |
+A function without a context has nothing to pass on, so it is not checked:
 
 ```go
-func handler(ctx context.Context, log zerolog.Logger, w io.Writer) {
-    // Bad: a fresh context in place of ctx
-    log.Info().Ctx(context.Background()).Msg("hello")
-
-    // Bad: Output drops the context
-    l := log.With().Ctx(ctx).Logger().Output(w)
-    l.Info().Msg("hello")
+func worker(log zerolog.Logger) {
+	log.Info().Msg("hello") // ✅️ not reported
 }
 ```
 
-### Direct Logging Methods
+### Calls that do not pass on the context
 
-Detects direct logging calls (`Print`, `Printf`, `Println`, `Write`) on a logger that does not carry the context. These calls take no `.Ctx(ctx)`, so the event gets only the logger's own context:
+Some calls look like they pass on the context, but do not. They do not count:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
 
 ```go
-func handler(ctx context.Context, log zerolog.Logger, name string) {
-    // Bad: the logger has no context
-    log.Print("hello")
-    log.Printf("hello %s", name)
+log.Info().
+	Ctx(context.Background()).
+	Msg("hello")
+```
 
-    // Good: the logger carries the context
-    l := log.With().Ctx(ctx).Logger()
-    l.Print("hello")
+</td>
+<td>❌️ <b>Reported.</b> A fresh context carries nothing of the caller's</td>
+</tr>
+<tr>
+<td>
+
+```go
+zerolog.Ctx(context.TODO()).
+	Info().
+	Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> The same, for the logger stored in a context</td>
+</tr>
+<tr>
+<td>
+
+```go
+bg := context.Background()
+log.Info().
+	Ctx(bg).
+	Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> A local variable that only holds fresh contexts is fresh too</td>
+</tr>
+<tr>
+<td>
+
+```go
+l := log.With().
+	Ctx(ctx).
+	Logger().
+	Output(os.Stderr)
+l.Info().Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <a href="https://pkg.go.dev/github.com/rs/zerolog#Logger.Output"><code>Logger.Output</code></a> builds a new logger, and drops the context</td>
+</tr>
+<tr>
+<td>
+
+```go
+l := zerolog.Ctx(ctx).
+	Output(os.Stderr)
+l.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> A logger from <code>zerolog.Ctx(ctx)</code> still counts after <code>Output</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+d := e.CreateDict().
+	Ctx(ctx).
+	Str("k", "v")
+e.Dict("d", d).Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <a href="https://pkg.go.dev/github.com/rs/zerolog#Event.CreateDict"><code>Event.CreateDict</code></a> returns a new event. The context is set on the dict, not on <code>e</code></td>
+</tr>
+</tbody>
+</table>
+
+### Direct logging
+
+`Print`, `Printf`, `Println` and `Write` log without an event chain, so they take no `.Ctx(ctx)`. The event gets only the logger's own context. A call is reported when the logger does not carry the context:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+log.Print("hello")
+log.Printf("hello %s", "world")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Both lines. The logger has no context</td>
+</tr>
+<tr>
+<td>
+
+```go
+l := log.With().
+	Ctx(ctx).
+	Logger()
+l.Print("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The logger carries the context</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Write([]byte("hello"))
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <code>Write</code> is the method that makes a <code>Logger</code> an <code>io.Writer</code>. A call of it is checked as <code>Print</code> is</td>
+</tr>
+<tr>
+<td>
+
+```go
+fmt.Fprint(log, "hello")
+```
+
+</td>
+<td>⚠️ <b>Not reported (limitation).</b> A use through <code>io.Writer</code> is not checked</td>
+</tr>
+</tbody>
+</table>
+
+The `Print` functions of `github.com/rs/zerolog/log` use the global logger, which is not traced. They are always reported:
+
+```go
+import "github.com/rs/zerolog/log"
+
+func handler(ctx context.Context) {
+	log.Print("hello") // ❌️ reported
 }
 ```
 
-`Write` is the method that makes a `Logger` an `io.Writer`. A call of it is checked as `Print` is. A use through `io.Writer`, such as `fmt.Fprint(log, "hello")`, is not checked.
+## Ignoring a report
 
-The `Print` functions of `github.com/rs/zerolog/log` use the global logger, which is not traced. They are always reported.
-
-The analyzer uses SSA (Static Single Assignment) form to track Event values through variable assignments, conditionals, and closures, ensuring accurate detection even in complex code patterns.
-
-## Directives
-
-### `//zerologlintctx:ignore`
-
-Suppress warnings for a specific line:
+Write `//zerologlintctx:ignore`, with a reason after `//`:
 
 ```go
-func handler(ctx context.Context, log zerolog.Logger) {
-    //zerologlintctx:ignore // intentionally not passing context
-    log.Info().Msg("background task")
+//zerologlintctx:ignore // not tied to a request
+log.Info().Msg("background task")
+```
+
+<table>
+<thead>
+<tr><th>Placement</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore // reason
+log.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> An ignore on a line of its own reaches the line below</td>
+</tr>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore // reason
+log.Info().
+	Str("k", "v").
+	Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> A chain that starts on that line is reached, even when it spans several lines</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info().Msg("hello") //zerologlintctx:ignore
+```
+
+</td>
+<td>✅️ <b>Passes.</b> An ignore at the end of a line of code reaches that line</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info(). //zerologlintctx:ignore
+	Str("k", "v").
+	Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> A chain that starts on that line is reached, even when it spans several lines</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info().Msg("a") //zerologlintctx:ignore
+log.Info().Msg("b")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Only <code>b</code>. An ignore at the end of a line does not reach the line below</td>
+</tr>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore - reason
+log.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> A reason after <code> - </code> also works, for compatibility</td>
+</tr>
+</tbody>
+</table>
+
+A directive that is not written right is reported, and silences nothing:
+
+<table>
+<thead>
+<tr><th>Directive</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+//zerologlintctx:bogus
+log.Info().Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Two reports: <code>unknown directive zerologlintctx:bogus</code>, and the chain</td>
+</tr>
+<tr>
+<td>
+
+```go
+// zerologlintctx:ignore
+log.Info().Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Two reports: a space after <code>//</code> makes the directive malformed, and the chain is reported too</td>
+</tr>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore not tied to a request
+log.Info().Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Two reports: <code>ignore</code> takes no argument, and the chain is reported too. Write the reason after <code>//</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore // reason
+log.Info().Ctx(ctx).Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <code>unused zerologlintctx:ignore directive</code>. The ignore suppresses nothing</td>
+</tr>
+</tbody>
+</table>
+
+## Limits
+
+The analyzer uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) (Static Single Assignment) form to follow events through variables, branches and closures. Some value flows are not followed.
+
+These are reported, although the context is passed:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+e := newEvent(ctx, log)
+e.Msg("hello")
+
+// elsewhere
+func newEvent(
+	ctx context.Context,
+	log zerolog.Logger,
+) *zerolog.Event {
+	return log.Info().Ctx(ctx)
 }
 ```
 
-Place the comment at the end of the line, or on a line of its own above the code:
+</td>
+<td>⚠️ <b>Reported (limitation).</b> An event that a declared function returns is not traced into it</td>
+</tr>
+<tr>
+<td>
 
-| Placement | Reaches |
-|-----------|---------|
-| At the end of a line of code | That line. A call chain that starts on that line is reached even when it spans several lines. The line below is not reached |
-| On a line of its own | The line below. A call chain that starts there is reached even when it spans several lines |
+```go
+ch := make(chan *zerolog.Event, 1)
+ch <- log.Info().Ctx(ctx)
+e := <-ch
+e.Msg("hello")
+```
 
-Write a reason after `//`. A reason after ` - ` also works, for compatibility.
+</td>
+<td>⚠️ <b>Reported (limitation).</b> An event received from a channel is not traced to what was sent</td>
+</tr>
+<tr>
+<td>
 
-Any other comment that starts with `zerologlintctx:`, such as `//zerologlintctx:bogus`, does nothing and is reported. So is an ignore that suppresses nothing.
+```go
+var e *zerolog.Event
+f := func() {
+	e = log.Info().Ctx(ctx)
+}
+f()
+e.Msg("hello")
+```
 
-## Design Principles
+</td>
+<td>⚠️ <b>Reported (limitation).</b> A store by a closure to a variable it captures is not seen after the call</td>
+</tr>
+</tbody>
+</table>
 
-1. **No false positives, as a goal** - Prefer missing issues over false alarms. The [known limitations](./docs/ARCHITECTURE.md#known-limitations) list the false positives that remain
-2. **Type-safe analysis** - Uses [`go/types`](https://pkg.go.dev/go/types) for accurate detection
-3. **SSA-based tracking** - Uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) form to track Event values through assignments and closures
-4. **Nested function support** - Correctly tracks context through closures
+These are not reported, although the context is not passed:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+send(log.Info())
+
+// elsewhere
+func send(e *zerolog.Event) {
+	e.Msg("hello")
+}
+```
+
+</td>
+<td>⚠️ <b>Not reported (limitation).</b> An event passed to a function that logs it is not checked there. <code>send</code> has no context of its own</td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+defer e.Msg("done")
+if failed {
+	panic("failed")
+}
+e.Ctx(ctx)
+```
+
+</td>
+<td>⚠️ <b>Not reported (limitation).</b> A deferred call is checked at the returns after its <code>defer</code> statement, not where a panic could run it</td>
+</tr>
+</tbody>
+</table>
+
+The full list, with the fixture of each, is in [Known limitations](./docs/ARCHITECTURE.md#known-limitations).
+
+## Design principles
+
+| Principle | Means |
+| --- | --- |
+| **No false positives, as a goal** | Prefer missing issues over false alarms. The [known limitations](./docs/ARCHITECTURE.md#known-limitations) list the false positives that remain |
+| **Type-safe analysis** | Uses [`go/types`](https://pkg.go.dev/go/types) for accurate detection |
+| **SSA-based tracking** | Uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) form to track events through assignments and closures |
+| **Nested functions** | Tracks the context through closures |
 
 ## Documentation
 
-- [Architecture](./docs/ARCHITECTURE.md) - Internal design and detection logic
-- [AGENTS.md](./AGENTS.md) - Repository instructions for contributors and coding agents
+- [Architecture](./docs/ARCHITECTURE.md): internal design and detection logic
+- [AGENTS.md](./AGENTS.md): repository instructions for contributors and coding agents
 
-## Related Tools
+## Related tools
 
-- [zerologlint](https://github.com/ykadowak/zerologlint) - General zerolog linting rules
-- [contextcheck](https://github.com/kkHAIKE/contextcheck) - Detects [`context.Background()`](https://pkg.go.dev/context#Background)/[`context.TODO()`](https://pkg.go.dev/context#TODO) usage and missing context parameters
-
-`zerologlintctx` is complementary to these tools:
-- `zerologlint` provides general zerolog best practices
-- `contextcheck` warns about creating new contexts when one should be propagated
-- `zerologlintctx` specifically warns about not using an available context in zerolog chains
+| Tool | Checks |
+| --- | --- |
+| [zerologlint](https://github.com/ykadowak/zerologlint) | General zerolog best practices |
+| [contextcheck](https://github.com/kkHAIKE/contextcheck) | A new context, with [`context.Background()`](https://pkg.go.dev/context#Background) or [`context.TODO()`](https://pkg.go.dev/context#TODO), where one should be passed on. A missing context parameter |
+| zerologlintctx | An available context that a zerolog chain does not use |
 
 ## AI usage
 
