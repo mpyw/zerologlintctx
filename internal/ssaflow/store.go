@@ -228,7 +228,7 @@ func (w *storeWalk) walkPointerBefore(starts []WalkFrom[storePath]) {
 	toEntry := func(st storePath) {
 		entered = entered || w.pointer.global && st.resolved()
 	}
-	w.walkStates(starts, w.guarded(toDef), toEntry, nil, false)
+	w.walkStates(starts, storeStates{visit: toDef, atEntry: toEntry})
 	if entered {
 		w.walkGlobalOut(starts[0].Point.block.Parent())
 	}
@@ -936,24 +936,6 @@ func (w *storeWalk) resolve(st *storePath) WalkStep {
 	return WalkStop
 }
 
-// guarded returns the visit of a walk with a guard: visit on a path that is
-// resolved, and step on one that is not.
-func (w *storeWalk) guarded(visit func(ssa.Instruction) WalkStep) func(ssa.Instruction, *storePath) WalkStep {
-	return w.guardedHeld(visit, false)
-}
-
-// guardedHeld returns what guarded does. With held, the guard of a path that
-// is not resolved holds as it is: only the stores to the leaf are kept (see
-// walkDeferred).
-func (w *storeWalk) guardedHeld(visit func(ssa.Instruction) WalkStep, held bool) func(ssa.Instruction, *storePath) WalkStep {
-	return func(instr ssa.Instruction, st *storePath) WalkStep {
-		if w.guard == nil || st.resolved() {
-			return visit(instr)
-		}
-		return w.guard.step(w, instr, st, held)
-	}
-}
-
 // step visits instr on a path whose guard is not resolved. Past a load that
 // must be the leaf, the place it loads from must hold it, and past a store to
 // that place, the value stored. A store to the leaf is kept on the path (see
@@ -1652,17 +1634,18 @@ func (w *storeWalk) walkDeferred(d *ssa.Defer, st storePath, held bool) {
 		rets = append(rets, WalkFrom[storePath]{WalkPointBefore(ret, w.positions), st})
 	}
 	var atD []storePath
-	inner := w.guardedHeld(w.stepAt, held)
-	visit := func(instr ssa.Instruction, st *storePath) WalkStep {
-		if instr == d {
-			if !slices.Contains(atD, *st) {
-				atD = append(atD, *st) // Before it, the path goes on from d
-			}
-			return WalkStop
+	stopped := func(st storePath) {
+		if !slices.Contains(atD, st) {
+			atD = append(atD, st) // Before it, the path goes on from d
 		}
-		return inner(instr, st)
 	}
-	w.walkStates(rets, visit, nil, walkThrough(d, w.positions), held)
+	w.walkStates(rets, storeStates{
+		visit:   w.stepAt,
+		through: walkThrough(d, w.positions),
+		held:    held,
+		stop:    d,
+		stopped: stopped,
+	})
 	for _, st := range atD {
 		w.walkBefore(d, st)
 	}
@@ -1834,7 +1817,7 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction, st storePath) {
 		w.walkPointerBefore(from)
 		return
 	}
-	w.walkStates(from, w.guarded(w.stepAt), w.reachEntry, nil, false)
+	w.walkStates(from, storeStates{visit: w.stepAt, atEntry: w.reachEntry})
 }
 
 // walkBackFrom walks every path that leads to a point of from, and stops each
@@ -1844,38 +1827,89 @@ func (w *storeWalk) walkBackFrom(from []WalkPoint) {
 	for i, p := range from {
 		starts[i].Point = p
 	}
-	w.walkStates(starts, w.guarded(w.stepAt), w.reachEntry, nil, false)
+	w.walkStates(starts, storeStates{visit: w.stepAt, atEntry: w.reachEntry})
+}
+
+// storeStates is how walkStates walks the paths.
+type storeStates struct {
+	// visit visits an instruction on a path that is resolved, as walkBack
+	// does: on every path of a walk without a guard.
+	visit func(ssa.Instruction) WalkStep
+	// atEntry, when not nil, is called with the state of a path that gets to
+	// the entry of the function.
+	atEntry func(storePath)
+	// through, when not nil, keeps the walk to the predecessors it accepts.
+	through func(*ssa.BasicBlock) bool
+	// held keeps the guard of each path as it is (see walkDeferred).
+	held bool
+	// stop, when not nil, stops each path that gets to it, and stopped is
+	// called with its state there.
+	stop    ssa.Instruction
+	stopped func(storePath)
 }
 
 // walkStates walks every path that leads to a point of from, in its state,
-// with visit as walkBackStates does, and atEntry, when not nil, at the entry
-// of the function. through, when not nil, keeps the walk to the predecessors
-// it accepts. At the top of a block, a path whose guard is not resolved goes
-// on only into the predecessors whose edge may be the leaf, unless held (see
-// walkDeferred). The walk ends when the guard gives up.
-func (w *storeWalk) walkStates(
-	from []WalkFrom[storePath],
-	visit func(ssa.Instruction, *storePath) WalkStep,
-	atEntry func(storePath),
-	through func(*ssa.BasicBlock) bool,
-	held bool,
-) {
+// as how says. A path whose guard is not resolved goes through step, and, at
+// the top of a block, on only into the predecessors whose edge may be the
+// leaf, unless held. The walk ends when the guard gives up.
+func (w *storeWalk) walkStates(from []WalkFrom[storePath], how storeStates) {
+	if w.guard == nil {
+		w.walkResolved(from, how)
+		return
+	}
+	visit := func(instr ssa.Instruction, st *storePath) WalkStep {
+		switch {
+		case instr == how.stop:
+			how.stopped(*st)
+			return WalkStop
+		case st.resolved():
+			return how.visit(instr)
+		}
+		return w.guard.step(w, instr, st, how.held)
+	}
 	edge := func(b *ssa.BasicBlock, i int, st storePath) (storePath, bool) {
 		switch {
-		case through != nil && !through(b.Preds[i]):
+		case how.through != nil && !how.through(b.Preds[i]):
 			return st, false
-		case held || st.resolved():
+		case how.held || st.resolved():
 			return st, true
 		}
 		return w.guard.edge(w, b, i, st)
 	}
 	entry := func(st storePath) bool {
-		if atEntry != nil {
-			atEntry(st)
+		if how.atEntry != nil {
+			how.atEntry(st)
 		}
-		return w.guard == nil || !w.guard.gaveUp
+		return !w.guard.gaveUp
 	}
 	walkBackStates(from, visit, entry, edge)
+}
+
+// walkResolved walks every path that leads to a point of from, as
+// walkStates does, for a walk without a guard: every path is resolved.
+func (w *storeWalk) walkResolved(from []WalkFrom[storePath], how storeStates) {
+	points := make([]WalkPoint, len(from))
+	for i, f := range from {
+		points[i] = f.Point
+	}
+	visit := how.visit
+	if how.stop != nil {
+		visit = func(instr ssa.Instruction) WalkStep {
+			if instr == how.stop {
+				how.stopped(storePath{})
+				return WalkStop
+			}
+			return how.visit(instr)
+		}
+	}
+	var atEntry func() bool
+	if how.atEntry != nil {
+		atEntry = func() bool {
+			how.atEntry(storePath{})
+			return true
+		}
+	}
+	walkBack(points, visit, atEntry, how.through)
 }
 
 // reachEntry records a path that leads back to the entry of the function, or

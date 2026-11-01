@@ -1596,6 +1596,34 @@ func badLoggerPointerSetAfterGoroutineStarts(ctx context.Context, base zerolog.L
 	p = &l
 }
 
+// A closure deferred on one branch reads the pointer at the return, on the
+// paths through its defer statement only.
+func goodLoggerPointerPickedReadInClosureDeferredOnBranch(ctx context.Context, base zerolog.Logger, cond, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	if cond {
+		defer func() {
+			p.Info().Msg("picked, read in a closure deferred on a branch") // OK - both loggers have ctx
+		}()
+	}
+}
+
+func badLoggerPointerPickedReadInClosureDeferredOnBranch(ctx context.Context, base zerolog.Logger, cond, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base
+		p = &l
+	}
+	if cond {
+		defer func() {
+			p.Info().Msg("picked, read in a closure deferred on a branch, one without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}
+}
+
 // A goroutine that stores through the pointer before it reads it reads that
 // store, whichever value the variable holds when it runs.
 func goodLoggerPointerStoredInGoroutineSetAfter(ctx context.Context, base zerolog.Logger) {
