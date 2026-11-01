@@ -311,24 +311,19 @@ func matchRunsOut(fv *ssa.FreeVar, mc *ssa.MakeClosure, run ssa.Instruction) (bo
 		if fn == mc.Fn {
 			return mc.Bindings[idx], append(runs, matchClosureRun{mc: mc, run: run}), true
 		}
-		maker := matchMakerOf(fn)
+		// SSA makes a func literal that captures variables once, where it is
+		// written
+		var maker *ssa.MakeClosure
+		for instr := range InstrsIn(fn.Parent()) {
+			if mc, isMaker := instr.(*ssa.MakeClosure); isMaker && mc.Fn == fn {
+				maker = mc
+			}
+		}
 		runs = append(runs, matchClosureRun{mc: maker})
 		if fv, ok = maker.Bindings[idx].(*ssa.FreeVar); !ok || matchStoredThrough(fv) {
 			return nil, nil, false
 		}
 	}
-}
-
-// matchMakerOf returns the MakeClosure that makes fn, a func literal that
-// captures variables, in the function it is declared in. SSA makes a func
-// literal once, where it is written.
-func matchMakerOf(fn *ssa.Function) *ssa.MakeClosure {
-	for instr := range InstrsIn(fn.Parent()) {
-		if mc, isMaker := instr.(*ssa.MakeClosure); isMaker && mc.Fn == fn {
-			return mc
-		}
-	}
-	return nil // Not reached: a func literal that captures variables is made where it is written
 }
 
 // matchStoredThrough reports whether the function of fv, a free variable,
