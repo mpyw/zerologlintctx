@@ -383,6 +383,11 @@ func() { bg = ctx }()
 l.Info().Ctx(bg).Msg("x") // OK: a closure stores to bg
 ```
 
+An address given to a func literal once, as in `f(&bg)`, is followed into
+it. An address given to it more than once, as on two branches, is not, so
+what the func literal reads there is not fresh (see
+[Known Limitations](#known-limitations)).
+
 A pointer that a closure loads from a variable it captures, such as a pointer
 parameter, is what the variable holds (`closureHolders`). The variable must
 hold only pointers to such variables, or to fields of them, and only be stored
@@ -1032,11 +1037,12 @@ negative is a missed report.
 | In-place `Ctx` through another reference (#139) | `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to | `inplace` |
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
-| A pointer read in a closure that is not only called | A pointer that a closure reads from a captured variable, such as `h.m` or `*pp`, is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it | `closures` |
+| A pointer read in a closure that is not only called | A pointer that a closure reads from a captured variable, such as `h.m` or `*pp`, is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures` |
 | A captured pointer picked on a branch | A pointer that a closure captures, picked on a branch, is not followed. The walk from where the closure runs does not keep to the paths of the Phi | `closures` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
+| Constant conditions (#266) | A branch on a constant, such as `if true` or `if debug` for `const debug = true`, is not folded. The path that skips a `Ctx` call in the branch still reaches the terminator | `inplace` |
 
 ### False negatives
 
@@ -1044,6 +1050,7 @@ negative is a missed report.
 |------------|--------------|---------|
 | Events logged in another function | An event passed to a method or function that logs it is not checked there | `memory` |
 | A Logger used as `io.Writer` | A call through `io.Writer`, such as `fmt.Fprint(l, "x")`, is not checked | `directlog` |
+| An event used through an interface | A call of a method through an interface the event is assigned to, such as `w.Msg("x")` for `var w interface{ Msg(string) } = log.Info()`, is not checked | `variables` |
 | Events made in a loop | A value can hold the event of the latest run of a call on one path, and of an earlier run on another. A `Ctx` call on it counts for the latest run on both paths | `inplace` |
 | Events stored back | A `Ctx` call on a read that can see several events counts for each of them. It counts even where a path stores one of those events back over another after the call | `inplace` |
 | The caller's event copied over | A `Ctx` call on the caller's event at a place counts at later reads of the place. It counts even when another value of the caller's is copied over it in between | `inplace` |
@@ -1052,6 +1059,7 @@ negative is a missed report.
 | Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
 | Fresh contexts on another run | A fresh `Ctx` call on an event made in a loop counts only for a value that holds the latest run. It is not seen for the event kept from the last iteration | `freshctx` |
 | A pointer in a field | A pointer read from a field of a struct, such as `*h.p`, is not followed to a fresh context it points to. One read from a variable is | `freshctx` |
+| An address given more than once | A fresh context in a variable whose address is given to a func literal more than once, such as `f(&bg)` on two branches, is not taken as fresh. Given once, it is | `freshctx` |
 
 ## Testing
 

@@ -124,6 +124,14 @@ func goodEventViaInterfaceWithCtx(ctx context.Context, logger zerolog.Logger) {
 	e.Msg("via interface with ctx") // OK - TypeAssert tracking
 }
 
+// LIMITATION (false negative): a value used through an interface it is
+// assigned to is not followed. The terminator is a call of the interface's
+// method, not of zerolog's.
+func limitationEventThroughInterfaceMethod(ctx context.Context, logger zerolog.Logger) {
+	var w interface{ Msg(string) } = logger.Info()
+	w.Msg("through an interface method") // LIMITATION: should report but doesn't
+}
+
 // ===== NAMED RETURN VALUES =====
 
 func badNamedReturn(ctx context.Context, logger zerolog.Logger) {

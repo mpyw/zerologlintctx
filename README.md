@@ -692,6 +692,20 @@ e.Msg("hello")
 </td>
 <td>⚠️ <b>Reported (limitation).</b> A store by a closure to a variable it captures is not seen after the call</td>
 </tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+if true {
+	e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> A branch on a constant condition is not folded. The path that skips <code>e.Ctx(ctx)</code> is still taken to reach <code>Msg</code></td>
+</tr>
 </tbody>
 </table>
 
@@ -716,6 +730,17 @@ func send(e *zerolog.Event) {
 
 </td>
 <td>⚠️ <b>Not reported (limitation).</b> An event passed to a function that logs it is not checked there. <code>send</code> has no context of its own</td>
+</tr>
+<tr>
+<td>
+
+```go
+var w interface{ Msg(string) } = log.Info()
+w.Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Not reported (limitation).</b> A call through an interface the event is assigned to is not checked</td>
 </tr>
 <tr>
 <td>

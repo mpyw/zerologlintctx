@@ -737,6 +737,29 @@ func limitationEventCtxBeforeCallerEventCopiedOver(ctx context.Context, p, q *in
 	p.e.Msg("caller's event copied over after Ctx") // LIMITATION: should report but doesn't
 }
 
+// ===== CONSTANT CONDITIONS =====
+
+// LIMITATION(#266) (false positive): a branch on a constant condition is not
+// folded. The path that skips the Ctx call is still taken to reach the
+// terminator.
+func limitationEventCtxInPlaceUnderConstantCondition(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	if true {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under if true") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+const inPlaceDebug = true
+
+func limitationEventCtxInPlaceUnderNamedConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	if inPlaceDebug {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under a named constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== UPDATECONTEXT (changes the Logger in place) =====
 
 // UpdateContext keeps only the fields its func writes. What Context.Ctx sets
