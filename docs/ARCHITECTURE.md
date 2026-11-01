@@ -340,6 +340,21 @@ The check of `for range 1` at the end of the loop is on a counter, so the
 loop may still run again. go/types folds `!debug` and `cur == modeOn` into an
 `*ssa.Const` already.
 
+A loop with a counter, such as `for i := 0; i < 1; i++`, has no such first
+check of two constants. Its only check is on a Phi of the counter, which the
+back edge reaches too. So it is not folded (see
+[Known Limitations](#known-limitations)):
+
+```go
+for i := 0; i < 1; i++ { // t2 = phi [0: 0:int, 2: t5] ; t3 = t2 < 1:int
+	e.Ctx(ctx)           // the path that skips the loop is kept
+}
+```
+
+The check is `0 < 1` only on the edge from the entry. `LiveFlow` tells the
+edges of each block, not which edge a path came in by, so it cannot drop the
+exit edge for that path alone.
+
 `walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
 the visit of each instruction too, which may change it for the rest of the
 path. A block is walked once in each state. `walkBefore` uses it to keep, on each path, the Phi that must still
@@ -1576,6 +1591,7 @@ negative is a missed report.
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
+| A loop with a counter of one run (#391) | `for i := 0; i < 1; i++` always runs once, but its check is on a Phi of the counter, which is not folded. An in-place `e.Ctx(ctx)` in it is taken to be skipped. `for range 1` is folded (see [Branches on Constants](#branches-on-constants)) | `inplace` |
 
 ### False negatives
 
