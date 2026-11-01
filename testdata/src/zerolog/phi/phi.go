@@ -1522,9 +1522,9 @@ func goodLoggerPointerToVariableSetBeforePick(ctx context.Context, base zerolog.
 	p.Info().Msg("l lacks ctx only on the edge that does not pick it") // OK - p points to l only after the store with ctx
 }
 
-// The logger of ctx made in a loop, after the Phi, cannot be walked along
-// the paths of the Phi. The variable declared in the branch still holds
-// nothing on the other edges.
+// The logger of ctx made in a loop, after the Phi, has no store through it,
+// and is walked along the paths of the Phi. The variable declared in the
+// branch holds nothing on the other edges.
 func goodLoggerPointerToVariableDeclaredInBranchPickedInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
 	p := zerolog.Ctx(ctx)
 	if cond {
@@ -1534,6 +1534,22 @@ func goodLoggerPointerToVariableDeclaredInBranchPickedInLoop(ctx context.Context
 	for range n {
 		p.Info().Msg("pointer to a variable declared in a branch, in a loop") // OK - both loggers have ctx
 		p = zerolog.Ctx(ctx)
+	}
+}
+
+// The logger of ctx is stored through in the loop, so the Phi is not walked
+// along its paths. Each pointer is traced as a value instead.
+func goodLoggerPointerToVariableDeclaredInBranchPickedStoredInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	for range n {
+		p.Info().Msg("pointer to a variable declared in a branch, in a loop, stored through") // OK - both loggers have ctx
+		q := zerolog.Ctx(ctx)
+		*q = q.With().Ctx(ctx).Logger()
+		p = q
 	}
 }
 
@@ -1547,6 +1563,23 @@ func badLoggerPointerToVariableChangedAfterPickInLoop(ctx context.Context, base 
 	for range n {
 		p.Info().Msg("the variable changed after the pick, in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
 		p = zerolog.Ctx(ctx)
+	}
+}
+
+// The logger of ctx is stored through in the loop, so the Phi is not walked
+// along its paths. Each pointer is traced as a value instead.
+func badLoggerPointerToVariableChangedAfterPickStoredInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+		l = base
+	}
+	for range n {
+		p.Info().Msg("the variable changed after the pick, in a loop, stored through") // want `zerolog call chain missing .Ctx\(ctx\)`
+		q := zerolog.Ctx(ctx)
+		*q = q.With().Ctx(ctx).Logger()
+		p = q
 	}
 }
 

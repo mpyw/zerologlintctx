@@ -677,7 +677,7 @@ func storesReachingPicked(
 			picked:    pick,
 		}
 		if !tracked {
-			if w.pointer, ok = pick.pointerOf(positions); !ok {
+			if w.pointer, ok = pick.pointerOf(positions); !ok || w.pickedStoredLater() {
 				return storeReaching{}, false
 			}
 		}
@@ -729,14 +729,44 @@ type storePick struct {
 // made, for a walk of the stores through it along the paths on which the Phi
 // is the leaf (see storeWalk.walkPointerBefore). Such a walk keeps to those
 // paths back to where the leaf is made, and goes on from there on every
-// path. ok is false when the leaf may be made after the Phi, as in a loop:
-// a path back from the read may meet it before it meets the Phi.
+// path. ok is false when the leaf is a load that may be made after the Phi,
+// as in a loop: a path back from the read may meet it before it meets the
+// Phi. Another leaf made after the Phi is walked for only when no store goes
+// through it (see storeWalk.pickedStoredLater).
 func (pk *storePick) pointerOf(positions Positions) (_ *storePointer, ok bool) {
 	p := storePointerOf(pk.leaf)
-	if p.def != nil && positions.reaches(pk.phi, p.def) {
+	if p.def != nil && p.from != nil && positions.reaches(pk.phi, p.def) {
 		return nil, false
 	}
 	return p, true
+}
+
+// pickedStoredLater reports whether the walk is for a leaf of the Phi it
+// picks that may be made after the Phi, as in a loop, and a store of the
+// function goes through it, as the walk takes one (see storeCover). A path
+// back from the read may then meet the leaf before it meets the Phi, where it
+// makes the pointer of a later iteration, and the stores through that one
+// are not what the Phi points to. With no such store, every path that gets
+// to the leaf carries the leaf itself, whichever iteration made it:
+//
+//	p := l1                  // a pointer parameter, stored through before
+//	for range n {
+//	    p.Print("x")         // p is l1, or the logger of ctx
+//	    p = zerolog.Ctx(ctx) // the leaf, made after the Phi
+//	}
+func (w *storeWalk) pickedStoredLater() bool {
+	def := w.pointer.def
+	if def == nil || !w.positions.reaches(w.picked.phi, def) {
+		return false
+	}
+	for instr := range InstrsIn(def.Parent()) {
+		if store, isStore := instr.(*ssa.Store); isStore {
+			if _, cover := w.storeCover(store.Addr); cover != coverNone {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // holds reports whether p, phi or a Phi that an edge of phi leads to, may be
@@ -863,7 +893,7 @@ func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via [
 				continue
 			}
 			if len(tvia) == 0 && t.picked != nil {
-				if w.pointer, ok = t.picked.pointerOf(p.positions); !ok {
+				if w.pointer, ok = t.picked.pointerOf(p.positions); !ok || w.pickedStoredLater() {
 					return storeReaching{}, false
 				}
 			} else if len(tvia) == 0 {

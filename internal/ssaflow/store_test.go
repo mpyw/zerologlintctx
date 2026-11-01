@@ -59,6 +59,71 @@ func TestStorePointerOf(t *testing.T) {
 	}
 }
 
+// TestStorePickedStoredLater checks that a pointer a Phi picks, made in a
+// loop after the Phi, is walked for only when no store goes through it.
+func TestStorePickedStoredLater(t *testing.T) {
+	const src = `package p
+
+type L struct{ n int }
+
+func mk() *L { return new(L) }
+
+func storedThrough(a *L, l L, n int) {
+	p := a
+	for range n {
+		_ = p.n
+		q := mk()
+		*q = l
+		p = q
+	}
+}
+
+func onlyMade(a *L, n int) {
+	p := a
+	for range n {
+		_ = p.n
+		p = mk()
+	}
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := make(Positions)
+	for name, want := range map[string]bool{"storedThrough": false, "onlyMade": true} {
+		var pick *storePick
+		for instr := range InstrsIn(pkg.Func(name)) {
+			phi, isPhi := instr.(*ssa.Phi)
+			if !isPhi {
+				continue
+			}
+			for _, edge := range phi.Edges {
+				if call, isCall := edge.(*ssa.Call); isCall && positions.reaches(phi, call) {
+					pick = &storePick{phi: phi, leaf: call}
+				}
+			}
+		}
+		if pick == nil {
+			t.Fatalf("%s: no Phi with a pointer made after it", name)
+		}
+		pointer, ok := pick.pointerOf(positions)
+		if !ok {
+			t.Fatalf("%s: pointerOf ok = false, want true", name)
+		}
+		at, _ := PlaceOf(pick.leaf)
+		w := &storeWalk{at: at, positions: positions, picked: pick, pointer: pointer}
+		if got := !w.pickedStoredLater(); got != want {
+			t.Errorf("%s: walked for = %v, want %v", name, got, want)
+		}
+	}
+}
+
 const storeSrc = `package p
 
 type L struct{ n int }
