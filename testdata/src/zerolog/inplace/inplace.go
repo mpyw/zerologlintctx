@@ -260,6 +260,41 @@ func badEventCtxInPlaceOnOtherPickedHolder(ctx context.Context, log zerolog.Logg
 	h.e.Msg("ctx in place on one holder, the caller's on the other path") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func badEventCtxOnPhiWithAnotherEvent(ctx context.Context, log zerolog.Logger, cond bool) {
+	a := log.Info()
+	e := a
+	if cond {
+		e = log.Warn()
+	}
+	e.Ctx(ctx)
+	a.Msg("ctx on a value that may be another event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func inPlaceEventPointer(log zerolog.Logger) **zerolog.Event {
+	e := log.Info()
+	return &e
+}
+
+func goodEventCtxInPlaceThroughPointerArgument(ctx context.Context, log zerolog.Logger) {
+	func(p **zerolog.Event) {
+		(*p).Ctx(ctx)
+		(*p).Msg("ctx in place through a pointer argument") // OK - both read the event p points to
+	}(inPlaceEventPointer(log))
+}
+
+func goodEventCtxInPlaceThroughPointerArgumentRecursive(ctx context.Context, log zerolog.Logger) {
+	var rec func(p **zerolog.Event, n int)
+	rec = func(p **zerolog.Event, n int) {
+		if n > 0 {
+			rec(p, n-1)
+			return
+		}
+		(*p).Ctx(ctx)
+		(*p).Msg("ctx in place through a pointer argument, recursive") // OK - both read the event p points to
+	}
+	rec(inPlaceEventPointer(log), 1)
+}
+
 func badEventFreshCtxAfterLoggerWithCtx(ctx context.Context, log zerolog.Logger) {
 	withCtx := log.With().Ctx(ctx).Logger()
 	withCtx.Info().Ctx(context.Background()).Msg("fresh ctx replaces the logger's") // want `zerolog call chain missing .Ctx\(ctx\)`
