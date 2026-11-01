@@ -48,6 +48,14 @@ type Resolver struct {
 	// such a write is left out, as the tracer of internal/chain leaves it
 	// out, whose known limitations those are.
 	UnseenUnknown bool
+	// Bound, when not nil, is the call of the func literal BoundFunc whose
+	// result is resolved: a parameter of BoundFunc is what Bound passes,
+	// not what each call of it does.
+	//
+	//	id := func(e *zerolog.Event) *zerolog.Event { h := holder{e}; return h.e }
+	//	a := id(logger.Info().Ctx(ctx)) // with Bound this call, h.e is this argument
+	Bound     ssa.CallInstruction
+	BoundFunc *ssa.Function
 }
 
 // Resolve finds what can be at addr when read runs (see storesReaching). ok
@@ -222,12 +230,16 @@ func (r Resolver) yieldFreeVar(fv *ssa.FreeVar, path []sel, yield func(Resolved)
 //	}(&l)
 //
 // A call that passes the parameter on, as a recursive call does, reaches the
-// same parameter again, which enter leaves out.
+// same parameter again, which enter leaves out. With Bound, the call of
+// BoundFunc is Bound alone.
 func (r Resolver) yieldParam(pp storeParamPath, yield func(Resolved) bool) bool {
 	more := true
 	r.Enter(pp.param, func() {
 		fn := pp.param.Parent()
 		calls, ok := r.Closures.CallsOf(fn)
+		if r.Bound != nil && fn == r.BoundFunc {
+			calls, ok = []ssa.CallInstruction{r.Bound}, true
+		}
 		if !ok || len(calls) == 0 {
 			more = yield(Resolved{})
 			return

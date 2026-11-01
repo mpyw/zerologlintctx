@@ -347,19 +347,23 @@ func (tr *tracer) traceStoredValues(addr ssa.Value, read ssa.Instruction, st tra
 func (tr *tracer) traceResolved(sources iter.Seq[ssaflow.Resolved], st traceState) verdict {
 	return all(func(yield func(verdict) bool) {
 		for src := range sources {
-			found := no
-			switch {
-			case src.V == nil:
-			case src.Pointer:
-				found = tr.traceValue(src.V, st)
-			default:
-				found = tr.traceSource(src.V, st)
-			}
-			if !yield(found) {
+			if !yield(tr.traceResolvedSource(src, st)) {
 				return
 			}
 		}
 	})
+}
+
+// traceResolvedSource traces src, one source a resolver found, for
+// traceResolved.
+func (tr *tracer) traceResolvedSource(src ssaflow.Resolved, st traceState) verdict {
+	switch {
+	case src.V == nil:
+		return no
+	case src.Pointer:
+		return tr.traceValue(src.V, st)
+	}
+	return tr.traceSource(src.V, st)
 }
 
 // resolver returns a resolver for a trace in st. A parameter of a func
@@ -427,11 +431,11 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState)
 		return no, false
 	}
 	return all(verdictsOf(fns, func(fn *ssa.Function) verdict {
-		return tr.traceReturns(fn, idx, call.Call.Args, st)
+		return tr.traceReturns(fn, idx, call, st)
 	})), true
 }
 
-// traceArgumentReturned traces the argument that args pass for result,
+// traceArgumentReturned traces the argument that call passes for result,
 // returned by fn, when it is one of its parameters, or a chain of event
 // methods on one. The result of a call is what that call passes, not what
 // every call of fn does, which traceArguments asks:
@@ -440,17 +444,71 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState)
 //	a := id(logger.Info().Ctx(ctx)) // a is this argument
 //	b := id(logger.Info())          // and b this one
 //
-// It is neutral when result is not a parameter: there is no argument to
-// trace in place of it.
-func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args []ssa.Value, st traceState) verdict {
-	param, ok := eventOrigin(result, tr.closures).(*ssa.Parameter)
+// A result loaded from memory, such as a field of a struct the parameter is
+// stored in, is what the stores that reach the read left there, with each
+// parameter of fn in them the argument call passes (see
+// traceBoundSources).
+//
+// It is neutral when result is neither: there is no argument to trace in
+// place of it.
+func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, call *ssa.Call, st traceState) verdict {
+	origin := eventOrigin(result, tr.closures)
+	if param, ok := origin.(*ssa.Parameter); ok {
+		return tr.traceBoundArgument(param, fn, call, st)
+	}
+	if found, ok := tr.traceBoundRead(origin, fn, call, st); ok {
+		return found
+	}
+	return neutral
+}
+
+// traceBoundArgument traces the argument that call passes for param, a
+// parameter of fn, the func literal call runs. A func literal has no
+// receiver, and its free variables are not among its parameters, so call
+// passes one argument for each parameter, in order.
+func (tr *tracer) traceBoundArgument(param *ssa.Parameter, fn *ssa.Function, call *ssa.Call, st traceState) verdict {
+	return tr.traceValue(call.Call.Args[slices.Index(fn.Params, param)], st)
+}
+
+// traceBoundRead traces v, a load in fn, the func literal call runs, as
+// what the stores that reach the load left at its address, with each
+// parameter of fn the argument call passes:
+//
+//	id := func(e *zerolog.Event) *zerolog.Event { h := holder{e}; return h.e }
+//	a := id(logger.Info().Ctx(ctx)) // h.e is this argument
+//
+// ok is false when v is not a load from an address whose stores the
+// resolver can find.
+func (tr *tracer) traceBoundRead(v ssa.Value, fn *ssa.Function, call *ssa.Call, st traceState) (found verdict, ok bool) {
+	load, isLoad := ssaflow.AsLoad(v)
+	if !isLoad {
+		return no, false
+	}
+	r := tr.resolver(st)
+	r.Bound, r.BoundFunc = call, fn
+	sources, ok := r.Resolve(load.X, load)
 	if !ok {
-		return neutral
+		return no, false
 	}
-	if idx := slices.Index(fn.Params, param); idx >= 0 && idx < len(args) {
-		return tr.traceValue(args[idx], st)
-	}
-	return no
+	return tr.traceBoundSources(sources, fn, call, st), true
+}
+
+// traceBoundSources combines the verdicts of sources, as traceResolved does,
+// with a value that is a parameter of fn, or a chain of event methods on one,
+// traced as the argument call passes for it, when it is not found to have
+// context through every call of fn.
+func (tr *tracer) traceBoundSources(sources iter.Seq[ssaflow.Resolved], fn *ssa.Function, call *ssa.Call, st traceState) verdict {
+	return all(func(yield func(verdict) bool) {
+		for src := range sources {
+			found := tr.traceResolvedSource(src, st)
+			if param, ok := eventOrigin(src.V, tr.closures).(*ssa.Parameter); ok && !src.Pointer && param.Parent() == fn {
+				found = found.or(func() verdict { return tr.traceBoundArgument(param, fn, call, st) })
+			}
+			if !yield(found) {
+				return
+			}
+		}
+	})
 }
 
 // receiverHasCtx reports whether the event c runs on, the receiver of the
@@ -523,9 +581,9 @@ func (tr *tracer) traceReceiver(recv ssa.Value, call ssa.Instruction, st traceSt
 
 // traceReturns traces the value at resultIndex from every return of fn, as
 // for an IIFE (Immediately Invoked Function Expression). Every one must have
-// context. args are what the call whose result is traced passes, which a
+// context. call is the call whose result is traced, whose arguments a
 // parameter returned stands for.
-func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, args []ssa.Value, st traceState) verdict {
+func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, call *ssa.Call, st traceState) verdict {
 	// A result of another type, such as an interface, is traced through to
 	// the value it holds.
 	return all(func(yield func(verdict) bool) {
@@ -539,7 +597,7 @@ func (tr *tracer) traceReturns(fn *ssa.Function, resultIndex int, args []ssa.Val
 				// The value itself, or the argument passed for it, will do
 				result := ret.Results[resultIndex]
 				found = tr.traceValue(result, st).or(func() verdict {
-					return tr.traceArgumentReturned(result, fn, args, st)
+					return tr.traceArgumentReturned(result, fn, call, st)
 				})
 			}
 			if !yield(found) {
