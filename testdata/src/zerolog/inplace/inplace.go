@@ -883,27 +883,125 @@ func limitationEventCtxBeforeCallerEventCopiedOver(ctx context.Context, p, q *in
 
 // ===== CONSTANT CONDITIONS =====
 
-// LIMITATION(#266) (false positive): a branch on a constant condition is not
-// folded. The path that skips the Ctx call is still taken to reach the
-// terminator.
-func limitationEventCtxInPlaceUnderConstantCondition(ctx context.Context, log zerolog.Logger) {
+// A branch on a constant takes one successor only. The path that skips the
+// Ctx call never runs (#266).
+func goodEventCtxInPlaceUnderIfTrue(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
 	if true {
 		e.Ctx(ctx)
 	}
-	e.Msg("ctx in place under if true") // want `zerolog call chain missing .Ctx\(ctx\)`
+	e.Msg("ctx in place under if true") // OK - the branch always runs
 }
 
-const inPlaceDebug = true
+func badEventCtxInPlaceUnderIfFalse(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	if false {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under if false") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
 
-func limitationEventCtxInPlaceUnderNamedConstant(ctx context.Context, log zerolog.Logger) {
+const (
+	inPlaceDebug   = true
+	inPlaceVerbose = false
+)
+
+func goodEventCtxInPlaceUnderTrueConstant(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
 	if inPlaceDebug {
 		e.Ctx(ctx)
 	}
-	e.Msg("ctx in place under a named constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+	e.Msg("ctx in place under a true constant") // OK - the branch always runs
 }
 
+func badEventCtxInPlaceUnderFalseConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	if inPlaceVerbose {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under a false constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxInPlaceInElseOfFalseConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	if inPlaceVerbose {
+		e.Str("k", "v")
+	} else {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in the else of a false constant") // OK - the else always runs
+}
+
+func badEventCtxInPlaceInElseOfTrueConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	if inPlaceDebug {
+		e.Str("k", "v")
+	} else {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in the else of a true constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxInPlaceUnderConstantInLoop(ctx context.Context, log zerolog.Logger, n int) {
+	for range n {
+		e := log.Info()
+		if inPlaceDebug {
+			e.Ctx(ctx)
+		}
+		e.Msg("ctx in place under a constant in a loop") // OK - the branch always runs
+	}
+}
+
+func goodEventCtxInPlaceUnderConstantInClosure(ctx context.Context, log zerolog.Logger) {
+	func() {
+		e := log.Info()
+		if true {
+			e.Ctx(ctx)
+		}
+		e.Msg("ctx in place under a constant in a closure") // OK - the branch always runs
+	}()
+}
+
+func goodEventCtxInPlaceInClosureUnderConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	func() {
+		if inPlaceDebug {
+			e.Ctx(ctx)
+		}
+	}()
+	e.Msg("ctx in place in a closure under a constant") // OK - the branch always runs
+}
+
+func goodEventCtxInPlaceUnderNestedConstants(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	if !inPlaceVerbose && true {
+		if cond {
+			e.Ctx(ctx)
+		} else {
+			e.Ctx(ctx)
+		}
+	}
+	e.Msg("ctx in place under nested constants") // OK - every path that runs has a Ctx call
+}
+
+func badEventCtxInPlaceUnderCondition(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	if cond {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under a condition") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventMadeUnderFalseConstant(ctx context.Context, log zerolog.Logger) {
+	if inPlaceVerbose {
+		e := log.Info()
+		e.Msg("made under a false constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+// LIMITATION(#266) (false positive): the check of `for range 1` is not
+// folded. The path that skips the loop is still taken to reach the
+// terminator.
 func limitationEventCtxInPlaceInLoopOfOneRun(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
 	for range 1 {

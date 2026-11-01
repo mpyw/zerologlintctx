@@ -66,7 +66,7 @@ func derivesFrom(
 		}
 		return false
 	case *ssa.Phi:
-		return slices.ContainsFunc(val.Edges, func(edge ssa.Value) bool {
+		return slices.ContainsFunc(LiveEdgeValues(val), func(edge ssa.Value) bool {
 			return derivesFrom(edge, found, next, seen)
 		})
 	}
@@ -119,7 +119,8 @@ func (p Positions) after(a ssa.Instruction) func(ssa.Instruction) bool {
 // successors, theirs, and so on. The block of a is among them only in a loop.
 func (p Positions) following(a ssa.Instruction) map[*ssa.BasicBlock]bool {
 	following := make(map[*ssa.BasicBlock]bool)
-	queue := slices.Clone(a.Block().Succs)
+	flow := LiveFlowOf(a.Parent())
+	queue := slices.Clone(flow.Succs(a.Block()))
 	for len(queue) > 0 {
 		block := queue[0]
 		queue = queue[1:]
@@ -127,7 +128,7 @@ func (p Positions) following(a ssa.Instruction) map[*ssa.BasicBlock]bool {
 			continue
 		}
 		following[block] = true
-		queue = append(queue, block.Succs...)
+		queue = append(queue, flow.Succs(block)...)
 	}
 	return following
 }

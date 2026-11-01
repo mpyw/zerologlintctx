@@ -299,6 +299,38 @@ e.Msg("hello")
 <td>
 
 ```go
+const debug = true
+
+e := log.Info()
+if debug {
+	e = e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The condition is a constant, so the branch always runs. A path that skips it never runs</td>
+</tr>
+<tr>
+<td>
+
+```go
+const debug = false
+
+e := log.Info()
+if debug {
+	e = e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> The branch never runs, so the event has no context</td>
+</tr>
+<tr>
+<td>
+
+```go
 e := log.Info().Ctx(ctx)
 func() {
 	e.Msg("hello")
@@ -731,20 +763,6 @@ func setCtx(
 
 ```go
 e := log.Info()
-if true {
-	e.Ctx(ctx)
-}
-e.Msg("hello")
-```
-
-</td>
-<td>⚠️ <b>Reported (limitation).</b> A branch on a constant condition is not folded. The path that skips <code>e.Ctx(ctx)</code> is still taken to reach <code>Msg</code></td>
-</tr>
-<tr>
-<td>
-
-```go
-e := log.Info()
 for range 1 {
 	e.Ctx(ctx)
 }
@@ -752,7 +770,7 @@ e.Msg("hello")
 ```
 
 </td>
-<td>⚠️ <b>Reported (limitation).</b> The same for the check of <code>for range 1</code>. The path that skips the loop is still taken</td>
+<td>⚠️ <b>Reported (limitation).</b> The loop check of <code>for range 1</code> is not folded. The path that skips the loop is still taken to reach <code>Msg</code></td>
 </tr>
 <tr>
 <td>

@@ -192,3 +192,50 @@ func goodPointerParamStoredWithCtx(ctx context.Context, l *zerolog.Logger, base 
 	*l = base.With().Ctx(ctx).Logger()
 	l.Info().Msg("stored over the caller's value") // OK - the store reaches every read
 }
+
+// ===== STORES UNDER A BRANCH ON A CONSTANT =====
+
+// A store in a branch that never runs does not reach a read, and a store in
+// one that always runs covers the path past it (#266).
+
+const (
+	storesDebug   = true
+	storesVerbose = false
+)
+
+func goodStoreUnderTrueConstant(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	p := &l
+	if storesDebug {
+		*p = logger.With().Ctx(ctx).Logger()
+	}
+	p.Info().Msg("stored under a true constant") // OK - the store always runs
+}
+
+func badStoreUnderFalseConstant(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	p := &l
+	if storesVerbose {
+		*p = logger.With().Ctx(ctx).Logger()
+	}
+	p.Info().Msg("stored under a false constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodStoreInClosureUnderTrueConstant(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	if storesDebug {
+		l = logger.With().Ctx(ctx).Logger()
+	}
+	func() {
+		l.Info().Msg("captured after a store under a true constant") // OK - the store always runs
+	}()
+}
+
+func badStoreUnderCondition(ctx context.Context, logger zerolog.Logger, cond bool) {
+	l := logger
+	p := &l
+	if cond {
+		*p = logger.With().Ctx(ctx).Logger()
+	}
+	p.Info().Msg("stored under a condition") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

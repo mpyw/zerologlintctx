@@ -360,6 +360,7 @@ func matchStoresBeforeBy(at ssa.Instruction, overwrites func(ssa.Instruction) bo
 	}
 	queue := []step{{b, slices.Index(b.Instrs, at) - 1}}
 	seen := make(map[*ssa.BasicBlock]bool)
+	flow := LiveFlowOf(b.Parent())
 	for len(queue) > 0 {
 		s := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
@@ -377,8 +378,8 @@ func matchStoresBeforeBy(at ssa.Instruction, overwrites func(ssa.Instruction) bo
 			found[nil] = true
 			continue
 		}
-		for _, pred := range s.block.Preds {
-			if !seen[pred] {
+		for i, pred := range s.block.Preds {
+			if flow.pred(s.block, i) && !seen[pred] {
 				seen[pred] = true
 				queue = append(queue, step{pred, len(pred.Instrs) - 1})
 			}

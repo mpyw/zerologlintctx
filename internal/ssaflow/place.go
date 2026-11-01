@@ -375,7 +375,7 @@ func appendLoadedReads(reads *[]LoadedRead, v ssa.Value, path []sel, through []L
 	if slices.ContainsFunc(through, func(e LoadedEdge) bool { return e.Phi == phi }) {
 		return true // Back to a Phi on the way
 	}
-	for i, edge := range phi.Edges {
+	for i, edge := range LiveEdges(phi) {
 		if _, isConst := edge.(*ssa.Const); isConst {
 			continue // The zero value has nothing to read
 		}

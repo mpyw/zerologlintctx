@@ -2886,6 +2886,115 @@ func badManyBranchesOneWithoutCtx(ctx context.Context, logger zerolog.Logger, c 
 	e.Msg("many branches, one without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// ===== BRANCHES ON CONSTANTS =====
+
+// The edge of a Phi from a branch that never runs is not taken (#266).
+
+const (
+	phiDebug   = true
+	phiVerbose = false
+)
+
+func goodReassignedUnderIfTrue(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	if true {
+		e = e.Ctx(ctx)
+	}
+	e.Msg("reassigned under if true") // OK - the branch always runs
+}
+
+func badReassignedUnderIfFalse(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	if false {
+		e = e.Ctx(ctx)
+	}
+	e.Msg("reassigned under if false") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodReassignedUnderTrueConstant(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	if phiDebug {
+		e = e.Ctx(ctx)
+	}
+	e.Msg("reassigned under a true constant") // OK - the branch always runs
+}
+
+func badReassignedUnderFalseConstant(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	if phiVerbose {
+		e = e.Ctx(ctx)
+	}
+	e.Msg("reassigned under a false constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodReassignedInElseOfFalseConstant(ctx context.Context, logger zerolog.Logger) {
+	var e *zerolog.Event
+	if phiVerbose {
+		e = logger.Debug()
+	} else {
+		e = logger.Info().Ctx(ctx)
+	}
+	e.Msg("reassigned in the else of a false constant") // OK - the else always runs
+}
+
+func badReassignedInElseOfTrueConstant(ctx context.Context, logger zerolog.Logger) {
+	var e *zerolog.Event
+	if phiDebug {
+		e = logger.Debug()
+	} else {
+		e = logger.Info().Ctx(ctx)
+	}
+	e.Msg("reassigned in the else of a true constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLoggerReassignedUnderConstantInLoop(ctx context.Context, logger zerolog.Logger, xs []int) {
+	for range xs {
+		l := logger
+		if phiDebug {
+			l = l.With().Ctx(ctx).Logger()
+		}
+		l.Info().Msg("reassigned under a constant in a loop") // OK - the branch always runs
+	}
+}
+
+func goodReassignedUnderConstantInClosure(ctx context.Context, logger zerolog.Logger) {
+	func() {
+		e := logger.Info()
+		if !phiVerbose {
+			e = e.Ctx(ctx)
+		}
+		e.Msg("reassigned under a constant in a closure") // OK - the branch always runs
+	}()
+}
+
+func goodPointerPickedUnderTrueConstant(ctx context.Context, logger zerolog.Logger) {
+	a := logger
+	b := logger.With().Ctx(ctx).Logger()
+	p := &a
+	if phiDebug {
+		p = &b
+	}
+	p.Info().Msg("pointer picked under a true constant") // OK - p is &b
+}
+
+func badPointerPickedUnderFalseConstant(ctx context.Context, logger zerolog.Logger) {
+	a := logger
+	b := logger.With().Ctx(ctx).Logger()
+	p := &a
+	if phiVerbose {
+		p = &b
+	}
+	p.Info().Msg("pointer picked under a false constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badReassignedUnderCondition(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := logger.Info()
+	if cond {
+		e = e.Ctx(ctx)
+	}
+	e.Msg("reassigned under a condition") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== EARLY RETURN PATTERNS =====
 
 func badEarlyReturn(ctx context.Context, logger zerolog.Logger, shouldReturn bool) {
