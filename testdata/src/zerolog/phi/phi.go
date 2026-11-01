@@ -933,6 +933,122 @@ func goodEventFromStructLiteralPickedWithParamFreshOnOther(ctx context.Context, 
 	e.Msg("both edges have ctx of their own") // OK
 }
 
+// The same holds for a receiver that reads the Phi back from memory: the read
+// sees only the Phi, so a path takes each edge of it (#325).
+
+func badEventFromStructLiteralPickedWithParamReadBack(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e = e2
+	}
+	(&phiEventHolder{e}).e.Msg("one edge is the caller's event, read back") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFromStructLiteralPickedWithParamReadBackFromVariable(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e = e2
+	}
+	h := &phiEventHolder{e}
+	h.e.Msg("one edge is the caller's event, read back from a variable") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFromStructLiteralPickedWithParamReadBackTwice(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e = e2
+	}
+	(&phiEventHolder{(&phiEventHolder{e}).e}).e.Msg("one edge is the caller's event, read back twice") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceOnStructLiteralPickedWithParamReadBack(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	x := (&phiEventHolder{logger.Info()}).e
+	x.Ctx(ctx)
+	e := x
+	if cond {
+		e = e2
+	}
+	(&phiEventHolder{e}).e.Msg("ctx in place on one edge, read back") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventFromStructLiteralPickedWithParamCtxReadBack(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e2.Ctx(ctx)
+		e = e2
+	}
+	(&phiEventHolder{e}).e.Msg("both edges have ctx, read back") // OK
+}
+
+func goodEventFromStructLiteralPickedWithStructLiteralReadBack(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e = (&phiEventHolder{logger.Warn()}).e.Ctx(ctx)
+	}
+	(&phiEventHolder{e}).e.Msg("both edges from struct literals have ctx, read back") // OK
+}
+
+func badEventFromStructLiteralPickedWithParamReadBackInLoop(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	for range n {
+		(&phiEventHolder{e}).e.Msg("the caller's event on the later iterations, read back") // want `zerolog call chain missing .Ctx\(ctx\)`
+		e = e2
+	}
+}
+
+func goodEventFromStructLiteralPickedWithParamReadBackInLoopCtx(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	for range n {
+		(&phiEventHolder{e}).e.Msg("the caller's event with ctx on the later iterations, read back") // OK
+		e = e2.Ctx(ctx)
+	}
+}
+
+// A read before the store in a loop sees the Phi of the iteration before,
+// whose edges a path takes as it goes back around the loop.
+
+func badEventPickedWithParamReadBeforeStoreInLoop(ctx context.Context, logger zerolog.Logger, n int, cond bool, e2 *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	h := &phiEventHolder{nil}
+	for range n {
+		if h.e != nil {
+			h.e.Msg("the event of the iteration before, read back") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		h.e = e
+		if cond {
+			e = e2
+		}
+	}
+}
+
+func badEventFromStructLiteralPickedWithParamReadBeforeStoreInLoop(ctx context.Context, logger zerolog.Logger, n int, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	h := &phiEventHolder{nil}
+	for range n {
+		if h.e != nil {
+			h.e.Msg("the event of the iteration before, read back from a struct literal") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		h.e = e
+		if cond {
+			e = e2
+		}
+	}
+}
+
+func goodEventFromStructLiteralPickedWithParamReadBeforeStoreInLoopCtx(ctx context.Context, logger zerolog.Logger, n int, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	h := &phiEventHolder{nil}
+	for range n {
+		if h.e != nil {
+			h.e.Msg("the event of the iteration before, with ctx, read back") // OK
+		}
+		h.e = e
+		if cond {
+			e = e2.Ctx(ctx)
+		}
+	}
+}
+
 // ===== AN EVENT REPLACED IN A LOOP AFTER ITS TERMINATOR =====
 
 // The Phi at the top of the loop merges the event made before it with the one
