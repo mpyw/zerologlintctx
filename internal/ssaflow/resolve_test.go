@@ -1,4 +1,4 @@
-package chain
+package ssaflow
 
 import (
 	"go/ast"
@@ -40,7 +40,7 @@ func TestResolveFreeVarOfWrapper(t *testing.T) {
 		t.Fatal(err)
 	}
 	var bound *ssa.Function
-	for instr := range instrsIn(ssaPkg.Func("f")) {
+	for instr := range InstrsIn(ssaPkg.Func("f")) {
 		if mc, ok := instr.(*ssa.MakeClosure); ok {
 			bound = mc.Fn.(*ssa.Function)
 		}
@@ -48,12 +48,12 @@ func TestResolveFreeVarOfWrapper(t *testing.T) {
 	if bound == nil || len(bound.FreeVars) != 1 {
 		t.Fatalf("got method value wrapper %v, want one with a free variable", bound)
 	}
-	r := resolver{positions: make(instrPositions), closures: newClosures()}
-	var got []resolved
-	for src := range r.resolveFreeVar(bound.FreeVars[0], nil) {
+	r := Resolver{Positions: make(Positions), Closures: NewClosures()}
+	var got []Resolved
+	for src := range r.ResolveFreeVar(bound.FreeVars[0], nil) {
 		got = append(got, src)
 	}
-	if len(got) != 1 || got[0].v != nil {
+	if len(got) != 1 || got[0].V != nil {
 		t.Errorf("resolveFreeVar = %v, want one unknown source", got)
 	}
 }

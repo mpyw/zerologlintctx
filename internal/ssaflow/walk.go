@@ -1,52 +1,52 @@
 // walk.go walks the paths of the control flow of a function, block by block:
-// backwards to a point with walkBack and walkBackWith, and forwards from one
-// with walkFwd. The callers decide what each instruction means to a path;
+// backwards to a point with walkBack and WalkBackWith, and forwards from one
+// with WalkFwd. The callers decide what each instruction means to a path;
 // the walk only takes each block once and in the same order.
 //
-// store.go walks back from a read to the stores that reach it, and event.go
-// walks to and from an Event.Ctx call. Every declaration is shared
-// with them.
+// store.go walks back from a read to the stores that reach it, and
+// internal/chain walks to and from an Event.Ctx call. Every declaration is
+// shared with the files of the package.
 //
 //declscope:shared
 
-package chain
+package ssaflow
 
 import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// walkPoint is a point in a function: before the instruction at index of
+// WalkPoint is a point in a function: before the instruction at index of
 // block, or at its end when index is the number of its instructions.
-type walkPoint struct {
+type WalkPoint struct {
 	block *ssa.BasicBlock
 	index int
 }
 
-// walkPointBefore returns the point right before instr.
-func walkPointBefore(instr ssa.Instruction, positions instrPositions) walkPoint {
-	return walkPoint{block: instr.Block(), index: positions.of(instr)}
+// WalkPointBefore returns the point right before instr.
+func WalkPointBefore(instr ssa.Instruction, positions Positions) WalkPoint {
+	return WalkPoint{block: instr.Block(), index: positions.of(instr)}
 }
 
-// walkPointAfter returns the point right after instr.
-func walkPointAfter(instr ssa.Instruction, positions instrPositions) walkPoint {
-	return walkPoint{block: instr.Block(), index: positions.of(instr) + 1}
+// WalkPointAfter returns the point right after instr.
+func WalkPointAfter(instr ssa.Instruction, positions Positions) WalkPoint {
+	return WalkPoint{block: instr.Block(), index: positions.of(instr) + 1}
 }
 
-// walkStep is what a path does at an instruction a walk looks at.
-type walkStep int
+// WalkStep is what a path does at an instruction a walk looks at.
+type WalkStep int
 
 const (
-	// walkOn goes on past the instruction.
-	walkOn walkStep = iota
-	// walkStop ends the path at the instruction. The other paths go on.
-	walkStop
-	// walkAbort ends the whole walk, which returns false.
-	walkAbort
+	// WalkOn goes on past the instruction.
+	WalkOn WalkStep = iota
+	// WalkStop ends the path at the instruction. The other paths go on.
+	WalkStop
+	// WalkAbort ends the whole walk, which returns false.
+	WalkAbort
 )
 
-// walkFrom is a point a walk starts from, with the state of its path there.
-type walkFrom[S comparable] struct {
-	point walkPoint
+// WalkFrom is a point a walk starts from, with the state of its path there.
+type WalkFrom[S comparable] struct {
+	Point WalkPoint
 	state S
 }
 
@@ -54,7 +54,7 @@ type walkFrom[S comparable] struct {
 // there.
 //
 //declscope:private
-type walkVisit func(ssa.Instruction) walkStep
+type walkVisit func(ssa.Instruction) WalkStep
 
 // walkEdge tells, for a path that reaches the top of b in state s, whether it
 // goes on into the i-th predecessor of b, and in which state at its end.
@@ -74,14 +74,14 @@ type walkEdge[S comparable] func(b *ssa.BasicBlock, i int, s S) (S, bool)
 // Each block is walked into once from its end, even when it is also where a
 // path starts. walkBack returns false when visit or atEntry ended the walk.
 func walkBack(
-	from []walkPoint,
+	from []WalkPoint,
 	visit walkVisit,
 	atEntry func() bool,
 	through func(*ssa.BasicBlock) bool,
 ) bool {
-	starts := make([]walkFrom[struct{}], len(from))
+	starts := make([]WalkFrom[struct{}], len(from))
 	for i, p := range from {
-		starts[i].point = p
+		starts[i].Point = p
 	}
 	var edge walkEdge[struct{}]
 	if through != nil {
@@ -89,15 +89,15 @@ func walkBack(
 			return s, through(b.Preds[i])
 		}
 	}
-	return walkBackWith(starts, visit, atEntry, edge)
+	return WalkBackWith(starts, visit, atEntry, edge)
 }
 
-// walkBackWith is walkBack with a state on each path, which edge, when not
+// WalkBackWith is walkBack with a state on each path, which edge, when not
 // nil, carries into each predecessor, or drops a path with. A block is walked
 // into once in each state. With a nil edge, every predecessor is taken in the
 // same state.
-func walkBackWith[S comparable](
-	from []walkFrom[S],
+func WalkBackWith[S comparable](
+	from []WalkFrom[S],
 	visit walkVisit,
 	atEntry func() bool,
 	edge walkEdge[S],
@@ -106,21 +106,21 @@ func walkBackWith[S comparable](
 		block *ssa.BasicBlock
 		state S
 	}
-	queue := make([]walkFrom[S], len(from))
+	queue := make([]WalkFrom[S], len(from))
 	copy(queue, from)
 	seen := make(map[visited]bool)
 	for len(queue) > 0 {
 		s := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
-		b := s.point.block
-		step := walkOn
-		for i := s.point.index - 1; i >= 0 && step == walkOn; i-- {
+		b := s.Point.block
+		step := WalkOn
+		for i := s.Point.index - 1; i >= 0 && step == WalkOn; i-- {
 			step = visit(b.Instrs[i])
 		}
-		if step == walkAbort {
+		if step == WalkAbort {
 			return false
 		}
-		if step == walkStop {
+		if step == WalkStop {
 			continue
 		}
 		if len(b.Preds) == 0 {
@@ -139,40 +139,40 @@ func walkBackWith[S comparable](
 			}
 			if v := (visited{pred, state}); !seen[v] {
 				seen[v] = true
-				queue = append(queue, walkFrom[S]{walkPoint{pred, len(pred.Instrs)}, state})
+				queue = append(queue, WalkFrom[S]{WalkPoint{pred, len(pred.Instrs)}, state})
 			}
 		}
 	}
 	return true
 }
 
-// walkFwd walks every path that leads on from the point from. On each path it
+// WalkFwd walks every path that leads on from the point from. On each path it
 // shows visit the instructions from the point, earliest first, then those of
 // each successor, and so on, until visit stops the path. A path ends with the
 // block that has no successors, at a return or a panic.
 //
 // Each block is walked into once from its top, even when it is also where the
-// walk starts. walkFwd returns false when visit ended the walk.
-func walkFwd(from walkPoint, visit walkVisit) bool {
-	queue := []walkPoint{from}
+// walk starts. WalkFwd returns false when visit ended the walk.
+func WalkFwd(from WalkPoint, visit walkVisit) bool {
+	queue := []WalkPoint{from}
 	seen := make(map[*ssa.BasicBlock]bool)
 	for len(queue) > 0 {
 		p := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
-		step := walkOn
-		for i := p.index; i < len(p.block.Instrs) && step == walkOn; i++ {
+		step := WalkOn
+		for i := p.index; i < len(p.block.Instrs) && step == WalkOn; i++ {
 			step = visit(p.block.Instrs[i])
 		}
-		if step == walkAbort {
+		if step == WalkAbort {
 			return false
 		}
-		if step == walkStop {
+		if step == WalkStop {
 			continue
 		}
 		for _, succ := range p.block.Succs {
 			if !seen[succ] {
 				seen[succ] = true
-				queue = append(queue, walkPoint{succ, 0})
+				queue = append(queue, WalkPoint{succ, 0})
 			}
 		}
 	}
@@ -182,7 +182,7 @@ func walkFwd(from walkPoint, visit walkVisit) bool {
 // walkThrough returns the blocks on a path through instr: its own block, and
 // those that can run after it. A walk back from a point after instr that
 // keeps to them, and stops at instr, takes only the paths that pass instr.
-func walkThrough(instr ssa.Instruction, positions instrPositions) func(*ssa.BasicBlock) bool {
+func walkThrough(instr ssa.Instruction, positions Positions) func(*ssa.BasicBlock) bool {
 	blocks := positions.following(instr)
 	blocks[instr.Block()] = true
 	return func(b *ssa.BasicBlock) bool { return blocks[b] }

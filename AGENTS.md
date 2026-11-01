@@ -9,6 +9,13 @@ Guidance for contributors and coding agents working in this repository.
 1. Event chains missing `.Ctx(ctx)` when context is available
 2. Direct logging calls (`Print`, `Printf`, `Println`, `Write`) on a logger that does not carry the context
 
+| Package | What it does |
+|---|---|
+| `internal/zerologapi` | What each zerolog function and method does, and what zerolog does with memory |
+| `internal/ssaflow` | Where a value in SSA form comes from; knows nothing of zerolog |
+| `internal/chain` | The tracer and the checker, on top of the two above |
+| `internal/directive` | `//zerologlintctx:ignore` comments |
+
 See [Architecture](./docs/ARCHITECTURE.md) for internal design details.
 
 ## Development Commands
@@ -122,8 +129,9 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 ## Key Design Decisions
 
 1. **One description of the zerolog API**: `zerologapi.Classify` tells what each function and method does, from its signature and a small table of named exceptions. Code in `internal/chain` matches no zerolog names of its own
-2. **SSA tracing**: One `tracer`, which traces each value in a state: its zerolog type, and the sources of context that still count for it. `Logger.Output` narrows the sources. Each trace answers `yes`, `no` or `neutral`, and a value reached again through a cycle is `neutral`: it adds no source
-3. **Zero false positives**: Prefer missing issues over false alarms
+2. **Value flow apart from zerolog**: `internal/ssaflow` finds what a read from memory can see: places, stores, closures, walks of the control flow. It imports nothing of this module, and asks a `Model` (`zerologapi.Model`) for the two facts about zerolog it needs. Keep zerolog out of it
+3. **SSA tracing**: One `tracer`, which traces each value in a state: its zerolog type, and the sources of context that still count for it. `Logger.Output` narrows the sources. Each trace answers `yes`, `no` or `neutral`, and a value reached again through a cycle is `neutral`: it adds no source
+4. **Zero false positives**: Prefer missing issues over false alarms
 
 ## Known Limitations
 

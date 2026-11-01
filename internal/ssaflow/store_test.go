@@ -1,12 +1,16 @@
-package chain
+package ssaflow
 
 import (
+	"go/ast"
 	"go/constant"
+	"go/importer"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
 )
 
 // TestStorePickedThrough checks which edges of a Phi of pointers walkBefore
@@ -51,5 +55,62 @@ func TestStorePointerOf(t *testing.T) {
 	p := storePointerOf(field)
 	if p.def != load || p.from != from || p.global {
 		t.Errorf("storePointerOf = (%v, %v, %v), want (%v, %v, false)", p.def, p.from, p.global, load, from)
+	}
+}
+
+const storeSrc = `package p
+
+type L struct{ n int }
+
+func (l *L) Read() int { return l.n }
+
+func (l *L) Keep() {}
+
+func f() {
+	var l L
+	l.Keep()
+	_ = l.Read()
+}
+`
+
+// storeModel is a Model whose method Keep leaves its receiver.
+type storeModel struct{}
+
+func (storeModel) IsHandle(types.Type) bool { return false }
+
+func (storeModel) LeavesReceiver(fn *types.Func) bool { return fn.Name() == "Keep" }
+
+// TestStoreReadsOfLeavesReceiver checks that a call of a method the model
+// says leaves its receiver is not a read of the receiver.
+func TestStoreReadsOfLeavesReceiver(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", storeSrc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := types.NewPackage("p", "p")
+	ssaPkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, pkg, []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alloc *ssa.Alloc
+	for instr := range InstrsIn(ssaPkg.Func("f")) {
+		if a, ok := instr.(*ssa.Alloc); ok {
+			alloc = a
+		}
+	}
+	if alloc == nil {
+		t.Fatal("no Alloc of l in f")
+	}
+	at, _ := PlaceOf(alloc)
+	reads, _ := storeReadsOf(alloc, at, storeModel{})
+	var names []string
+	for _, r := range reads {
+		if call, ok := r.(*ssa.Call); ok {
+			names = append(names, call.Call.StaticCallee().Name())
+		}
+	}
+	if len(names) != 1 || names[0] != "Read" {
+		t.Errorf("storeReadsOf calls = %v, want [Read]", names)
 	}
 }

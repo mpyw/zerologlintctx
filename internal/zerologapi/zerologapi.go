@@ -1,7 +1,8 @@
 // Package zerologapi says what each function and method of zerolog does with
 // the context of a log chain, and which values of package context are fresh.
 // It is the one place that knows the zerolog API: the tracer and the checker
-// in internal/chain ask Classify, and match no names of their own.
+// in internal/chain ask Classify, and match no names of their own. Model
+// tells internal/ssaflow what zerolog does with memory.
 //
 // Most of it comes from signatures. A method of Event that returns nothing
 // ends a chain, and a method that returns another zerolog type hands the
@@ -195,6 +196,8 @@ func Classify(fn *types.Func) Method {
 }
 
 // TypeOf returns the zerolog type t is, through aliases and a pointer.
+//
+//declscope:ignore overexported // zerologapi_test.go tests it, as the rule Model.IsHandle is built on
 func TypeOf(t types.Type) Type {
 	switch {
 	case isNamedType(t, zerologPkgPath, "Event"):
@@ -222,6 +225,25 @@ func IsContextType(t types.Type) bool {
 func MakesFreshContext(fn *types.Func) bool {
 	return fn.Pkg() != nil && fn.Pkg().Path() == contextPkgPath &&
 		(fn.Name() == "Background" || fn.Name() == "TODO")
+}
+
+// Model is what zerolog does with memory that the signatures do not tell, as
+// internal/ssaflow asks it.
+type Model struct{}
+
+// IsHandle reports whether a pointer of type ptr is a *zerolog.Event. An
+// event is the value itself, not a variable a read goes through to what is
+// stored there.
+func (Model) IsHandle(ptr types.Type) bool {
+	return TypeOf(ptr) == TypeEvent
+}
+
+// LeavesReceiver reports whether fn is a KindInPlaceUpdate, as
+// Logger.UpdateContext is. It changes the fields of the Logger in place, but
+// not its context, so a call of it is not a read of the Logger, and the
+// Logger keeps the context it had before.
+func (Model) LeavesReceiver(fn *types.Func) bool {
+	return Classify(fn).Kind == KindInPlaceUpdate
 }
 
 // resultOf returns the zerolog type of the only result of sig, or TypeNone.

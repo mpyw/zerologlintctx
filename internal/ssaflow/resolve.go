@@ -2,9 +2,9 @@
 // store.go found at an address, with the variables a closure captures traced
 // to where the closure is made, and the parameters of a func literal traced to
 // what its calls pass, until only values stored, or unknown, are left.
-// tracing.go judges each source.
+// The caller judges each source, as the tracer of internal/chain does.
 
-package chain
+package ssaflow
 
 import (
 	"go/types"
@@ -12,54 +12,52 @@ import (
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
-
-	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
-// resolved is one source of what a read can see.
-//
-//declscope:shared // tracing.go judges each one
-type resolved struct {
-	// v is the value, or nil when it is not known: the value the caller
+// Resolved is one source of what a read can see.
+type Resolved struct {
+	// V is the value, or nil when it is not known: the value the caller
 	// passed through a pointer parameter, or an aggregate copied whole from
 	// where no store can be seen.
-	v ssa.Value
-	// pointer reports that v is a pointer, and the source is what it points
-	// to, which resolve could not follow, such as a pointer that is not in a
-	// variable. A nil pointer is not a nil value.
-	pointer bool
+	V ssa.Value
+	// Pointer reports that v is a Pointer, and the source is what it points
+	// to, which resolve could not follow, such as a Pointer that is not in a
+	// variable. A nil Pointer is not a nil value.
+	Pointer bool
 }
 
-// resolver finds the sources of what a read can see. It resolves a
+// Resolver finds the sources of what a read can see. It resolves a
 // parameter of a func literal through the calls of the func literal, and its
 // caller decides what to do when it gets to the same parameter again.
-//
-//declscope:shared // tracing.go and context.go make one each
-type resolver struct {
-	positions instrPositions
-	closures  *closures
-	// enter runs expand, which resolves param through the calls of its func
+type Resolver struct {
+	// Positions finds where each instruction is in its block. It may be
+	// shared by the resolvers of a package.
+	Positions Positions
+	// Closures indexes the closures and func literals of the package.
+	Closures *Closures
+	// Model tells what the library does with memory that its signatures do
+	// not tell.
+	Model Model
+	// Enter runs expand, which resolves param through the calls of its func
 	// literal, unless param is already being resolved, as a recursive call
 	// leads back to it. Then it does nothing: the other calls give the value.
-	enter func(param *ssa.Parameter, expand func())
-	// unseenUnknown adds an unknown source for a variable that may be
+	Enter func(param *ssa.Parameter, expand func())
+	// UnseenUnknown adds an unknown source for a variable that may be
 	// written where the walk of a function for its stores does not see it,
-	// such as in another closure (see closures.writtenUnseen). Without it,
-	// such a write is left out, as the tracer leaves it out, whose known
-	// limitations those are.
-	unseenUnknown bool
+	// such as in another closure (see Closures.writtenUnseen). Without it,
+	// such a write is left out, as the tracer of internal/chain leaves it
+	// out, whose known limitations those are.
+	UnseenUnknown bool
 }
 
-// resolve finds what can be at addr when read runs (see storesReaching). ok
+// Resolve finds what can be at addr when read runs (see storesReaching). ok
 // is false when storesReaching knows nothing of addr.
-//
-//declscope:shared // tracing.go traces what reaches a read
-func (r resolver) resolve(addr ssa.Value, read ssa.Instruction) (sources iter.Seq[resolved], ok bool) {
-	stored, ok := storesReaching(addr, read, r.positions)
+func (r Resolver) Resolve(addr ssa.Value, read ssa.Instruction) (sources iter.Seq[Resolved], ok bool) {
+	stored, ok := storesReaching(addr, read, r.Positions, r.Model)
 	if !ok {
 		return nil, false
 	}
-	at, _ := placeOf(addr)
+	at, _ := PlaceOf(addr)
 	walked := parentFunc(addr)
 	if read != nil {
 		walked = read.Parent()
@@ -67,20 +65,18 @@ func (r resolver) resolve(addr ssa.Value, read ssa.Instruction) (sources iter.Se
 	return r.resolveWalked(at, walked, stored), true
 }
 
-// resolveAt finds what can be at the address at when read runs, as
+// ResolveAt finds what can be at the address at when read runs, as
 // storesReachingAt does. ok is false when storesReachingAt knows nothing of
 // it.
-//
-//declscope:shared // tracing.go traces what reaches a selection of a value loaded
-func (r resolver) resolveAt(at place, read ssa.Instruction) (sources iter.Seq[resolved], ok bool) {
-	stored, ok := storesReachingAt(at, read, r.positions)
+func (r Resolver) ResolveAt(at Place, read ssa.Instruction) (sources iter.Seq[Resolved], ok bool) {
+	stored, ok := storesReachingAt(at, read, r.Positions)
 	if !ok {
 		return nil, false
 	}
 	return r.resolveWalked(at, read.Parent(), stored), true
 }
 
-// resolveEmbedded yields the sources of the receiver of a promoted method,
+// ResolveEmbedded yields the sources of the receiver of a promoted method,
 // at the embedded fields of the struct of type typ at the address at, as read
 // reads it. call is the call of the method expression.
 //
@@ -93,37 +89,35 @@ func (r resolver) resolveAt(at place, read ssa.Instruction) (sources iter.Seq[re
 //	outer.Msg(o, "x")      // reads t1.inner, then t3.Event
 //
 // A pointer that is not known is an unknown source.
-//
-//declscope:shared // tracing.go and event.go read the receiver of a method expression of a promoted method
-func (r resolver) resolveEmbedded(at place, typ types.Type, embedded []int, read, call ssa.Instruction) iter.Seq[resolved] {
-	return func(yield func(resolved) bool) {
+func (r Resolver) ResolveEmbedded(at Place, typ types.Type, embedded []int, read, call ssa.Instruction) iter.Seq[Resolved] {
+	return func(yield func(Resolved) bool) {
 		r.yieldEmbedded(at, typ, embedded, read, call, yield)
 	}
 }
 
-// yieldEmbedded yields what resolveEmbedded does, and reports whether yield
+// yieldEmbedded yields what ResolveEmbedded does, and reports whether yield
 // asked for more.
-func (r resolver) yieldEmbedded(
-	at place,
+func (r Resolver) yieldEmbedded(
+	at Place,
 	typ types.Type,
 	embedded []int,
 	read, call ssa.Instruction,
-	yield func(resolved) bool,
+	yield func(Resolved) bool,
 ) bool {
 	at, n, field := at.withEmbedded(typ, embedded)
-	stored, ok := storesReachingAt(at, read, r.positions)
+	stored, ok := storesReachingAt(at, read, r.Positions)
 	switch {
 	case n == len(embedded) && ok:
 		return r.yieldStored(stored, yield)
 	case !ok || stored.unknown || len(stored.captured) > 0 || len(stored.params) > 0:
-		return yield(resolved{})
+		return yield(Resolved{})
 	}
 	elem := field.Underlying().(*types.Pointer).Elem()
 	for _, v := range stored.values {
-		if isNilConst(v) {
+		if IsNilConst(v) {
 			continue
 		}
-		next, _ := placeOf(v)
+		next, _ := PlaceOf(v)
 		if !r.yieldEmbedded(next, elem, embedded[n:], call, call, yield) {
 			return false
 		}
@@ -131,7 +125,7 @@ func (r resolver) yieldEmbedded(
 	return true
 }
 
-// resolveFreeVar yields the sources of what is at path, the selections from
+// ResolveFreeVar yields the sources of what is at path, the selections from
 // fv, nil for fv itself, as its closure reads them: what can be there in the
 // variable that each MakeClosure of the closure binds, when the closure runs.
 //
@@ -141,11 +135,9 @@ func (r resolver) yieldEmbedded(
 //	defer func() { l.Info().Msg("end") }()
 //
 // SSA makes a func literal once, where it is written, so there is at most one
-// MakeClosure (see closures.makersOf). With none, the source is unknown.
-//
-//declscope:shared // tracing.go traces a free variable
-func (r resolver) resolveFreeVar(fv *ssa.FreeVar, path []sel) iter.Seq[resolved] {
-	return func(yield func(resolved) bool) {
+// MakeClosure (see Closures.makersOf). With none, the source is unknown.
+func (r Resolver) ResolveFreeVar(fv *ssa.FreeVar, path []sel) iter.Seq[Resolved] {
+	return func(yield func(Resolved) bool) {
 		r.yieldFreeVar(fv, path, yield)
 	}
 }
@@ -153,8 +145,8 @@ func (r resolver) resolveFreeVar(fv *ssa.FreeVar, path []sel) iter.Seq[resolved]
 // resolveWalked yields the sources of what a walk of walked found at at, as
 // yieldStored does, after an unknown one when unseenUnknown is set and at
 // may be written where that walk does not see.
-func (r resolver) resolveWalked(at place, walked *ssa.Function, stored storeReaching) iter.Seq[resolved] {
-	return func(yield func(resolved) bool) {
+func (r Resolver) resolveWalked(at Place, walked *ssa.Function, stored storeReaching) iter.Seq[Resolved] {
+	return func(yield func(Resolved) bool) {
 		r.yieldWalked(at, walked, nil, stored, yield)
 	}
 }
@@ -162,14 +154,14 @@ func (r resolver) resolveWalked(at place, walked *ssa.Function, stored storeReac
 // yieldWalked yields what resolveWalked does, and reports whether yield
 // asked for more. via is the call of a func literal that at is passed to, as
 // writtenUnseen takes it.
-func (r resolver) yieldWalked(
-	at place,
+func (r Resolver) yieldWalked(
+	at Place,
 	walked *ssa.Function,
 	via ssa.Instruction,
 	stored storeReaching,
-	yield func(resolved) bool,
+	yield func(Resolved) bool,
 ) bool {
-	if r.unseenUnknown && r.closures.writtenUnseen(at, walked, via) && !yield(resolved{}) {
+	if r.UnseenUnknown && r.Closures.writtenUnseen(at, walked, via) && !yield(Resolved{}) {
 		return false
 	}
 	return r.yieldStored(stored, yield)
@@ -180,8 +172,8 @@ func (r resolver) yieldWalked(
 // variable holds as the closure runs, what the calls of a func literal pass
 // for its parameters, and the values stored. It reports whether yield asked
 // for more.
-func (r resolver) yieldStored(stored storeReaching, yield func(resolved) bool) bool {
-	if stored.unknown && !yield(resolved{}) {
+func (r Resolver) yieldStored(stored storeReaching, yield func(Resolved) bool) bool {
+	if stored.unknown && !yield(Resolved{}) {
 		return false
 	}
 	for _, c := range stored.captured {
@@ -195,25 +187,25 @@ func (r resolver) yieldStored(stored storeReaching, yield func(resolved) bool) b
 		}
 	}
 	for _, v := range stored.values {
-		if !yield(resolved{v: v}) {
+		if !yield(Resolved{V: v}) {
 			return false
 		}
 	}
 	return true
 }
 
-// yieldFreeVar yields what resolveFreeVar does, and reports whether yield
+// yieldFreeVar yields what ResolveFreeVar does, and reports whether yield
 // asked for more.
-func (r resolver) yieldFreeVar(fv *ssa.FreeVar, path []sel, yield func(resolved) bool) bool {
+func (r Resolver) yieldFreeVar(fv *ssa.FreeVar, path []sel, yield func(Resolved) bool) bool {
 	fn := fv.Parent()
 	idx := slices.Index(fn.FreeVars, fv)
-	makers := r.closures.makersOf(fn)
+	makers := r.Closures.makersOf(fn)
 	if len(makers) == 0 {
-		return yield(resolved{}) // A wrapper, such as a method value, made where it cannot be seen
+		return yield(Resolved{}) // A wrapper, such as a method value, made where it cannot be seen
 	}
 	for _, mc := range makers {
-		stored := storesReachingClosure(mc.Bindings[idx], path, mc, r.positions)
-		if !r.yieldWalked(place{root: mc.Bindings[idx], path: path}, mc.Parent(), nil, stored, yield) {
+		stored := storesReachingClosure(mc.Bindings[idx], path, mc, r.Positions)
+		if !r.yieldWalked(Place{root: mc.Bindings[idx], path: path}, mc.Parent(), nil, stored, yield) {
 			return false
 		}
 	}
@@ -231,13 +223,13 @@ func (r resolver) yieldFreeVar(fv *ssa.FreeVar, path []sel, yield func(resolved)
 //
 // A call that passes the parameter on, as a recursive call does, reaches the
 // same parameter again, which enter leaves out.
-func (r resolver) yieldParam(pp storeParamPath, yield func(resolved) bool) bool {
+func (r Resolver) yieldParam(pp storeParamPath, yield func(Resolved) bool) bool {
 	more := true
-	r.enter(pp.param, func() {
+	r.Enter(pp.param, func() {
 		fn := pp.param.Parent()
-		calls, ok := r.closures.callsOf(fn)
+		calls, ok := r.Closures.CallsOf(fn)
 		if !ok || len(calls) == 0 {
-			more = yield(resolved{})
+			more = yield(Resolved{})
 			return
 		}
 		idx := slices.Index(fn.Params, pp.param)
@@ -253,43 +245,42 @@ func (r resolver) yieldParam(pp storeParamPath, yield func(resolved) bool) bool 
 // yieldArgument yields the sources of the value at the selections of pp from
 // arg, which call passes for the parameter of pp, and reports whether yield
 // asked for more.
-func (r resolver) yieldArgument(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, yield func(resolved) bool) bool {
+func (r Resolver) yieldArgument(arg ssa.Value, call ssa.CallInstruction, pp storeParamPath, yield func(Resolved) bool) bool {
 	addr, read := arg, ssa.Instruction(call)
 	switch {
 	case !pp.pointer:
 		// A struct or array passed by value is loaded from where it is
-		load, ok := asLoad(arg)
+		load, ok := AsLoad(arg)
 		if !ok {
-			return yield(resolved{})
+			return yield(Resolved{})
 		}
 		addr, read = load.X, load
 	case len(pp.path) == 0:
 		// What the pointer passed points to, as for the receiver of a call
-		if resolvesThrough(arg) {
-			if stored, ok := storesReaching(arg, call, r.positions); ok {
-				at, _ := placeOf(arg)
+		if r.ResolvesThrough(arg) {
+			if stored, ok := storesReaching(arg, call, r.Positions, r.Model); ok {
+				at, _ := PlaceOf(arg)
 				return r.yieldWalked(at, call.Parent(), call, stored, yield)
 			}
 		}
-		return yield(resolved{v: arg, pointer: true})
+		return yield(Resolved{V: arg, Pointer: true})
 	}
-	at, _ := placeOf(addr)
-	stored, ok := storesReachingAt(at.with(pp.path...), read, r.positions)
+	at, _ := PlaceOf(addr)
+	stored, ok := storesReachingAt(at.with(pp.path...), read, r.Positions)
 	if !ok {
-		return yield(resolved{})
+		return yield(Resolved{})
 	}
 	return r.yieldWalked(at.with(pp.path...), call.Parent(), call, stored, yield)
 }
 
-// resolvesThrough reports whether addr is an address that a read goes
+// ResolvesThrough reports whether addr is an address that a read goes
 // through to what is stored there, such as the receiver of Logger.Info, which
 // has a pointer receiver: a local variable, a field or element of an
-// address, a variable a closure captures, or a pointer parameter. A
-// *zerolog.Event is the value itself, not a variable it is read from.
-//
-//declscope:shared // tracing.go traces the stores behind such an address
-func resolvesThrough(addr ssa.Value) bool {
-	if zerologapi.TypeOf(addr.Type()) == zerologapi.TypeEvent {
+// address, a variable a closure captures, or a pointer parameter. A pointer
+// that the model takes for a handle, such as a *zerolog.Event, is the value
+// itself, not a variable it is read from.
+func (r Resolver) ResolvesThrough(addr ssa.Value) bool {
+	if r.Model.IsHandle(addr.Type()) {
 		return false
 	}
 	switch a := addr.(type) {

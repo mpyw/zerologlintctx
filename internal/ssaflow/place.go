@@ -1,15 +1,15 @@
-// place.go is the model of an address in memory that store.go, match.go,
-// tracing.go and context.go share: a place is a root, the
+// place.go is the model of an address in memory that store.go, match.go and
+// resolve.go share, and internal/chain reads: a place is a root, the
 // variable or pointer the address is in, and the fields and elements selected
 // from it. Whether two selections are the same is decided here only.
 //
-// It joins the core namespace because most files of internal/chain speak of
+// It joins the core namespace because most files of the package speak of
 // places, as they stand on value.go.
 //
 //declscope:core
 //declscope:shared
 
-package chain
+package ssaflow
 
 import (
 	"fmt"
@@ -59,31 +59,36 @@ func (s sel) variable() bool {
 	return s.operand != nil && s.index == nil
 }
 
-// place is an address: root, and the selections from it, outermost first.
+// Place is an address: root, and the selections from it, outermost first.
 //
 //	&t0.inner.event  →  root t0, path [.inner, .event]
-type place struct {
+type Place struct {
 	root ssa.Value
 	path []sel
 }
 
-// placeKey is a place in a form that can be compared with ==, or be a map
+// PlaceAt returns the place of root itself, with no selections.
+func PlaceAt(root ssa.Value) Place {
+	return Place{root: root}
+}
+
+// PlaceKey is a place in a form that can be compared with ==, or be a map
 // key.
-type placeKey struct {
+type PlaceKey struct {
 	//declscope:private
 	root ssa.Value
 	//declscope:private
 	path string
 }
 
-// key returns a key that is the same for two places with the same root and
+// Key returns a Key that is the same for two places with the same root and
 // the same selections. An element is spelled by its operand: a constant by its
 // value and type, and any other index by the value, which only matches
 // itself.
 //
-// The key of a constant element is not what same compares: same ignores the
-// type of the constant, and the key does not.
-func (p place) key() placeKey {
+// The Key of a constant element is not what same compares: same ignores the
+// type of the constant, and the Key does not.
+func (p Place) Key() PlaceKey {
 	var b strings.Builder
 	for _, s := range p.path {
 		if s.operand == nil {
@@ -92,17 +97,17 @@ func (p place) key() placeKey {
 		}
 		fmt.Fprintf(&b, "[%s]", s.operand.Name())
 	}
-	return placeKey{root: p.root, path: b.String()}
+	return PlaceKey{root: p.root, path: b.String()}
 }
 
 // with returns p with rest selected further, in a path of its own.
-func (p place) with(rest ...sel) place {
-	return place{root: p.root, path: append(slices.Clone(p.path), rest...)}
+func (p Place) with(rest ...sel) Place {
+	return Place{root: p.root, path: append(slices.Clone(p.path), rest...)}
 }
 
-// withFields returns p with the fields selected further, one after another,
+// WithFields returns p with the fields selected further, one after another,
 // in a path of its own.
-func (p place) withFields(fields []int) place {
+func (p Place) WithFields(fields []int) Place {
 	at := p.with()
 	for _, index := range fields {
 		at.path = append(at.path, sel{field: index})
@@ -112,7 +117,7 @@ func (p place) withFields(fields []int) place {
 
 // prefixOf reports whether p has the root of q, and selects the same as the
 // first selections of q do, as many as p has.
-func (p place) prefixOf(q place) bool {
+func (p Place) prefixOf(q Place) bool {
 	if p.root != q.root || len(p.path) > len(q.path) {
 		return false
 	}
@@ -148,7 +153,7 @@ const (
 //     compared, so they are the same element.
 //   - Any other pair of elements, one of them at an index that is not a
 //     constant, may be the same element, or not. That makes it coverMay.
-func (p place) covers(q place, once func(index ssa.Value) bool) placeCover {
+func (p Place) covers(q Place, once func(index ssa.Value) bool) placeCover {
 	if p.root != q.root || len(p.path) > len(q.path) {
 		return coverNone
 	}
@@ -170,7 +175,7 @@ func (p place) covers(q place, once func(index ssa.Value) bool) placeCover {
 // in common: the selections of one start with those of the other. An element
 // whose index is not a constant may be any element, so it may be the one the
 // other selects.
-func (p place) overlaps(q place) bool {
+func (p Place) overlaps(q Place) bool {
 	if p.root != q.root {
 		return false
 	}
@@ -183,10 +188,10 @@ func (p place) overlaps(q place) bool {
 	return true
 }
 
-// placeOf returns the place of addr: the value it is in, after every field
+// PlaceOf returns the place of addr: the value it is in, after every field
 // and element of an address it selects. tracked reports whether isTrackedRoot
 // holds for the root.
-func placeOf(addr ssa.Value) (p place, tracked bool) {
+func PlaceOf(addr ssa.Value) (p Place, tracked bool) {
 	for {
 		from, s, ok := addrSel(addr)
 		if !ok {
@@ -248,14 +253,14 @@ func elemSel(index ssa.Value) sel {
 	return s
 }
 
-// loadedSelection returns where v, a field of a struct value or an element of
+// LoadedSelection returns where v, a field of a struct value or an element of
 // an array value, selected from one loaded whole from an address, is read
 // from: the same selections from that address, and the load. ok is false when
 // v does not select from a load:
 //
 //	t8 = *t4                // the whole struct, loaded
 //	t9 = t8.Logger          // v, read from t4.Logger
-func loadedSelection(v ssa.Value) (at place, load *ssa.UnOp, ok bool) {
+func LoadedSelection(v ssa.Value) (at Place, load *ssa.UnOp, ok bool) {
 	var selections []sel
 	for {
 		from, s, isSel := valueSel(v)
@@ -265,17 +270,17 @@ func loadedSelection(v ssa.Value) (at place, load *ssa.UnOp, ok bool) {
 		selections = append(selections, s)
 		v = from
 	}
-	load, ok = asLoad(v)
+	load, ok = AsLoad(v)
 	if !ok || len(selections) == 0 {
-		return place{}, nil, false
+		return Place{}, nil, false
 	}
 	slices.Reverse(selections)
-	base, _ := placeOf(load.X)
+	base, _ := PlaceOf(load.X)
 	return base.with(selections...), load, true
 }
 
-// asLoad returns v as a load, `*x`, and reports whether it is one.
-func asLoad(v ssa.Value) (*ssa.UnOp, bool) {
+// AsLoad returns v as a load, `*x`, and reports whether it is one.
+func AsLoad(v ssa.Value) (*ssa.UnOp, bool) {
 	load, ok := v.(*ssa.UnOp)
 	return load, ok && load.Op == token.MUL
 }
@@ -284,7 +289,7 @@ func asLoad(v ssa.Value) (*ssa.UnOp, bool) {
 // embedded fields selected from it, one after another, up to the first that
 // is a pointer to a struct, which is a field but the last. n is how many it
 // selected, and field is the type of the last of them.
-func (at place) withEmbedded(typ types.Type, embedded []int) (_ place, n int, field types.Type) {
+func (at Place) withEmbedded(typ types.Type, embedded []int) (_ Place, n int, field types.Type) {
 	at = at.with()
 	for i, index := range embedded {
 		// Each embedded field but the last is a struct or a pointer to one

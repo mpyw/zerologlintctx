@@ -8,9 +8,9 @@
 //
 // An event is known by its origin, the call that makes it. A Ctx call counts
 // for a terminator when it runs on a value with the same origin, on every
-// path from the origin to the terminator. resolve.go finds what a read from
-// memory sees, so an event in a variable or a field is the same event at each
-// read, until another one is stored there.
+// path from the origin to the terminator. ssaflow.Resolver finds what a read
+// from memory sees, so an event in a variable or a field is the same event at
+// each read, until another one is stored there.
 
 package chain
 
@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/mpyw/zerologlintctx/internal/ssaflow"
 	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
@@ -35,10 +36,10 @@ func eventOrigin(v ssa.Value) ssa.Value {
 			return v
 		}
 		c, ok := calleeOf(&call.Call)
-		if !ok || c.recv == nil || c.embedded != nil || !c.returnsSameEvent() {
+		if !ok || c.Recv == nil || c.Embedded != nil || !c.returnsSameEvent() {
 			return v
 		}
-		v = c.recv
+		v = c.Recv
 	}
 }
 
@@ -48,7 +49,7 @@ func eventOrigin(v ssa.Value) ssa.Value {
 // place that see only such an event see the same one.
 type eventSource struct {
 	v  ssa.Value
-	at placeKey
+	at ssaflow.PlaceKey
 }
 
 // eventStep is what a value of a chain is one step back: other values that
@@ -57,7 +58,7 @@ type eventStep struct {
 	next    []ssa.Value
 	sources []eventSource
 	// read is the place the value is read from, for a read from memory.
-	read *placeKey
+	read *ssaflow.PlaceKey
 }
 
 // eventCtxCall is a call of Event.Ctx given a context that is not fresh, and
@@ -75,11 +76,11 @@ type eventIndex struct {
 	// positions finds where each instruction is in its block.
 	//
 	//declscope:private
-	positions instrPositions
+	positions ssaflow.Positions
 	// closures indexes the closures and func literals of the package.
 	//
 	//declscope:private
-	closures *closures
+	closures *ssaflow.Closures
 	// steps holds the step back of each value asked about.
 	//
 	//declscope:private
@@ -97,7 +98,7 @@ type eventIndex struct {
 // newEventIndex creates an index with nothing found yet.
 //
 //declscope:shared // tracing.go creates one per tracer
-func newEventIndex(positions instrPositions, closures *closures) *eventIndex {
+func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eventIndex {
 	return &eventIndex{
 		positions: positions,
 		closures:  closures,
@@ -126,7 +127,7 @@ func (ix *eventIndex) eventCtxSetInPlace(c callee, at ssa.Instruction, hasCtx fu
 	if len(q.sources) == 0 {
 		return false
 	}
-	before := walkPointBefore(at, ix.positions)
+	before := ssaflow.WalkPointBefore(at, ix.positions)
 	d, deferred := at.(*ssa.Defer)
 	for _, src := range q.sources {
 		calls := q.ctxCallsOn(src)
@@ -150,7 +151,7 @@ type eventQuery struct {
 	// is read from.
 	values map[ssa.Value]bool
 	// reads are the places it is read from on the way.
-	reads map[placeKey]bool
+	reads map[ssaflow.PlaceKey]bool
 }
 
 // queryOf finds the events that c, the terminator at, can run on.
@@ -160,7 +161,7 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 		fn:     at.Parent(),
 		hasCtx: hasCtx,
 		values: make(map[ssa.Value]bool),
-		reads:  make(map[placeKey]bool),
+		reads:  make(map[ssaflow.PlaceKey]bool),
 	}
 	q.sources = ix.expand(ix.calleeStep(c, at), q.values, q.reads)
 	return q
@@ -183,24 +184,24 @@ func (q eventQuery) ctxCallsOn(src eventSource) map[ssa.Instruction]bool {
 // entry of the function carries src only when the function does not make it,
 // as for a parameter. A path carries another event when it takes an edge of a
 // Phi, or stores a value, that is not src or has context of its own.
-func (q eventQuery) ctxRunsBefore(src eventSource, calls map[ssa.Instruction]bool, before walkPoint) bool {
+func (q eventQuery) ctxRunsBefore(src eventSource, calls map[ssa.Instruction]bool, before ssaflow.WalkPoint) bool {
 	def := q.defOf(src)
-	visit := func(instr ssa.Instruction) walkStep {
+	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
 		switch {
 		case calls[instr]:
-			return walkStop // Ctx runs on this path
+			return ssaflow.WalkStop // Ctx runs on this path
 		case instr == def:
-			return walkAbort // src is made on this path, and Ctx does not run after
+			return ssaflow.WalkAbort // src is made on this path, and Ctx does not run after
 		case q.storesOther(instr, src):
-			return walkStop // Another event is stored on this path
+			return ssaflow.WalkStop // Another event is stored on this path
 		}
-		return walkOn
+		return ssaflow.WalkOn
 	}
 	atEntry := func() bool { return def != nil }
 	edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
 		return s, q.edgeCarries(b, i, src)
 	}
-	return walkBackWith([]walkFrom[struct{}]{{point: before}}, visit, atEntry, edge)
+	return ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, atEntry, edge)
 }
 
 // ctxRunsAfterDefer reports whether, on every path from d, a deferred
@@ -212,17 +213,17 @@ func (q eventQuery) ctxRunsAfterDefer(src eventSource, calls map[ssa.Instruction
 		return false // A path that never returns does not end the walk
 	}
 	def := q.defOf(src)
-	return walkFwd(walkPointAfter(d, q.ix.positions), func(instr ssa.Instruction) walkStep {
+	return ssaflow.WalkFwd(ssaflow.WalkPointAfter(d, q.ix.positions), func(instr ssa.Instruction) ssaflow.WalkStep {
 		switch {
 		case instr == def:
-			return walkAbort // The event is made again, so a Ctx call after is on another one
+			return ssaflow.WalkAbort // The event is made again, so a Ctx call after is on another one
 		case calls[instr]:
-			return walkStop // Ctx runs on this path
+			return ssaflow.WalkStop // Ctx runs on this path
 		}
 		if _, ok := instr.(*ssa.Return); ok {
-			return walkAbort
+			return ssaflow.WalkAbort
 		}
-		return walkOn
+		return ssaflow.WalkOn
 	})
 }
 
@@ -251,8 +252,8 @@ func (q eventQuery) storesOther(instr ssa.Instruction, src eventSource) bool {
 	if !ok || !q.values[store.Val] {
 		return false
 	}
-	at, _ := placeOf(store.Addr)
-	return q.reads[at.key()] && q.isOther(store.Val, src)
+	at, _ := ssaflow.PlaceOf(store.Addr)
+	return q.reads[at.Key()] && q.isOther(store.Val, src)
 }
 
 // edgeCarries reports whether a path that reaches the top of b goes on into
@@ -268,7 +269,7 @@ func (q eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource) bool 
 		if !q.values[phi] {
 			continue
 		}
-		if edge := phi.Edges[i]; isNilConst(edge) || q.isOther(edge, src) {
+		if edge := phi.Edges[i]; ssaflow.IsNilConst(edge) || q.isOther(edge, src) {
 			return false
 		}
 	}
@@ -301,13 +302,13 @@ func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) []eventCtxCall {
 		return calls
 	}
 	var calls []eventCtxCall
-	for instr := range instrsIn(fn) {
+	for instr := range ssaflow.InstrsIn(fn) {
 		call, ok := instr.(*ssa.Call)
 		if !ok {
 			continue
 		}
 		c, ok := calleeOf(&call.Call)
-		if !ok || c.recv == nil || c.api.Kind != zerologapi.KindSource || c.api.Recv != zerologapi.TypeEvent {
+		if !ok || c.Recv == nil || c.api.Kind != zerologapi.KindSource || c.api.Recv != zerologapi.TypeEvent {
 			continue
 		}
 		if args := call.Call.Args; len(args) > 0 && isFreshContext(args[len(args)-1], ix.positions, ix.closures) {
@@ -328,7 +329,7 @@ func (ix *eventIndex) sourcesOf(v ssa.Value) []eventSource {
 // expand returns the events that start can be, adding to values each value
 // it is the same event as on the way, and to reads, when not nil, each place
 // it is read from. A value already in values adds nothing, so a cycle ends.
-func (ix *eventIndex) expand(start eventStep, values map[ssa.Value]bool, reads map[placeKey]bool) []eventSource {
+func (ix *eventIndex) expand(start eventStep, values map[ssa.Value]bool, reads map[ssaflow.PlaceKey]bool) []eventSource {
 	var sources []eventSource
 	add := func(step eventStep) {
 		for _, src := range step.sources {
@@ -363,15 +364,15 @@ func (ix *eventIndex) expand(start eventStep, values map[ssa.Value]bool, reads m
 // receiver itself, or, for a method expression of a promoted method, what is
 // at the embedded fields of the struct it is passed.
 func (ix *eventIndex) calleeStep(c callee, call ssa.Instruction) eventStep {
-	if c.embedded == nil {
-		return eventStep{next: []ssa.Value{c.recv}}
+	if c.Embedded == nil {
+		return eventStep{next: []ssa.Value{c.Recv}}
 	}
-	addr, typ, read, ok := c.embeddedStart(call)
+	addr, typ, read, ok := c.EmbeddedStart(call)
 	if !ok {
-		return eventStep{sources: []eventSource{{v: c.recv}}}
+		return eventStep{sources: []eventSource{{v: c.Recv}}}
 	}
-	at, _ := placeOf(addr)
-	return ix.resolvedStep(ix.resolver().resolveEmbedded(at, typ, c.embedded, read, call), at.withFields(c.embedded))
+	at, _ := ssaflow.PlaceOf(addr)
+	return ix.resolvedStep(ix.resolver().ResolveEmbedded(at, typ, c.Embedded, read, call), at.WithFields(c.Embedded))
 }
 
 // stepOf returns the step back from v, which it finds once:
@@ -395,31 +396,31 @@ func (ix *eventIndex) stepOf(v ssa.Value) eventStep {
 func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 	switch val := v.(type) {
 	case *ssa.Const:
-		if isNilConst(val) {
+		if ssaflow.IsNilConst(val) {
 			return eventStep{} // A nil event logs nothing
 		}
 	case *ssa.Call:
-		if c, ok := calleeOf(&val.Call); ok && c.recv != nil && c.returnsSameEvent() {
+		if c, ok := calleeOf(&val.Call); ok && c.Recv != nil && c.returnsSameEvent() {
 			return ix.calleeStep(c, val)
 		}
 	case *ssa.Phi:
 		var step eventStep
 		for _, edge := range val.Edges {
-			if !isNilConst(edge) {
+			if !ssaflow.IsNilConst(edge) {
 				step.next = append(step.next, edge)
 			}
 		}
 		return step
 	case *ssa.UnOp:
-		if _, isLoad := asLoad(val); isLoad {
-			if sources, ok := ix.resolver().resolve(val.X, val); ok {
-				at, _ := placeOf(val.X)
+		if _, isLoad := ssaflow.AsLoad(val); isLoad {
+			if sources, ok := ix.resolver().Resolve(val.X, val); ok {
+				at, _ := ssaflow.PlaceOf(val.X)
 				return ix.resolvedStep(sources, at)
 			}
 		}
 	case *ssa.Field, *ssa.Index:
-		if at, load, ok := loadedSelection(v); ok {
-			if sources, ok := ix.resolver().resolveAt(at, load); ok {
+		if at, load, ok := ssaflow.LoadedSelection(v); ok {
+			if sources, ok := ix.resolver().ResolveAt(at, load); ok {
 				return ix.resolvedStep(sources, at)
 			}
 		}
@@ -429,17 +430,17 @@ func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 
 // resolvedStep is the step back to sources, what a read of the place at can
 // see. A source that resolve cannot tell is the event at that place.
-func (ix *eventIndex) resolvedStep(sources iter.Seq[resolved], at place) eventStep {
-	read := at.key()
+func (ix *eventIndex) resolvedStep(sources iter.Seq[ssaflow.Resolved], at ssaflow.Place) eventStep {
+	read := at.Key()
 	step := eventStep{read: &read}
 	for src := range sources {
 		switch {
-		case src.v == nil:
+		case src.V == nil:
 			step.sources = append(step.sources, eventSource{at: read})
-		case src.pointer:
-			step.sources = append(step.sources, eventSource{at: place{root: src.v}.key()})
-		case !isNilConst(src.v):
-			step.next = append(step.next, src.v)
+		case src.Pointer:
+			step.sources = append(step.sources, eventSource{at: ssaflow.PlaceAt(src.V).Key()})
+		case !ssaflow.IsNilConst(src.V):
+			step.next = append(step.next, src.V)
 		}
 	}
 	return step
@@ -447,11 +448,12 @@ func (ix *eventIndex) resolvedStep(sources iter.Seq[resolved], at place) eventSt
 
 // resolver returns a resolver that resolves a parameter of a func literal
 // once at a time: one reached again, through a recursive call, adds nothing.
-func (ix *eventIndex) resolver() resolver {
-	return resolver{
-		positions: ix.positions,
-		closures:  ix.closures,
-		enter: func(param *ssa.Parameter, expand func()) {
+func (ix *eventIndex) resolver() ssaflow.Resolver {
+	return ssaflow.Resolver{
+		Positions: ix.positions,
+		Closures:  ix.closures,
+		Model:     zerologapi.Model{},
+		Enter: func(param *ssa.Parameter, expand func()) {
 			if ix.active[param] {
 				return
 			}

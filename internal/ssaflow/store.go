@@ -2,14 +2,12 @@
 // the entry; it leans on walk.go to walk the control flow, and on match.go to
 // decide whether two pointers that are not in a variable are the same.
 
-package chain
+package ssaflow
 
 import (
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
-
-	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
 // storesReaching finds the values that can be at addr when read runs: the
@@ -32,10 +30,10 @@ import (
 //	l = l.With().Ctx(ctx).Logger()     // the only store that reaches the read
 //	l.Info().Msg("msg")                // Info takes &l with real zerolog
 //
-// A call to Logger.UpdateContext changes the fields of the Logger in place,
-// but not its context: zerolog keeps only the fields the func writes, and
-// drops what Context.Ctx sets. So it neither stops a path nor counts as a
-// read.
+// A call that model says leaves its receiver neither stops a path nor counts
+// as a read. Logger.UpdateContext is one: it changes the fields of the Logger
+// in place, but not its context, since zerolog keeps only the fields the func
+// writes, and drops what Context.Ctx sets.
 //
 // This holds for an address whose root is a local variable, a pointer
 // parameter or a variable a closure captures: its field, its element, or
@@ -61,15 +59,17 @@ import (
 // store, the variables it picks are walked instead (see storesReachingPicked).
 //
 // positions finds where each instruction is in its block, and may be kept
-// across calls.
+// across calls. model is asked of the calls addr is passed to, when read is
+// nil.
 //
-//declscope:shared // resolve.go and context.go find what reaches each read
+//declscope:shared // resolve.go finds what reaches each read
 func storesReaching(
 	addr ssa.Value,
 	read ssa.Instruction,
-	positions instrPositions,
+	positions Positions,
+	model Model,
 ) (r storeReaching, ok bool) {
-	at, tracked := placeOf(addr)
+	at, tracked := PlaceOf(addr)
 	if !tracked {
 		if read != nil {
 			if r, ok := newStorePointers(positions).reachingThrough(at, read); ok {
@@ -90,7 +90,7 @@ func storesReaching(
 		w.walkToRead(read)
 		return r, true
 	}
-	reads, escapes := storeReadsOf(addr, at)
+	reads, escapes := storeReadsOf(addr, at, model)
 	for _, rd := range reads {
 		w.walkBefore(rd)
 	}
@@ -122,7 +122,7 @@ func storesReaching(
 //
 // For a global, an update is left out, and the path goes on past it (see
 // storePointer.global).
-func storesReachingPointer(at place, read ssa.Instruction, positions instrPositions) (r storeReaching, ok bool) {
+func storesReachingPointer(at Place, read ssa.Instruction, positions Positions) (r storeReaching, ok bool) {
 	if _, isConst := at.root.(*ssa.Const); isConst || read == nil {
 		return r, false
 	}
@@ -164,7 +164,7 @@ func storePointerOf(root ssa.Value) *storePointer {
 	_, global := root.(*ssa.Global)
 	p := &storePointer{same: make(map[ssa.Value]bool), global: global}
 	p.def, _ = root.(ssa.Instruction)
-	if load, isLoad := asLoad(root); isLoad {
+	if load, isLoad := AsLoad(root); isLoad {
 		p.from = load.X
 	}
 	return p
@@ -185,25 +185,25 @@ func storePointerOf(root ssa.Value) *storePointer {
 // path: the pointer read is the one def loaded.
 func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 	def, reached := w.pointer.def, false
-	toDef := func(in ssa.Instruction) walkStep {
+	toDef := func(in ssa.Instruction) WalkStep {
 		if def != nil && in == def {
 			reached = true
-			return walkStop
+			return WalkStop
 		}
 		return w.stepAt(in)
 	}
-	walkBack([]walkPoint{walkPointBefore(instr, w.positions)}, toDef, nil, nil)
+	walkBack([]WalkPoint{WalkPointBefore(instr, w.positions)}, toDef, nil, nil)
 	from := w.pointer.from
 	if !reached || from == nil {
 		return
 	}
-	pastDef := func(in ssa.Instruction) walkStep {
+	pastDef := func(in ssa.Instruction) WalkStep {
 		if matchOverwrites(in, from) {
-			return walkStop
+			return WalkStop
 		}
 		return w.stepAt(in)
 	}
-	walkBack([]walkPoint{walkPointBefore(def, w.positions)}, pastDef, nil, nil)
+	walkBack([]WalkPoint{WalkPointBefore(def, w.positions)}, pastDef, nil, nil)
 }
 
 // samePointer reports whether root, the root of a store, is the pointer the
@@ -245,7 +245,7 @@ func storesReachingPicked(
 	phi *ssa.Phi,
 	path []sel,
 	read ssa.Instruction,
-	positions instrPositions,
+	positions Positions,
 ) (r storeReaching, ok bool) {
 	switch read.(type) {
 	case nil, *ssa.Defer, *ssa.Go:
@@ -256,7 +256,7 @@ func storesReachingPicked(
 		return r, false
 	}
 	for _, leaf := range leaves {
-		leafAt, tracked := placeOf(leaf)
+		leafAt, tracked := PlaceOf(leaf)
 		if !tracked {
 			return storeReaching{}, false
 		}
@@ -283,7 +283,7 @@ func storePickedLeaves(phi *ssa.Phi) (leaves []ssa.Value, ok bool) {
 		p := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
 		for _, edge := range p.Edges {
-			if seen[edge] || isNilConst(edge) {
+			if seen[edge] || IsNilConst(edge) {
 				continue
 			}
 			seen[edge] = true
@@ -350,7 +350,7 @@ func (pk *storePick) holds(p *ssa.Phi) bool {
 //	h.p.l = base.With().Ctx(ctx).Logger() // t5 = *&t0.p ; *&t5.l = ..., and t5 is t1 too
 //	h.p.l.Info()                          // reads only that store
 type storePointers struct {
-	positions instrPositions
+	positions Positions
 	// pointed holds what each pointer already followed can point to, by the
 	// value read. One still being followed is there and not ok, so that
 	// reaching it again, through a store that leads back to it, fails.
@@ -372,7 +372,7 @@ type storeTarget struct {
 }
 
 // newStorePointers returns a storePointers that has followed no pointer yet.
-func newStorePointers(positions instrPositions) *storePointers {
+func newStorePointers(positions Positions) *storePointers {
 	return &storePointers{positions: positions, pointed: make(map[ssa.Value]storePointed)}
 }
 
@@ -380,13 +380,13 @@ func newStorePointers(positions instrPositions) *storePointers {
 // pointer read from memory, when read runs: what can be at the same
 // selections from each variable the pointer can point to. ok is false when
 // the pointer cannot be followed, or points to nothing but nil.
-func (p *storePointers) reachingThrough(at place, read ssa.Instruction) (r storeReaching, ok bool) {
+func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r storeReaching, ok bool) {
 	targets, ok := p.targetsOf(at.root)
 	if !ok || len(targets) == 0 {
 		return r, false
 	}
 	for _, t := range targets {
-		tat, tracked := placeOf(t.v)
+		tat, tracked := PlaceOf(t.v)
 		tat = tat.with(at.path...)
 		var tr storeReaching
 		if !tracked {
@@ -425,7 +425,7 @@ func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
 
 // reaching finds the values that can be at at when read runs, for at in a
 // variable, or in what a pointer read from memory points to.
-func (p *storePointers) reaching(at place, read ssa.Instruction) (storeReaching, bool) {
+func (p *storePointers) reaching(at Place, read ssa.Instruction) (storeReaching, bool) {
 	if !isTrackedRoot(at.root) {
 		return p.reachingThrough(at, read)
 	}
@@ -440,7 +440,7 @@ func (p *storePointers) reaching(at place, read ssa.Instruction) (storeReaching,
 // of it a store to at writes: all of it when root is all the pointer can
 // point to, or maybe all of it otherwise. It is coverNone when the pointer
 // cannot point to root, or cannot be followed.
-func (p *storePointers) through(at place, root ssa.Value) (place, placeCover) {
+func (p *storePointers) through(at Place, root ssa.Value) (Place, placeCover) {
 	if _, _, isRead := storePointerRead(at.root); !isRead {
 		return at, coverNone
 	}
@@ -449,7 +449,7 @@ func (p *storePointers) through(at place, root ssa.Value) (place, placeCover) {
 		return at, coverNone
 	}
 	for _, t := range targets {
-		tat, _ := placeOf(t.v)
+		tat, _ := PlaceOf(t.v)
 		if tat.root != root {
 			continue
 		}
@@ -467,7 +467,7 @@ func (p *storePointers) through(at place, root ssa.Value) (place, placeCover) {
 //
 //	t3 = *&t0.p             // read from t0.p
 //	t5 = *t0 ; t6 = t5.p    // read from t0.p too, as t5 is loaded
-func storePointerRead(v ssa.Value) (at place, load *ssa.UnOp, ok bool) {
+func storePointerRead(v ssa.Value) (at Place, load *ssa.UnOp, ok bool) {
 	var selections []sel
 	for {
 		from, s, isSel := valueSel(v)
@@ -477,12 +477,12 @@ func storePointerRead(v ssa.Value) (at place, load *ssa.UnOp, ok bool) {
 		selections = append(selections, s)
 		v = from
 	}
-	load, ok = asLoad(v)
+	load, ok = AsLoad(v)
 	if !ok {
-		return place{}, nil, false
+		return Place{}, nil, false
 	}
 	slices.Reverse(selections)
-	base, _ := placeOf(load.X)
+	base, _ := PlaceOf(load.X)
 	return base.with(selections...), load, true
 }
 
@@ -492,7 +492,7 @@ func storePointerRead(v ssa.Value) (at place, load *ssa.UnOp, ok bool) {
 func storeTargetsOf(values []ssa.Value) ([]storeTarget, bool) {
 	var targets []storeTarget
 	for _, v := range values {
-		if isNilConst(v) {
+		if IsNilConst(v) {
 			continue // A nil pointer has no variable to read
 		}
 		phi, isPhi := v.(*ssa.Phi)
@@ -523,9 +523,9 @@ func (r *storeReaching) merge(o storeReaching) {
 
 // addCaptured adds c, a place in a variable a closure captures, to what r
 // found, unless it is there already.
-func (r *storeReaching) addCaptured(c place) {
-	key := c.key()
-	if !slices.ContainsFunc(r.captured, func(o place) bool { return o.key() == key }) {
+func (r *storeReaching) addCaptured(c Place) {
+	key := c.Key()
+	if !slices.ContainsFunc(r.captured, func(o Place) bool { return o.Key() == key }) {
 		r.captured = append(r.captured, c)
 	}
 }
@@ -540,10 +540,10 @@ func storesReachingClosure(
 	v ssa.Value,
 	path []sel,
 	mc *ssa.MakeClosure,
-	positions instrPositions,
+	positions Positions,
 ) storeReaching {
 	var r storeReaching
-	w := &storeWalk{at: place{root: v, path: path}, positions: positions, out: &r}
+	w := &storeWalk{at: Place{root: v, path: path}, positions: positions, out: &r}
 	w.walkEscape(mc)
 	return r
 }
@@ -585,11 +585,11 @@ func (w *storeWalk) walkEscape(esc ssa.Instruction) {
 // phi is an escape since an edge is the root or the address, as storeReadsOf
 // matches it, so some edge holds it.
 func (w *storeWalk) walkToPhiEdges(phi *ssa.Phi) {
-	var from []walkPoint
+	var from []WalkPoint
 	for i, edge := range phi.Edges {
 		if w.phiEdgeHolds(edge) {
 			pred := phi.Block().Preds[i]
-			from = append(from, walkPoint{block: pred, index: len(pred.Instrs)})
+			from = append(from, WalkPoint{block: pred, index: len(pred.Instrs)})
 		}
 	}
 	w.walkBackFrom(from)
@@ -603,7 +603,7 @@ func (w *storeWalk) phiEdgeHolds(edge ssa.Value) bool {
 	if _, ok := w.prefixLen(edge); ok {
 		return true
 	}
-	at, _ := placeOf(edge)
+	at, _ := PlaceOf(edge)
 	return len(at.path) == len(w.at.path) && at.covers(w.at, storeIndexAlways) == coverMust
 }
 
@@ -650,15 +650,15 @@ func (w *storeWalk) declaredInLoop() bool {
 //	}
 //	return                              // the path that skips the if defers nothing
 func (w *storeWalk) walkDeferred(d *ssa.Defer) {
-	var rets []walkPoint
+	var rets []WalkPoint
 	for _, ret := range storeReturnsAfter(d, w.positions) {
-		rets = append(rets, walkPointBefore(ret, w.positions))
+		rets = append(rets, WalkPointBefore(ret, w.positions))
 	}
 	reachesD := false
-	visit := func(instr ssa.Instruction) walkStep {
+	visit := func(instr ssa.Instruction) WalkStep {
 		if instr == d {
 			reachesD = true // Before it, the path goes on from d
-			return walkStop
+			return WalkStop
 		}
 		return w.stepAt(instr)
 	}
@@ -670,7 +670,7 @@ func (w *storeWalk) walkDeferred(d *ssa.Defer) {
 
 // storeReturnsAfter returns the returns that can run after d, where what it
 // defers runs. The recover block, reached after a panic, is not among them.
-func storeReturnsAfter(d *ssa.Defer, positions instrPositions) []ssa.Instruction {
+func storeReturnsAfter(d *ssa.Defer, positions Positions) []ssa.Instruction {
 	var rets []ssa.Instruction
 	fn := d.Parent()
 	for _, b := range fn.Blocks {
@@ -708,7 +708,7 @@ func (w *storeWalk) walkToRead(read ssa.Instruction) {
 // storeReaching is what storesReaching found can be at an address when it is
 // read.
 //
-//declscope:shared // resolve.go resolves each part, and tracing.go reads the pointers at an embedded field
+//declscope:shared // resolve.go resolves each part
 type storeReaching struct {
 	// values are the values stored. Every one must have context.
 	values []ssa.Value
@@ -720,7 +720,7 @@ type storeReaching struct {
 	// variable and the selections from it, whose values some path carries as
 	// the closure starts. Each is what is at the same selections of the
 	// variable bound where the closure is made, when the closure runs.
-	captured []place
+	captured []Place
 	// params are the parameters of a func literal, with the selections from
 	// them, whose values some path carries from the entry of the func literal.
 	// Tracing them finds what the calls of the func literal pass.
@@ -749,11 +749,11 @@ func storeIsFuncLiteralParam(v ssa.Value) (*ssa.Parameter, bool) {
 // root of at is not one isTrackedRoot accepts, nor a pointer read from such
 // an address that storePointers can follow.
 //
-//declscope:shared // resolve.go walks from a call of a func literal, tracing.go from an embedded field
+//declscope:shared // resolve.go walks from a call of a func literal, and from an embedded field
 func storesReachingAt(
-	at place,
+	at Place,
 	read ssa.Instruction,
-	positions instrPositions,
+	positions Positions,
 ) (r storeReaching, ok bool) {
 	if !isTrackedRoot(at.root) {
 		return newStorePointers(positions).reachingThrough(at, read)
@@ -766,8 +766,8 @@ func storesReachingAt(
 // storeWalk walks the control flow backwards from a read, and stops each path
 // at the first store to the address it looks for.
 type storeWalk struct {
-	at        place          // The address, in a variable or pointer parameter
-	positions instrPositions // Where each instruction is in its block
+	at        Place     // The address, in a variable or pointer parameter
+	positions Positions // Where each instruction is in its block
 	out       *storeReaching
 	// copies holds the loads that copied walks have started from, with the
 	// path they look for, shared by every walk that copied starts.
@@ -788,7 +788,7 @@ type storeWalk struct {
 // looks for from the aggregate loaded.
 type storeCopy struct {
 	load *ssa.UnOp
-	at   placeKey
+	at   PlaceKey
 }
 
 // walkBefore walks every path that leads to instr, from the instruction
@@ -804,26 +804,26 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 		return
 	}
 	if w.picked == nil {
-		w.walkBackFrom([]walkPoint{walkPointBefore(instr, w.positions)})
+		w.walkBackFrom([]WalkPoint{WalkPointBefore(instr, w.positions)})
 		return
 	}
 	atEntry := func() bool {
 		w.reachEntry()
 		return true
 	}
-	from := []walkFrom[*ssa.Phi]{{walkPointBefore(instr, w.positions), w.picked.phi}}
+	from := []WalkFrom[*ssa.Phi]{{WalkPointBefore(instr, w.positions), w.picked.phi}}
 	edge := func(b *ssa.BasicBlock, i int, need *ssa.Phi) (*ssa.Phi, bool) {
 		if need == nil || need.Block() != b {
 			return need, true
 		}
 		return w.pickedThrough(need.Edges[i]) // The Phi may not point to the variable on this path
 	}
-	walkBackWith(from, w.stepAt, atEntry, edge)
+	WalkBackWith(from, w.stepAt, atEntry, edge)
 }
 
 // walkBackFrom walks every path that leads to a point of from, and stops each
 // at the first store to the address.
-func (w *storeWalk) walkBackFrom(from []walkPoint) {
+func (w *storeWalk) walkBackFrom(from []WalkPoint) {
 	atEntry := func() bool {
 		w.reachEntry()
 		return true
@@ -859,7 +859,7 @@ func (w *storeWalk) reachEntry() {
 		return
 	}
 	if fv, ok := w.at.root.(*ssa.FreeVar); ok {
-		w.out.addCaptured(place{root: fv, path: slices.Clone(w.at.path)})
+		w.out.addCaptured(Place{root: fv, path: slices.Clone(w.at.path)})
 		return
 	}
 	if p, ok := storeIsFuncLiteralParam(w.at.root); ok {
@@ -880,16 +880,16 @@ func (w *storeWalk) reachEntry() {
 //	arr[i] = a             // reaches the read
 //	arr[0] = b             // reaches it too, when i is 0
 //	arr[i].Info()
-func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
+func (w *storeWalk) stepAt(instr ssa.Instruction) WalkStep {
 	switch in := instr.(type) {
 	case *ssa.Alloc:
 		if in == w.at.root {
-			return walkStop // Its zero value has nothing to trace
+			return WalkStop // Its zero value has nothing to trace
 		}
 	case *ssa.Store:
 		n, cover := w.storeCover(in.Addr)
 		if cover == coverNone || w.pointer != nil && w.pointer.global && w.updates(in) {
-			return walkOn
+			return WalkOn
 		}
 		if n == len(w.at.path) {
 			w.out.values = append(w.out.values, in.Val)
@@ -897,11 +897,11 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 			w.copied(in, w.at.path[n:])
 		}
 		if cover == coverMay {
-			return walkOn
+			return WalkOn
 		}
-		return walkStop
+		return WalkStop
 	}
-	return walkOn
+	return WalkOn
 }
 
 // updates reports whether store is an update of the address of the walk: the
@@ -909,7 +909,7 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 // l = l.With().Logger() does.
 func (w *storeWalk) updates(store *ssa.Store) bool {
 	isLoadOfAddr := func(v ssa.Value) bool {
-		load, isLoad := asLoad(v)
+		load, isLoad := AsLoad(v)
 		if !isLoad {
 			return false
 		}
@@ -920,13 +920,13 @@ func (w *storeWalk) updates(store *ssa.Store) bool {
 }
 
 // storeCover tells how much of the address of the walk a store to addr
-// writes, as place.covers does, and how many selections addr takes.
+// writes, as Place.covers does, and how many selections addr takes.
 //
 // With pointers, a store through a pointer read from memory writes root when
 // the pointer is root: on every path when that is the only pointer that can
 // be there, or maybe otherwise.
 func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
-	at, _ := placeOf(addr)
+	at, _ := PlaceOf(addr)
 	limit := coverMust
 	switch {
 	case at.root == w.at.root:
@@ -960,7 +960,7 @@ func (w *storeWalk) indexOnce(index ssa.Value) bool {
 // prefixLen reports whether addr is the root or a selection from it that the
 // path of the walk starts with, and how many selections it takes.
 func (w *storeWalk) prefixLen(addr ssa.Value) (int, bool) {
-	at, _ := placeOf(addr)
+	at, _ := PlaceOf(addr)
 	return len(at.path), at.prefixOf(w.at)
 }
 
@@ -983,12 +983,12 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 		w.out.params = append(w.out.params, storeParamPath{param: p, path: slices.Clone(rest)})
 		return
 	}
-	load, ok := asLoad(store.Val)
+	load, ok := AsLoad(store.Val)
 	if !ok {
 		w.out.unknown = true
 		return
 	}
-	from, tracked := placeOf(load.X)
+	from, tracked := PlaceOf(load.X)
 	src := &storeWalk{
 		at:        from.with(rest...),
 		positions: w.positions,
@@ -1009,7 +1009,7 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 		src.copies = make(map[storeCopy]bool)
 		w.copies = src.copies
 	}
-	key := storeCopy{load: load, at: src.at.key()}
+	key := storeCopy{load: load, at: src.at.Key()}
 	if src.copies[key] {
 		return
 	}
@@ -1032,23 +1032,23 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 func (w *storeWalk) addStoresAfter(instr ssa.Instruction) {
 	if !w.declaredInLoop() {
 		after := w.positions.after(instr)
-		for other := range instrsIn(instr.Parent()) {
+		for other := range InstrsIn(instr.Parent()) {
 			if store, ok := other.(*ssa.Store); ok && after(store) {
 				w.addStoreAfter(store)
 			}
 		}
 		return
 	}
-	walkFwd(walkPointAfter(instr, w.positions), func(other ssa.Instruction) walkStep {
+	WalkFwd(WalkPointAfter(instr, w.positions), func(other ssa.Instruction) WalkStep {
 		switch in := other.(type) {
 		case *ssa.Alloc:
 			if in == w.at.root {
-				return walkStop
+				return WalkStop
 			}
 		case *ssa.Store:
 			w.addStoreAfter(in)
 		}
-		return walkOn
+		return WalkOn
 	})
 }
 
@@ -1069,15 +1069,16 @@ func (w *storeWalk) addStoreAfter(store *ssa.Store) {
 // storeReadsOf returns the instructions that read addr, whose place is at,
 // or an address with the same place: the loads of it, apart from those
 // that only feed a store to it, and the calls it is passed to, apart from the
-// Logger.UpdateContext calls on it. A store whose value loads from addr is an
+// calls on it of a method that model says leaves its receiver, such as
+// Logger.UpdateContext. A store whose value loads from addr is an
 // update, and such a load is how it takes the value before it.
 //
 // escapes are the other instructions that use addr, apart from the stores to
 // it. Each passes addr on, as a closure that captures it or a variable it is
 // stored to does, to be read later.
-func storeReadsOf(addr ssa.Value, at place) (reads, escapes []ssa.Instruction) {
+func storeReadsOf(addr ssa.Value, at Place, model Model) (reads, escapes []ssa.Instruction) {
 	matches := func(v ssa.Value) bool {
-		p, _ := placeOf(v)
+		p, _ := PlaceOf(v)
 		return len(p.path) == len(at.path) && p.covers(at, storeIndexAlways) == coverMust
 	}
 	var refs []ssa.Instruction
@@ -1085,13 +1086,13 @@ func storeReadsOf(addr ssa.Value, at place) (reads, escapes []ssa.Instruction) {
 		refs = append(refs, *addr.Referrers()...) // A local variable or a parameter always has them
 	}
 	feeding := make(map[ssa.Instruction]bool)
-	for instr := range instrsIn(parentFunc(addr)) {
+	for instr := range InstrsIn(parentFunc(addr)) {
 		if v, isValue := instr.(ssa.Value); isValue && v != at.root && matches(v) {
 			refs = append(refs, *v.Referrers()...)
 		}
 		if store, ok := instr.(*ssa.Store); ok && matches(store.Addr) {
 			recordLoad := func(v ssa.Value) bool {
-				if load, ok := asLoad(v); ok && matches(load.X) {
+				if load, ok := AsLoad(v); ok && matches(load.X) {
 					feeding[load] = true
 				}
 				return false
@@ -1110,7 +1111,7 @@ func storeReadsOf(addr ssa.Value, at place) (reads, escapes []ssa.Instruction) {
 				reads = append(reads, r)
 			}
 		case *ssa.Call:
-			if c, ok := calleeOf(&r.Call); !ok || c.api.Kind != zerologapi.KindInPlaceUpdate || !matches(c.recv) {
+			if c, ok := CalleeOf(&r.Call); !ok || !model.LeavesReceiver(c.Func) || !matches(c.Recv) {
 				reads = append(reads, r)
 			}
 		default:

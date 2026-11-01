@@ -1,17 +1,15 @@
 // value.go is the SSA plumbing the rest of the package is built on: unwrapping
 // a value, walking back to what a value derives from, ordering instructions in
-// the control flow, and iterating instructions. None of it knows about
-// zerolog, or about tracing. The model of an address is in place.go, and
-// stores and address comparison are in store.go and match.go.
+// the control flow, and iterating instructions. The model of an address is in
+// place.go, and stores and address comparison are in store.go and match.go.
 //
-// It joins the core namespace because every other file of internal/chain
-// stands on it. checker.go and tracing.go are the units built on top, and keep
-// namespaces of their own.
+// It joins the core namespace because every other file of the package stands
+// on it.
 //
 //declscope:core
 //declscope:shared
 
-package chain
+package ssaflow
 
 import (
 	"iter"
@@ -20,8 +18,8 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// unwrapInner extracts the inner value from SSA wrapper types.
-func unwrapInner(v ssa.Value) ssa.Value {
+// UnwrapInner extracts the inner value from SSA wrapper types.
+func UnwrapInner(v ssa.Value) ssa.Value {
 	switch val := v.(type) {
 	case *ssa.MakeInterface:
 		return val.X
@@ -44,7 +42,7 @@ func unwrapInner(v ssa.Value) ssa.Value {
 }
 
 // derivesFrom reports whether found holds for v, or for a value v derives
-// from: the receiver of a call (see calleeReceiver), an edge of a Phi, or what next returns for
+// from: the receiver of a call (see CalleeReceiver), an edge of a Phi, or what next returns for
 // any other value (nil to stop). Values in seen are not followed, and each
 // value followed is added to it, so cycles end.
 func derivesFrom(
@@ -63,7 +61,7 @@ func derivesFrom(
 
 	switch val := v.(type) {
 	case *ssa.Call:
-		if recv := calleeReceiver(&val.Call); recv != nil {
+		if recv := CalleeReceiver(&val.Call); recv != nil {
 			return derivesFrom(recv, found, next, seen)
 		}
 		return false
@@ -88,12 +86,12 @@ func unOpOperand(v ssa.Value) ssa.Value {
 	return nil
 }
 
-// instrPositions remembers the position of each instruction in its block.
+// Positions remembers the position of each instruction in its block.
 // A block is indexed once, the first time one of its instructions is asked.
-type instrPositions map[ssa.Instruction]int
+type Positions map[ssa.Instruction]int
 
 // of returns the position of instr in its block.
-func (p instrPositions) of(instr ssa.Instruction) int {
+func (p Positions) of(instr ssa.Instruction) int {
 	if i, ok := p[instr]; ok {
 		return i
 	}
@@ -104,13 +102,13 @@ func (p instrPositions) of(instr ssa.Instruction) int {
 }
 
 // reaches reports whether b can run after a.
-func (p instrPositions) reaches(a, b ssa.Instruction) bool {
+func (p Positions) reaches(a, b ssa.Instruction) bool {
 	return p.after(a)(b)
 }
 
 // after returns a test of whether an instruction can run after a. It finds
 // the blocks that follow a once, for every instruction it is asked about.
-func (p instrPositions) after(a ssa.Instruction) func(ssa.Instruction) bool {
+func (p Positions) after(a ssa.Instruction) func(ssa.Instruction) bool {
 	following := p.following(a)
 	return func(b ssa.Instruction) bool {
 		return following[b.Block()] || a.Block() == b.Block() && p.of(a) < p.of(b)
@@ -119,7 +117,7 @@ func (p instrPositions) after(a ssa.Instruction) func(ssa.Instruction) bool {
 
 // following returns the blocks that can run after the block of a: its
 // successors, theirs, and so on. The block of a is among them only in a loop.
-func (p instrPositions) following(a ssa.Instruction) map[*ssa.BasicBlock]bool {
+func (p Positions) following(a ssa.Instruction) map[*ssa.BasicBlock]bool {
 	following := make(map[*ssa.BasicBlock]bool)
 	queue := slices.Clone(a.Block().Succs)
 	for len(queue) > 0 {
@@ -134,8 +132,8 @@ func (p instrPositions) following(a ssa.Instruction) map[*ssa.BasicBlock]bool {
 	return following
 }
 
-// isNilConst checks if a value is a nil constant.
-func isNilConst(v ssa.Value) bool {
+// IsNilConst checks if a value is a nil constant.
+func IsNilConst(v ssa.Value) bool {
 	c, ok := v.(*ssa.Const)
 	return ok && c.Value == nil
 }
@@ -152,8 +150,8 @@ func parentFunc(v ssa.Value) *ssa.Function {
 	return nil
 }
 
-// instrsIn yields every instruction of fn, in block order.
-func instrsIn(fn *ssa.Function) iter.Seq[ssa.Instruction] {
+// InstrsIn yields every instruction of fn, in block order.
+func InstrsIn(fn *ssa.Function) iter.Seq[ssa.Instruction] {
 	return func(yield func(ssa.Instruction) bool) {
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {

@@ -22,6 +22,8 @@
 //
 // The checker identifies terminator calls (Msg, Send, etc.) and traces
 // backwards through the SSA value chain to verify .Ctx(ctx) was called.
+// What zerolog does comes from internal/zerologapi, and what a read from
+// memory can see comes from internal/ssaflow, which knows nothing of zerolog.
 package chain
 
 import (
@@ -33,6 +35,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/mpyw/zerologlintctx/internal/ssaflow"
 	"github.com/mpyw/zerologlintctx/internal/zerologapi"
 )
 
@@ -75,7 +78,7 @@ func NewChecker() *Checker {
 func (c *Checker) CheckFunction(fn *ssa.Function, ctxName string, report func(pos token.Pos, msg string)) {
 	c.ctxName, c.report = ctxName, report
 	c.scope = fn.Pkg.Pkg.Scope()
-	for instr := range instrsIn(fn) {
+	for instr := range ssaflow.InstrsIn(fn) {
 		if call, ok := instr.(ssa.CallInstruction); ok {
 			c.checkCall(call)
 		}
@@ -104,7 +107,7 @@ func (c *Checker) checkCall(call ssa.CallInstruction) {
 	case zerologapi.KindDirectLog:
 		// A Print function of zerolog/log logs through the global Logger,
 		// which is not traced
-		if callee.recv == nil || !c.tracer.loggerHasCtx(callee.recv, call) {
+		if callee.Recv == nil || !c.tracer.loggerHasCtx(callee.Recv, call) {
 			c.reportOnce(pos, checkerDirectLogging)
 		}
 	}
