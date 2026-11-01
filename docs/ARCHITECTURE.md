@@ -881,26 +881,43 @@ Info(&t8.log)             // reads t8.log, and t8 is t1
 |-------------------|--------------|
 | A store through the same pointer | Records the value, and stops (or goes on for a may store) |
 | Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable |
-| Where the pointer is made, any other instruction, such as a call or a Phi | Stops, and carries nothing |
+| Where the pointer is made, any other instruction, such as a call or a Phi | Stops, and carries what tracing the pointer itself finds, for an address that is the pointer itself. Otherwise carries nothing |
 | The entry of a closure, past where the pointer is made, when the closure reads it from the variables it captures | Goes on before each call of the closure, when it is only called where it is made (below) |
 | The entry of the function | Carries nothing |
 
 A path that carries nothing gets to where the function does not know what is
 at the address: the callee that returned the pointer, the caller, or a time
 before another pointer was put where it is read from, may have stored there.
+For the receiver of a call, such as `p.Info()` for `p := newLoggerPtr()`, a
+path that gets back to where the pointer is made carries what tracing the
+pointer itself finds, as the source `Resolved.Pointer` (`storeReaching.made`):
+
+```go
+p := zerolog.Ctx(ctx)
+if cond {
+    *p = base.With().Ctx(ctx).Logger()
+}
+p.Info().Msg("x") // the logger of ctx when cond is false: not reported
+```
 Only the stores of the function itself are traced. When no path carries one,
 the address is taken as not known to the walk, and the pointer itself is
 traced. For a Phi of pointers with no store through it, the variables it
 picks are walked instead (see [Stores That Reach a Read](#stores-that-reach-a-read)).
 
 A pointer receiver is such a pointer too, when it is read from memory, as
-`b.p` and `(*pl)` are. `Resolver.ResolvesThrough` takes it, so the call is the
-read, and a store through the same pointer before it is what the call sees:
+`b.p` and `(*pl)` are, or when a call returns it, or it is received from a
+channel or looked up in a map. `Resolver.ResolvesThrough` takes it, so the
+call is the read, and a store through the same pointer before it is what the
+call sees:
 
 ```go
 b := box{l}
 *b.p = zerolog.Ctx(ctx).With().Logger() // t1 = *&t0.p ; *t1 = ...
 b.p.Info().Msg("x")                     // t2 = *&t0.p ; Info(t2): not reported
+
+p := newLoggerPtr()
+*p = base.With().Ctx(ctx).Logger()      // *t0 = ...
+p.Info().Msg("x")                       // Info(t0): not reported
 ```
 
 A closure that reads the pointer from the variables it captures, such as
