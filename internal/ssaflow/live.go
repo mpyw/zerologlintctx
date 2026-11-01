@@ -15,6 +15,9 @@ package ssaflow
 import (
 	"go/constant"
 	"iter"
+	"runtime"
+	"sync"
+	"weak"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -33,8 +36,31 @@ type LiveFlow struct {
 	dead []bool
 }
 
-// LiveFlowOf returns the LiveFlow of fn.
+// liveCache keeps the LiveFlow of each function asked about, by a weak
+// pointer to the function. An entry goes once the function is collected, so
+// the cache holds no SSA in memory.
+var liveCache sync.Map // weak.Pointer[ssa.Function] -> LiveFlow
+
+// LiveFlowOf returns the LiveFlow of fn, which it finds once per function.
 func LiveFlowOf(fn *ssa.Function) LiveFlow {
+	key := weak.Make(fn)
+	if flow, ok := liveCache.Load(key); ok {
+		return flow.(LiveFlow)
+	}
+	flow := liveFlowFound(fn)
+	if _, loaded := liveCache.LoadOrStore(key, flow); !loaded {
+		runtime.AddCleanup(fn, liveCacheDrop, key)
+	}
+	return flow
+}
+
+// liveCacheDrop drops the entry of a function that is collected.
+func liveCacheDrop(key weak.Pointer[ssa.Function]) {
+	liveCache.Delete(key)
+}
+
+// liveFlowFound finds the LiveFlow of fn.
+func liveFlowFound(fn *ssa.Function) LiveFlow {
 	if !hasLiveConstBranch(fn) {
 		return LiveFlow{}
 	}

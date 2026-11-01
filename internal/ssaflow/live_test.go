@@ -6,8 +6,11 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"runtime"
 	"slices"
 	"testing"
+	"time"
+	"weak"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
@@ -152,4 +155,36 @@ func TestLiveFlowNoConstant(t *testing.T) {
 	if got := LiveEdgeValues(phi); &got[0] != &phi.Edges[0] {
 		t.Errorf("LiveEdgeValues = %v, want phi.Edges itself", got)
 	}
+}
+
+// TestLiveFlowCache checks that the LiveFlow of a function is found once, and
+// dropped once the function is collected.
+func TestLiveFlowCache(t *testing.T) {
+	key := liveCachedKey(t)
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		runtime.GC()
+		if _, ok := liveCache.Load(key); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the entry of a collected function is still in the cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// liveCachedKey asks for the LiveFlow of a function twice, and returns its
+// key in the cache. The function is not held after it returns.
+func liveCachedKey(t *testing.T) weak.Pointer[ssa.Function] {
+	t.Helper()
+	fn := liveFuncs(t).Func("f")
+	first := LiveFlowOf(fn)
+	if again := LiveFlowOf(fn); &again.dead[0] != &first.dead[0] {
+		t.Error("LiveFlowOf found the flow of f again")
+	}
+	key := weak.Make(fn)
+	if _, ok := liveCache.Load(key); !ok {
+		t.Fatal("no entry for f in the cache")
+	}
+	return key
 }
