@@ -655,6 +655,88 @@ func badFuncLiteralReturnsParamPerCall(ctx context.Context, logger zerolog.Logge
 	b.Msg("result of the call without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+type iifeEventHolder struct{ e *zerolog.Event }
+
+func badFuncLiteralReturnsParamInStructPerCall(ctx context.Context, logger zerolog.Logger) {
+	id := func(e *zerolog.Event) *zerolog.Event {
+		h := iifeEventHolder{e}
+		return h.e
+	}
+	a := id(logger.Info().Ctx(ctx))
+	b := id(logger.Info())
+	a.Msg("through a struct, with ctx")    // OK - this call passes ctx
+	b.Msg("through a struct, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsParamInStructPointerPerCall(ctx context.Context, logger zerolog.Logger) {
+	id := func(e *zerolog.Event) *zerolog.Event {
+		h := &iifeEventHolder{e}
+		return h.e.Str("k", "v")
+	}
+	a := id(logger.Info().Ctx(ctx))
+	b := id(logger.Info())
+	a.Msg("through a struct pointer, with ctx")    // OK - this call passes ctx
+	b.Msg("through a struct pointer, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsFieldOfPointerParamPerCall(ctx context.Context, logger zerolog.Logger) {
+	get := func(h *iifeEventHolder) *zerolog.Event { return h.e }
+	withCtx := iifeEventHolder{logger.Info().Ctx(ctx)}
+	without := iifeEventHolder{logger.Info()}
+	a := get(&withCtx)
+	b := get(&without)
+	a.Msg("field of a pointer param, with ctx")    // OK - this call passes ctx
+	b.Msg("field of a pointer param, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsFieldOfStructParamPerCall(ctx context.Context, logger zerolog.Logger) {
+	get := func(h iifeEventHolder) *zerolog.Event { return h.e }
+	a := get(iifeEventHolder{logger.Info().Ctx(ctx)})
+	b := get(iifeEventHolder{logger.Info()})
+	a.Msg("field of a struct param, with ctx")    // OK - this call passes ctx
+	b.Msg("field of a struct param, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsFieldOfLoadedParamPerCall(ctx context.Context, logger zerolog.Logger) {
+	get := func(p *iifeEventHolder) *zerolog.Event {
+		h := *p
+		return h.e
+	}
+	withCtx := iifeEventHolder{logger.Info().Ctx(ctx)}
+	without := iifeEventHolder{logger.Info()}
+	a := get(&withCtx)
+	b := get(&without)
+	a.Msg("field of a struct loaded from a param, with ctx")    // OK - this call passes ctx
+	b.Msg("field of a struct loaded from a param, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+var iifeGlobalHolder iifeEventHolder
+
+func badFuncLiteralReturnsGlobalField(ctx context.Context, logger zerolog.Logger) {
+	get := func(e *zerolog.Event) *zerolog.Event { return iifeGlobalHolder.e }
+	get(logger.Info().Ctx(ctx)).Msg("field of a global") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsFieldOfGlobalCopy(ctx context.Context, logger zerolog.Logger) {
+	get := func(e *zerolog.Event) *zerolog.Event {
+		h := iifeGlobalHolder
+		return h.e
+	}
+	get(logger.Info().Ctx(ctx)).Msg("field of a copy of a global") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsStoredParamOnOnePath(ctx context.Context, logger zerolog.Logger, cond bool) {
+	id := func(e *zerolog.Event) *zerolog.Event {
+		h := iifeEventHolder{e}
+		if cond {
+			h.e = logger.Warn()
+		}
+		return h.e
+	}
+	a := id(logger.Info().Ctx(ctx))
+	a.Msg("another event on one path") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func goodFuncLiteralReturnsParamWithCtx(ctx context.Context, logger zerolog.Logger) {
 	set := func(e *zerolog.Event) *zerolog.Event { return e.Ctx(ctx) }
 	set(logger.Info()).Msg("returns its param with ctx") // OK - the func literal sets ctx
