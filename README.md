@@ -274,6 +274,81 @@ zerolog.Ctx(ctx).
 
 ```go
 e := log.Info()
+if verbose {
+	e = e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> On the path where <code>verbose</code> is false, the event has no context</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+<summary>All cases (14)</summary>
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+log.Info().
+	Str("key", "value").
+	Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> The chain has no <code>.Ctx(ctx)</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info().
+	Ctx(ctx).
+	Str("key", "value").
+	Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The event carries <code>ctx</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+l := log.With().
+	Ctx(ctx).
+	Logger()
+l.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The logger carries <code>ctx</code>, and its events take it</td>
+</tr>
+<tr>
+<td>
+
+```go
+zerolog.Ctx(ctx).
+	Info().
+	Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The logger is taken from <code>ctx</code>. <code>log.Ctx(ctx)</code> of <code>zerolog/log</code> is the same</td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
 e = e.Ctx(ctx)
 e.Msg("hello")
 ```
@@ -411,6 +486,8 @@ go log.Info().Msg("started")
 </tbody>
 </table>
 
+</details>
+
 > [!NOTE]
 > [`zerolog.Ctx(ctx)`](https://pkg.go.dev/github.com/rs/zerolog#Ctx) returns the logger stored in `ctx`. It does not attach `ctx` to the events of that logger. Still, zerologlintctx accepts it, because taking the logger from the context is a deliberate use of it. Add `.Ctx(ctx)` too if hooks need the context:
 >
@@ -432,6 +509,69 @@ func worker(log zerolog.Logger) {
 ### Calls that do not pass on the context
 
 Some calls look like they pass on the context, but do not. They do not count:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+log.Info().
+	Ctx(context.Background()).
+	Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> A fresh context carries nothing of the caller's</td>
+</tr>
+<tr>
+<td>
+
+```go
+l := log.With().
+	Ctx(ctx).
+	Logger().
+	Output(os.Stderr)
+l.Info().Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <a href="https://pkg.go.dev/github.com/rs/zerolog#Logger.Output"><code>Logger.Output</code></a> builds a new logger, and drops the context</td>
+</tr>
+<tr>
+<td>
+
+```go
+l := zerolog.Ctx(ctx).
+	Output(os.Stderr)
+l.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> A logger from <code>zerolog.Ctx(ctx)</code> still counts after <code>Output</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+d := e.CreateDict().
+	Ctx(ctx).
+	Str("k", "v")
+e.Dict("d", d).Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <a href="https://pkg.go.dev/github.com/rs/zerolog#Event.CreateDict"><code>Event.CreateDict</code></a> returns a new event. The context is set on the dict, not on <code>e</code></td>
+</tr>
+</tbody>
+</table>
+
+<details>
+<summary>All cases (6)</summary>
 
 <table>
 <thead>
@@ -518,9 +658,56 @@ e.Dict("d", d).Msg("hello")
 </tbody>
 </table>
 
+</details>
+
 ### Direct logging
 
 `Print`, `Printf`, `Println` and `Write` log without an event chain, so they take no `.Ctx(ctx)`. The event gets only the logger's own context. A call is reported when the logger does not carry the context:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+log.Print("hello")
+log.Printf("hello %s", "world")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Both lines. The logger has no context</td>
+</tr>
+<tr>
+<td>
+
+```go
+l := log.With().
+	Ctx(ctx).
+	Logger()
+l.Print("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The logger carries the context</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Write([]byte("hello"))
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <code>Write</code> is the method that makes a <code>Logger</code> an <code>io.Writer</code>. A call of it is checked as <code>Print</code> is</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+<summary>All cases (4)</summary>
 
 <table>
 <thead>
@@ -574,6 +761,8 @@ fmt.Fprint(log, "hello")
 </tbody>
 </table>
 
+</details>
+
 The `Print` functions of `github.com/rs/zerolog/log` use the global logger, which is not traced. They are always reported:
 
 ```go
@@ -592,6 +781,49 @@ Write `//zerologlintctx:ignore`, with a reason after `//`:
 //zerologlintctx:ignore // not tied to a request
 log.Info().Msg("background task")
 ```
+
+<table>
+<thead>
+<tr><th>Placement</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore // reason
+log.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> An ignore on a line of its own reaches the line below</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info().Msg("hello") //zerologlintctx:ignore
+```
+
+</td>
+<td>✅️ <b>Passes.</b> An ignore at the end of a line of code reaches that line</td>
+</tr>
+<tr>
+<td>
+
+```go
+log.Info().Msg("a") //zerologlintctx:ignore
+log.Info().Msg("b")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Only <code>b</code>. An ignore at the end of a line does not reach the line below</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+<summary>All cases (6)</summary>
 
 <table>
 <thead>
@@ -669,7 +901,53 @@ log.Info().Msg("hello")
 </tbody>
 </table>
 
+</details>
+
 A directive that is not written right is reported, and silences nothing:
+
+<table>
+<thead>
+<tr><th>Directive</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+// zerologlintctx:ignore
+log.Info().Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Two reports: a space after <code>//</code> makes the directive malformed, and the chain is reported too</td>
+</tr>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore not tied to a request
+log.Info().Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> Two reports: <code>ignore</code> takes no argument, and the chain is reported too. Write the reason after <code>//</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+//zerologlintctx:ignore // reason
+log.Info().Ctx(ctx).Msg("hello")
+```
+
+</td>
+<td>❌️ <b>Reported.</b> <code>unused zerologlintctx:ignore directive</code>. The ignore suppresses nothing</td>
+</tr>
+</tbody>
+</table>
+
+<details>
+<summary>All cases (4)</summary>
 
 <table>
 <thead>
@@ -723,11 +1001,74 @@ log.Info().Ctx(ctx).Msg("hello")
 </tbody>
 </table>
 
+</details>
+
 ## Limits
 
 The analyzer uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) (Static Single Assignment) form to follow events through variables, branches and closures. Some value flows are not followed.
 
 These are reported, although the context is passed:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+e := newEvent(ctx, log)
+e.Msg("hello")
+
+// elsewhere
+func newEvent(
+	ctx context.Context,
+	log zerolog.Logger,
+) *zerolog.Event {
+	return log.Info().Ctx(ctx)
+}
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> An event that a declared function returns is not traced into it</td>
+</tr>
+<tr>
+<td>
+
+```go
+var e *zerolog.Event
+f := func() {
+	e = log.Info().Ctx(ctx)
+}
+f()
+e.Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> A store by a closure to a variable it captures is not seen after the call</td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+for i := 0; i < 1; i++ {
+	e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> The loop always runs once. But its check is on the counter, not on two constants, so the path that skips the loop is kept. <code>for range 1</code> passes</td>
+</tr>
+</tbody>
+</table>
+
+To silence one of these reports, write [`//zerologlintctx:ignore`](#ignoring-a-report) on the line. For the helper, `newEvent(ctx, log).Ctx(ctx)` also passes. For the closure, let it return the event, and write `e := f()`.
+
+<details>
+<summary>All cases (7)</summary>
 
 <table>
 <thead>
@@ -851,7 +1192,37 @@ e.Msg("hello")
 </tbody>
 </table>
 
+</details>
+
 These are not reported, although the context is not passed:
+
+<table>
+<thead>
+<tr><th>Code</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>
+
+```go
+send(log.Info())
+
+// elsewhere
+func send(e *zerolog.Event) {
+	e.Msg("hello")
+}
+```
+
+</td>
+<td>⚠️ <b>Not reported (limitation).</b> An event passed to a function that logs it is not checked there. <code>send</code> has no context of its own</td>
+</tr>
+</tbody>
+</table>
+
+Give `send` a `ctx` parameter, and the chain in it is checked as in [Event chains](#event-chains). Then `e.Ctx(ctx).Msg("hello")` in `send` passes.
+
+<details>
+<summary>All cases (5)</summary>
 
 <table>
 <thead>
@@ -930,6 +1301,8 @@ e.Ctx(ctx)
 </tr>
 </tbody>
 </table>
+
+</details>
 
 The full list, with the fixture of each, is in [Known limitations](./docs/ARCHITECTURE.md#known-limitations).
 
