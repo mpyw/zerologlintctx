@@ -121,3 +121,64 @@ func matchOverwrites(instr ssa.Instruction, addr ssa.Value) bool {
 	}
 	return false
 }
+
+// MatchedPlaces keys the places that a function reads through a pointer that
+// is not in a variable, such as one a call returns, so that two places
+// through the same pointer, as addressesMatch takes them, have the same key:
+//
+//	t0 = *pp ; t1 = &t0.e ; t2 = *t1   // (*pp).e
+//	t5 = *pp ; t6 = &t5.e ; t7 = *t6   // (*pp).e again: t5 is t0, the same key
+//
+// It keeps the roots it has keyed in each function.
+type MatchedPlaces struct {
+	roots map[*ssa.Function][]ssa.Value
+}
+
+// NewMatchedPlaces creates a MatchedPlaces that has keyed nothing yet.
+func NewMatchedPlaces() *MatchedPlaces {
+	return &MatchedPlaces{roots: make(map[*ssa.Function][]ssa.Value)}
+}
+
+// KeyOf returns the key of at: that of a place keyed before whose root is the
+// same pointer, with the same selections, or its own. ok is false when the
+// root of at is a global, or is read from one. Another goroutine may change
+// what is there between two reads, so two reads of it are not the same.
+func (m *MatchedPlaces) KeyOf(at Place) (key PlaceKey, ok bool) {
+	if matchFromGlobal(at.root) {
+		return PlaceKey{}, false
+	}
+	fn := parentFunc(at.root)
+	for _, root := range m.roots[fn] {
+		if addressesMatch(root, at.root) {
+			return Place{root: root, path: at.path}.Key(), true
+		}
+	}
+	m.roots[fn] = append(m.roots[fn], at.root)
+	return at.Key(), true
+}
+
+// matchFromGlobal reports whether v is a global, or is read from one: a load
+// of it, or a field or element of one, at any depth.
+func matchFromGlobal(v ssa.Value) bool {
+	for {
+		switch x := v.(type) {
+		case *ssa.Global:
+			return true
+		case *ssa.UnOp:
+			if x.Op != token.MUL {
+				return false
+			}
+			v = x.X
+		case *ssa.FieldAddr:
+			v = x.X
+		case *ssa.IndexAddr:
+			v = x.X
+		case *ssa.Field:
+			v = x.X
+		case *ssa.Index:
+			v = x.X
+		default:
+			return false
+		}
+	}
+}

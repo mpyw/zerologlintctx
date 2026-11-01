@@ -110,10 +110,11 @@ type eventCtxCall struct {
 }
 
 // eventCtxCalls are the calls of Event.Ctx of a function given a context that
-// is not fresh.
+// is not fresh, and those that a func literal called in place runs, at each
+// call of it (see eventIndex.addClosureCtxCalls).
 type eventCtxCalls struct {
-	// at holds each call by its instruction.
-	at map[ssa.Instruction]*eventCtxCall
+	// at holds the calls that run at each instruction.
+	at map[ssa.Instruction][]*eventCtxCall
 	// on holds the calls that can run on each event.
 	on map[eventSource][]*eventCtxCall
 }
@@ -131,6 +132,11 @@ type eventIndex struct {
 	//
 	//declscope:private
 	closures *ssaflow.Closures
+	// places keys the places read through a pointer that is not in a
+	// variable, whose events resolve cannot follow.
+	//
+	//declscope:private
+	places *ssaflow.MatchedPlaces
 	// steps holds the step back of each value asked about.
 	//
 	//declscope:private
@@ -176,6 +182,7 @@ func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eve
 	return &eventIndex{
 		positions: positions,
 		closures:  closures,
+		places:    ssaflow.NewMatchedPlaces(),
 		steps:     make(map[ssa.Value]eventStep),
 		sources:   make(map[ssa.Value]*eventSources),
 		ctxCalls:  make(map[*ssa.Function]*eventCtxCalls),
@@ -270,8 +277,12 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 // set, the call must also run on a value that can hold the same run of src
 // as the receiver.
 func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource, anyRun bool) bool {
-	cc, ok := q.calls.at[instr]
-	return ok && q.counts(cc, src) && (anyRun || q.runsOf(src).sameRun(q.ix.ctxRunsOf(cc, src)))
+	for _, cc := range q.calls.at[instr] {
+		if q.counts(cc, src) && (anyRun || q.runsOf(src).sameRun(q.ix.ctxRunsOf(cc, src))) {
+			return true
+		}
+	}
+	return false
 }
 
 // runsOf returns the runs of src the receiver can hold, or nil when src is
@@ -461,36 +472,98 @@ func (q *eventQuery) isOther(v ssa.Value, src eventSource) bool {
 
 // ctxCallsIn returns the calls of Event.Ctx in fn given a context that is not
 // fresh, with the events each runs on. A Ctx call given a fresh
-// context.Background() or TODO() does not set the context.
+// context.Background() or TODO() does not set the context. The Ctx calls
+// that a func literal called in place runs are among them, at each call of
+// it (see addClosureCtxCalls).
 func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) *eventCtxCalls {
 	if calls, ok := ix.ctxCalls[fn]; ok {
 		return calls
 	}
 	calls := &eventCtxCalls{
-		at: make(map[ssa.Instruction]*eventCtxCall),
+		at: make(map[ssa.Instruction][]*eventCtxCall),
 		on: make(map[eventSource][]*eventCtxCall),
 	}
 	for instr := range ssaflow.InstrsIn(fn) {
-		call, ok := instr.(*ssa.Call)
-		if !ok {
-			continue
-		}
-		c, ok := calleeOf(&call.Call)
-		if !ok || c.Recv == nil || c.api.Kind != zerologapi.KindSource || c.api.Recv != zerologapi.TypeEvent {
-			continue
-		}
-		if args := call.Call.Args; len(args) > 0 && isFreshContext(args[len(args)-1], ix.positions, ix.closures) {
-			continue
-		}
-		recv := ix.calleeStep(c, call)
-		cc := &eventCtxCall{call: call, sources: ix.expand(recv, make(map[ssa.Value]bool), nil), recv: recv}
-		calls.at[call] = cc
-		for _, src := range cc.sources.list {
-			calls.on[src] = append(calls.on[src], cc)
+		switch in := instr.(type) {
+		case *ssa.Call:
+			if cc, ok := ix.ctxCallOf(in); ok {
+				calls.add(in, cc)
+			}
+		case *ssa.MakeClosure:
+			ix.addClosureCtxCalls(calls, in)
 		}
 	}
 	ix.ctxCalls[fn] = calls
 	return calls
+}
+
+// ctxCallOf returns call as a Ctx call, when it is a call of Event.Ctx given
+// a context that is not fresh.
+func (ix *eventIndex) ctxCallOf(call *ssa.Call) (*eventCtxCall, bool) {
+	c, ok := calleeOf(&call.Call)
+	if !ok || c.Recv == nil || c.api.Kind != zerologapi.KindSource || c.api.Recv != zerologapi.TypeEvent {
+		return nil, false
+	}
+	if args := call.Call.Args; len(args) > 0 && isFreshContext(args[len(args)-1], ix.positions, ix.closures) {
+		return nil, false
+	}
+	recv := ix.calleeStep(c, call)
+	return &eventCtxCall{call: call, sources: ix.expand(recv, make(map[ssa.Value]bool), nil), recv: recv}, true
+}
+
+// addClosureCtxCalls adds to calls the Ctx calls that the func literal of mc
+// runs on every run, at each call of mc where it is made, as for an IIFE. Such
+// a call runs the func literal there, and the Ctx calls with it:
+//
+//	e := logger.Info()
+//	func() { e.Ctx(ctx) }() // runs Ctx on e here
+//	e.Msg("x")              // OK
+//
+// A Ctx call runs on every run when its block dominates every return of the
+// func literal. The events it runs on are what it reads there, as for any Ctx
+// call. A go or defer statement runs the func literal at another time, and is
+// not one of the calls.
+func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosure) {
+	fn := mc.Fn.(*ssa.Function) // Always a function, a func literal or a wrapper
+	if fn.Parent() == nil {
+		return // A wrapper, such as a method value, passes on what it is given
+	}
+	sites := ssaflow.CallsOfClosure(mc)
+	if len(sites) == 0 {
+		return
+	}
+	inner := ix.ctxCallsIn(fn)
+	for instr := range ssaflow.InstrsIn(fn) {
+		ccs := inner.at[instr]
+		if len(ccs) == 0 || !eventRunsOnEveryReturn(instr, fn) {
+			continue
+		}
+		for _, site := range sites {
+			for _, cc := range ccs {
+				calls.add(site, &eventCtxCall{call: site, sources: cc.sources, recv: cc.recv})
+			}
+		}
+	}
+}
+
+// eventRunsOnEveryReturn reports whether instr runs on every path from the
+// entry of fn to a return: its block dominates the block of each return. The
+// recover block, reached after a panic, is not looked at.
+func eventRunsOnEveryReturn(instr ssa.Instruction, fn *ssa.Function) bool {
+	for _, b := range fn.Blocks {
+		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn && b != fn.Recover && !instr.Block().Dominates(b) {
+			return false
+		}
+	}
+	return true
+}
+
+// add adds cc, which runs at instr.
+func (calls *eventCtxCalls) add(instr ssa.Instruction, cc *eventCtxCall) {
+	calls.at[instr] = append(calls.at[instr], cc)
+	for _, src := range cc.sources.list {
+		calls.on[src] = append(calls.on[src], cc)
+	}
 }
 
 // sourcesOf returns the events v can be, which it finds once.
@@ -592,9 +665,14 @@ func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 		return step
 	case *ssa.UnOp:
 		if _, isLoad := ssaflow.AsLoad(val); isLoad {
+			at, _ := ssaflow.PlaceOf(val.X)
 			if sources, ok := ix.resolver().Resolve(val.X, val); ok {
-				at, _ := ssaflow.PlaceOf(val.X)
 				return ix.resolvedStep(sources, at)
+			}
+			if key, ok := ix.places.KeyOf(at); ok {
+				// The event the function cannot tell that is at the place,
+				// as for a pointer parameter
+				return eventStep{sources: []eventSource{{at: key}}, read: &key}
 			}
 		}
 	case *ssa.Field, *ssa.Index:
