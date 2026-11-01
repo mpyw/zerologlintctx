@@ -2,6 +2,7 @@ package chain
 
 import (
 	"go/constant"
+	"go/token"
 	"go/types"
 	"testing"
 
@@ -37,5 +38,18 @@ func TestStorePickedThrough(t *testing.T) {
 				t.Errorf("pickedThrough = (%p, %v), want (%p, %v)", need, takes, tt.need, tt.takes)
 			}
 		})
+	}
+}
+
+// TestStorePointerOf checks where storePointerOf finds a pointer made: by
+// the load of the struct value a field of it is selected from, through the
+// fields of fields too.
+func TestStorePointerOf(t *testing.T) {
+	from := ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int])
+	load := &ssa.UnOp{Op: token.MUL, X: from}
+	field := &ssa.Field{X: &ssa.Field{X: load, Field: 1}}
+	p := storePointerOf(field)
+	if p.def != load || p.from != from || p.global {
+		t.Errorf("storePointerOf = (%v, %v, %v), want (%v, %v, false)", p.def, p.from, p.global, load, from)
 	}
 }

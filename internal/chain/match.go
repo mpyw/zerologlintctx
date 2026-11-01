@@ -11,18 +11,6 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// valueLoadsFromMatchingAddress checks if a value (or its receiver chain) loads from the given address.
-// This is used to detect self-referential stores like: *ptr = (*ptr).Str(...)
-//
-//declscope:shared // store.go asks this of a load
-func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
-	isLoadFromAddr := func(v ssa.Value) bool {
-		load, ok := asLoad(v)
-		return ok && addressesMatch(load.X, addr)
-	}
-	return derivesFrom(v, isLoadFromAddr, unOpOperand, make(map[ssa.Value]bool))
-}
-
 // addressesMatch checks if two addresses refer to the same memory location.
 //
 // Selections are compared structurally rather than by identity, because SSA
@@ -35,7 +23,7 @@ func valueLoadsFromMatchingAddress(v ssa.Value, addr ssa.Value) bool {
 // Two selections match as sel.same says, so an element whose index is not a
 // constant matches only through the same instruction, which a == b catches.
 //
-//declscope:shared // store.go and aggregate.go both compare addresses
+//declscope:shared // store.go tells whether two roots are the same pointer
 func addressesMatch(a, b ssa.Value) bool {
 	if a == b {
 		return true
@@ -50,8 +38,8 @@ func addressesMatch(a, b ssa.Value) bool {
 	// is, or read again from a struct value, as h.m is for a value h. Two
 	// loads of the same address that the same stores to it reach, or two
 	// fields of the same value, are taken for the same pointer. A store
-	// through any of them may then be what a read through another sees,
-	// which is why every store must have context.
+	// through any of them may then be what a read through another sees (see
+	// storesReachingPointer).
 	//
 	//	t1 = *t0 ; t2 = &t1.log ; *t2 = v   // write
 	//	t8 = *t0 ; t9 = &t8.log ; ... = *t9 // read, t8 != t1
@@ -119,6 +107,8 @@ func matchReachingStores(load *ssa.UnOp) map[ssa.Instruction]bool {
 // matchOverwrites reports whether instr puts another value at addr: a store
 // to addr or to an aggregate that holds it, or the declaration of the local
 // variable addr is in.
+//
+//declscope:shared // store.go stops a walk for a pointer where another one is stored
 func matchOverwrites(instr ssa.Instruction, addr ssa.Value) bool {
 	store, isStore := instr.(*ssa.Store)
 	for x, ok := addr, true; ok; x, _, ok = addrSel(x) {
