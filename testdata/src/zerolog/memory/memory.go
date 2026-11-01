@@ -983,6 +983,101 @@ func badEmbeddedPointerOfParamPlainCall(ctx context.Context, inner *embeddedHold
 	h.Msg("promoted through a pointer parameter") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// ===== A STORE ON ONE BRANCH THROUGH THE CALLER'S POINTER =====
+// A Logger pointer read from what the caller passed, stored through on one
+// branch only: on the other, the call reads the caller's Logger (#301).
+
+func badLoggerPtrInStructParamStoredOnBranch(ctx context.Context, b *loggerPtrBox, cond bool) {
+	if cond {
+		*b.p = b.p.With().Ctx(ctx).Logger()
+	}
+	b.p.Info().Msg("stored through on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrCopiedFromStructParamStoredOnBranch(ctx context.Context, b *loggerPtrBox, cond bool) {
+	if cond {
+		*b.p = b.p.With().Ctx(ctx).Logger()
+	}
+	l := b.p
+	l.Info().Msg("copied, stored through on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrInStructValueParamStoredOnBranch(ctx context.Context, b loggerPtrBox, cond bool) {
+	if cond {
+		*b.p = b.p.With().Ctx(ctx).Logger()
+	}
+	b.p.Info().Msg("in a struct passed by value, stored through on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrPtrParamStoredOnBranch(ctx context.Context, pl **zerolog.Logger, cond bool) {
+	if cond {
+		**pl = (*pl).With().Ctx(ctx).Logger()
+	}
+	(*pl).Info().Msg("through a pointer to a pointer, on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedLoggerPtrInStructParamStoredOnBranch(ctx context.Context, b *loggerPtrBox, cond bool) {
+	func() {
+		if cond {
+			*b.p = b.p.With().Ctx(ctx).Logger()
+		}
+		b.p.Info().Msg("captured, stored through on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodLoggerPtrInStructParamStoredOnBothBranches(ctx context.Context, b *loggerPtrBox, cond bool) {
+	if cond {
+		*b.p = b.p.With().Ctx(ctx).Logger()
+	} else {
+		*b.p = zerolog.Ctx(ctx).With().Logger()
+	}
+	b.p.Info().Msg("stored through on both branches") // OK
+}
+
+func goodLoggerPtrInStructValueParamStored(ctx context.Context, b loggerPtrBox) {
+	*b.p = b.p.With().Ctx(ctx).Logger()
+	b.p.Info().Msg("in a struct passed by value, stored through") // OK
+}
+
+func goodLoggerPtrPtrParamStored(ctx context.Context, pl **zerolog.Logger, cond bool) {
+	**pl = (*pl).With().Ctx(ctx).Logger()
+	if cond {
+		**pl = (*pl).With().Str("k", "v").Logger()
+	}
+	(*pl).Info().Msg("through a pointer to a pointer, updated on one branch") // OK
+}
+
+func goodCapturedLoggerPtrInStructParamStored(ctx context.Context, b *loggerPtrBox, cond bool) {
+	func() {
+		*b.p = b.p.With().Ctx(ctx).Logger()
+		if cond {
+			*b.p = b.p.With().Str("k", "v").Logger()
+		}
+		b.p.Info().Msg("captured, updated on one branch") // OK
+	}()
+}
+
+func goodCapturedLocalLoggerPtrStoredOnBranch(ctx context.Context, cond bool) {
+	b := &loggerPtrBox{zerolog.Ctx(ctx)}
+	func() {
+		if cond {
+			*b.p = b.p.With().Str("k", "v").Logger()
+		}
+		b.p.Info().Msg("captured local, from the logger of ctx") // OK
+	}()
+}
+
+func goodCapturedReassignedParamStoredOnBranch(ctx context.Context, b, other *loggerPtrBox, cond bool) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b = other
+	func() {
+		if cond {
+			*b.p = b.p.With().Ctx(ctx).Logger()
+		}
+		b.p.Info().Msg("captured parameter, replaced before") // OK - other has ctx
+	}()
+}
+
 // ===== WRITES THROUGH ANOTHER REFERENCE =====
 
 // LIMITATION(#115) (false negative): A write through another reference to the same

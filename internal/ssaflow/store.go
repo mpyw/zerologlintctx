@@ -116,10 +116,12 @@ func storesReaching(
 // for a variable, up to where the pointer is made (see
 // storeWalk.walkPointerBefore). A path that gets there, for at the pointer
 // itself, made other than by a load, carries what tracing the pointer finds
-// (see storeReaching.made). Otherwise a path that gets there, or to the
-// entry of the function, carries nothing: what is there was stored where the function
-// cannot see, by the callee that returned the pointer, by the caller, or
-// before another pointer was put where it is read from. Only the stores of
+// (see storeReaching.made). A path that gets back to a pointer the caller
+// passed, as b.p for a pointer parameter b is, carries what the caller
+// passed, which is not known. Otherwise a path that gets there, or to the
+// entry of the function, carries nothing: what is there was stored where the
+// function cannot see, by the callee that returned the pointer, or before
+// another pointer was put where it is read from. Only the stores of
 // the function itself are traced, and ok is false when no path carries one,
 // so that the caller traces the pointer itself.
 //
@@ -191,7 +193,12 @@ func storePointerOf(root ssa.Value) *storePointer {
 //
 // A store of another pointer at from between def and instr does not stop a
 // path: the pointer read is the one def loaded. A path that gets to the entry
-// of a closure goes on from each call of it (see walkPointerOut).
+// of a closure goes on from each call of it (see walkPointerOut). One that
+// gets to the entry of the function, when from is in what a parameter holds,
+// or to a store of a parameter at from, carries the caller's value:
+//
+//	if cond { *b.p = v }      // b is a pointer parameter
+//	b.p.Info()                // reads what the caller passed when cond is false
 func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 	def, reached := w.pointer.def, false
 	toDef := func(in ssa.Instruction) WalkStep {
@@ -211,6 +218,9 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 	}
 	pastDef := func(in ssa.Instruction) WalkStep {
 		if matchOverwrites(in, from) {
+			if store, isStore := in.(*ssa.Store); isStore && storeIsCallerParam(store.Val) {
+				w.out.unknown = true // The pointer is in what the caller passed
+			}
 			return WalkStop
 		}
 		return w.stepAt(in)
@@ -218,6 +228,9 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 	entered := false
 	atEntry := func() bool {
 		entered = true
+		if storeIsCallerParam(storeReadFrom(from)) {
+			w.out.unknown = true // The pointer is read from what the caller passed
+		}
 		return true
 	}
 	walkBack([]WalkPoint{WalkPointBefore(def, w.positions)}, pastDef, atEntry, nil)
@@ -266,7 +279,12 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 			atEntry := func() bool {
 				switch {
 				case !boundFree:
-					// The variable is declared in the function that makes mc
+					// The variable is declared in the function that makes mc.
+					// When it only holds a parameter, the pointer is read from
+					// what the caller passed
+					if alloc, isAlloc := mc.Bindings[idx].(*ssa.Alloc); isAlloc && w.storeHoldsCallerParam(alloc) {
+						w.out.unknown = true
+					}
 				case storesThrough(bound):
 					w.out.unknown = true
 				default:
@@ -1032,6 +1050,26 @@ type storeParamPath struct {
 	param   *ssa.Parameter
 	path    []sel
 	pointer bool
+}
+
+// storeIsCallerParam reports whether v is a parameter of a function that is
+// not a func literal, whose value only the caller knows.
+func storeIsCallerParam(v ssa.Value) bool {
+	p, ok := v.(*ssa.Parameter)
+	return ok && p.Parent().Parent() == nil
+}
+
+// storeHoldsCallerParam reports whether alloc, a local variable, holds one
+// value wherever it is loaded (see storeVariableOnce), a parameter that only
+// the caller knows, as the variable SSA makes for a parameter that a closure
+// captures does.
+func (w *storeWalk) storeHoldsCallerParam(alloc *ssa.Alloc) bool {
+	for _, ref := range *alloc.Referrers() {
+		if store, isStore := ref.(*ssa.Store); isStore && !storeIsCallerParam(store.Val) {
+			return false
+		}
+	}
+	return w.storeVariableOnce(alloc)
 }
 
 // storeIsFuncLiteralParam reports whether v is a parameter of a func literal.

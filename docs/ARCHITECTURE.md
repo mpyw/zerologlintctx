@@ -880,14 +880,25 @@ Info(&t8.log)             // reads t8.log, and t8 is t1
 | Where a path gets | What it does |
 |-------------------|--------------|
 | A store through the same pointer | Records the value, and stops (or goes on for a may store) |
-| Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable |
+| Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable. A store there of a parameter, as SSA makes for a struct parameter, carries the caller's value |
 | Where the pointer is made, any other instruction, such as a call or a Phi | Stops, and carries what tracing the pointer itself finds, for an address that is the pointer itself. Otherwise carries nothing |
 | The entry of a closure, past where the pointer is made, when the closure reads it from the variables it captures | Goes on before each call of the closure, when it is only called where it is made (below) |
-| The entry of the function | Carries nothing |
+| The entry of the function, past where the pointer is loaded from a parameter, a field of one, or what one points to | Carries the caller's value, which is not known |
+| The entry of the function, otherwise | Carries nothing |
 
 A path that carries nothing gets to where the function does not know what is
-at the address: the callee that returned the pointer, the caller, or a time
-before another pointer was put where it is read from, may have stored there.
+at the address: the callee that returned the pointer, or a time before
+another pointer was put where it is read from, may have stored there. A path
+that gets back to the caller's pointer, as `b.p` for a pointer parameter `b`
+is, carries what the caller passed, which has no known context:
+
+```go
+if cond {
+    *b.p = b.p.With().Ctx(ctx).Logger()
+}
+b.p.Info().Msg("x") // the caller's Logger when cond is false: reported
+```
+
 For the receiver of a call, such as `p.Info()` for `p := newLoggerPtr()`, a
 path that gets back to where the pointer is made carries what tracing the
 pointer itself finds, as the source `Resolved.Pointer` (`storeReaching.made`):
@@ -933,7 +944,10 @@ A path that gets to the entry of the function that makes the closure, when it
 is a closure too that captures the variable in turn, goes on out of it in the
 same way, out to the function the variable is declared in. A closure in
 between that stores to the variable, or through it, as `*pp = other` does,
-may change the pointer: such a path carries a value that is not known.
+may change the pointer: such a path carries a value that is not known. So
+does a path that gets to the entry of the function the variable is declared
+in, when the variable only holds a parameter, as SSA makes for a parameter a
+closure captures (`storeHoldsCallerParam`).
 
 ```go
 (*pp).log = zerolog.Ctx(ctx).With().Logger()
