@@ -1604,6 +1604,38 @@ func goodEitherPointerParamUpdatedInGo(ctx context.Context, l1, l2 *zerolog.Logg
 	go p.Print("either pointer, in a go statement") // OK
 }
 
+// A Phi with an edge through which no store is found, such as the logger of
+// ctx, is not walked along its paths. Each pointer parameter takes every store
+// that reaches any read of it instead.
+func goodEitherPointerParamOrLoggerOfCtx(ctx context.Context, l1, l2 *zerolog.Logger, cond, other bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	l1.Info().Msg("after update") // OK
+	copied := *l2
+	copied.Info().Msg("copied after update") // OK
+	p := l1
+	if cond {
+		p = l2
+	}
+	if other {
+		p = zerolog.Ctx(ctx)
+	}
+	p.Print("either pointer, or the logger of ctx") // OK
+}
+
+func badEitherFieldReplacedOrLoggerOfCtx(ctx context.Context, l zerolog.Logger, cond, other bool) {
+	s := twoLoggerHolder{a: l.With().Ctx(ctx).Logger(), b: l.With().Ctx(ctx).Logger()}
+	p := &s.a
+	if cond {
+		p = &s.b
+	}
+	if other {
+		p = zerolog.Ctx(ctx)
+	}
+	s = twoLoggerHolder{a: l, b: l}
+	p.Print("either field, replaced after, or the logger of ctx") // want `zerolog direct logging bypasses context`
+}
+
 func badEitherFieldReplacedInGo(ctx context.Context, l zerolog.Logger, cond bool) {
 	s := twoLoggerHolder{a: l.With().Ctx(ctx).Logger(), b: l.With().Ctx(ctx).Logger()}
 	p := &s.a
@@ -1934,6 +1966,20 @@ func goodVariableIndexPickedDeferred(ctx context.Context, base zerolog.Logger, i
 		p = &arr[j]
 	}
 	defer p.Print("deferred through a pointer picked on a branch") // OK - both elements have ctx
+}
+
+func goodVariableIndexPickedOrLoggerOfCtx(ctx context.Context, base zerolog.Logger, i, j int, cond, other bool) {
+	var arr [2]zerolog.Logger
+	arr[i] = base.With().Ctx(ctx).Logger()
+	arr[j] = base.With().Ctx(ctx).Logger()
+	p := &arr[i]
+	if cond {
+		p = &arr[j]
+	}
+	if other {
+		p = zerolog.Ctx(ctx)
+	}
+	p.Print("an element picked on a branch, or the logger of ctx") // OK - both elements have ctx
 }
 
 func badVariableIndexPickedDeferred(ctx context.Context, base zerolog.Logger, i, j int, cond bool) {
