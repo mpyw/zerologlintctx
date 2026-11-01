@@ -821,6 +821,20 @@ func newLogger() *zerolog.Logger {
 </td>
 <td>⚠️ <b>Reported (limitation).</b> The pointer is made again on each iteration. So a store through it after the <code>defer</code> may be through a later pointer, and the value before the <code>defer</code> is still seen</td>
 </tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+for i := 0; i < 1; i++ {
+	e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> The loop always runs once. But its check is on the counter, not on two constants, so the path that skips the loop is kept. <code>for range 1</code> passes</td>
+</tr>
 </tbody>
 </table>
 

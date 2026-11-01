@@ -1125,6 +1125,26 @@ func badEventCtxInPlaceInLoopOfCount(ctx context.Context, log zerolog.Logger, n 
 	e.Msg("ctx in place under for range n") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// LIMITATION(#391) (false positive): The first check of a loop with a counter
+// is on a Phi of the counter, not on two constants. The check runs on every
+// iteration, so it is not folded, and the path that skips the loop is kept.
+
+func limitationEventCtxInPlaceInCounterLoopOfOneRun(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	for i := 0; i < 1; i++ {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under a counter loop of one run") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInCounterLoopOfNoRun(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	for i := 0; i < 0; i++ {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under a counter loop of no run") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== UPDATECONTEXT (changes the Logger in place) =====
 
 // UpdateContext keeps only the fields its func writes. What Context.Ctx sets
