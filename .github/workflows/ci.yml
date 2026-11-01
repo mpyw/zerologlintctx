@@ -60,7 +60,13 @@ jobs:
       - name: Run tests with coverage
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic -coverpkg=./... ./...
 
+      # Only the push run uploads. A pull request also runs on its merge
+      # commit, which holds main as it is now. Codecov files both uploads
+      # under the head commit and merges them line by line, so when main
+      # has moved on, two versions of a file mix and the total changes
+      # with no change in the pull request (mpyw/goroutinectx#291).
       - name: Upload coverage to Codecov
+        if: github.event_name == 'push'
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.txt
