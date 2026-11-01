@@ -668,3 +668,17 @@ func badCapturedPtrStoreInClosure(ctx context.Context, logger zerolog.Logger) {
 		p.log.Info().Msg("stored in the closure, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
 }
+
+func limitationCapturedPtrPickedOnBranch(ctx context.Context, cond bool) {
+	a := ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
+	b := ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
+	q := &a
+	if cond {
+		q = &b
+	}
+	p := q
+	// LIMITATION: a pointer a closure captures that is picked on a branch is
+	// not followed, as the walk from where the closure runs does not keep to
+	// the paths of the Phi
+	func() { p.log.Info().Msg("captured pointer picked on a branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}

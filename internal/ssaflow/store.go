@@ -865,8 +865,6 @@ type storeWalk struct {
 	// first, out to the function root is in. A path that leads back to the
 	// entry of the first goes on from where it runs (see walkOut).
 	outer []*ssa.MakeClosure
-	// walkedOut reports that walkOut has run.
-	walkedOut bool
 }
 
 // storeCopy is a load that a copied walk starts from, and the selections it
@@ -965,10 +963,6 @@ func (w *storeWalk) reachEntry() {
 // address. In the function root is in, a root that is not in a variable is
 // walked for as storesReachingPointer walks for one.
 func (w *storeWalk) walkOut() {
-	if w.walkedOut {
-		return
-	}
-	w.walkedOut = true
 	out := &storeWalk{at: w.at, positions: w.positions, out: w.out, pointers: w.pointers, outer: w.outer[1:]}
 	if len(out.outer) == 0 && !isTrackedRoot(w.at.root) {
 		out.pointer = storePointerOf(w.at.root)
