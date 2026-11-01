@@ -4412,6 +4412,15 @@ func goodFieldPointerStoredThroughFieldValueFirst(ctx context.Context, m *logger
 	m.f.Info().Msg("the field read again") // OK - both reads of m.f are the same pointer
 }
 
+func goodReceivedPointerStoredThroughFieldOnBranch(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger, cond bool) {
+	if cond {
+		l := <-ch
+		h := loggerPtrBox{p: l}
+		*h.p = log.With().Ctx(ctx).Logger()
+		l.Info().Msg("a received pointer, stored through a box on a branch") // OK
+	}
+}
+
 func goodGlobalPointerStoredThroughFieldValueFirst(ctx context.Context, log zerolog.Logger) {
 	withCtx := log.With().Ctx(ctx).Logger()
 	h := loggerPtrBox{p: boxedGlobalLoggerPtr}

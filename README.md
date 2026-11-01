@@ -1068,7 +1068,7 @@ e.Msg("hello")
 To silence one of these reports, write [`//zerologlintctx:ignore`](#ignoring-a-report) on the line. For the helper, `newEvent(ctx, log).Ctx(ctx)` also passes. For the closure, let it return the event, and write `e := f()`.
 
 <details>
-<summary>All cases (7)</summary>
+<summary>All cases (8)</summary>
 
 <table>
 <thead>

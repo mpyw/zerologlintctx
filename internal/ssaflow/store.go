@@ -2426,7 +2426,8 @@ func (w *storeWalk) isRoot(v, read ssa.Value) bool {
 		!slices.ContainsFunc(storePutsOf(from), func(put ssa.Instruction) bool {
 			return !storeQuietBetween(put, to, v.Type(), w.positions)
 		}) &&
-		(same || w.pointer.def != nil && storeQuietBetween(from, w.pointer.def, v.Type(), w.positions))
+		(same || w.pointer.def != nil && w.pointer.def.Parent() == from.Parent() &&
+			storeQuietBetween(from, w.pointer.def, v.Type(), w.positions))
 	if !quiet {
 		w.quiet.unsure = true
 	}
@@ -2468,9 +2469,6 @@ type storeQuiet struct {
 // but one to a local variable, whose stores the walks see. from and to are
 // in one function.
 func storeQuietBetween(from, to ssa.Instruction, ptr types.Type, positions Positions) bool {
-	if from.Parent() != to.Parent() {
-		return false
-	}
 	after := positions.following(from)
 	before := storePreceding(to.Block())
 	for _, b := range from.Parent().Blocks {
