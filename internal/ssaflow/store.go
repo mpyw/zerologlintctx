@@ -126,14 +126,21 @@ func storesReaching(
 // so that the caller traces the pointer itself.
 //
 // For a global, an update is left out, and the path goes on past it (see
-// storePointer.global).
+// storePointer.global). A path that gets to the entry of the function, or
+// out of the func literals it is in to the entry of one it cannot go on out
+// of, reads the global as it was there, which is not known, when another
+// path carries a store (see walkGlobalOut).
 func storesReachingPointer(at Place, read ssa.Instruction, positions Positions) (r storeReaching, ok bool) {
 	if _, isConst := at.root.(*ssa.Const); isConst || read == nil {
 		return r, false
 	}
 	w := &storeWalk{at: at, positions: positions, out: &r, pointer: storePointerOf(at.root)}
 	w.walkToRead(read)
-	return r, !r.isEmpty()
+	if r.isEmpty() {
+		return r, false
+	}
+	r.unknown = r.unknown || w.pointer.unseen
+	return r, true
 }
 
 // storePointer is where a pointer that is not in a variable is made, for a
@@ -154,6 +161,10 @@ type storePointer struct {
 	// by another goroutine too, so what a load of it read is not known
 	// either: an update of it, which builds on such a load, is left out.
 	global bool
+	// unseen reports that a path got to the entry of a function, for a
+	// global, that the walk cannot go on out of (see walkGlobalOut). Such a
+	// path reads what was stored where the function cannot see.
+	unseen bool
 	// closure, when not empty, are the runs of the closures the pointer is
 	// read in, innermost first, out to the function of the walk: the root of
 	// a store there is the same pointer as matchAcrossClosure tells (see
@@ -261,10 +272,13 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 //
 // A path that gets to the entry of that function goes on out of it in the
 // same way. One that gets to the entry of a declared function, or of a func
-// literal that is not only called, carries nothing.
+// literal that is not only called, reads what was stored where the function
+// cannot see. When another path carries a store, it carries what is not
+// known (see storesReachingPointer).
 func (w *storeWalk) walkGlobalOut(fn *ssa.Function) {
 	calls, ok := storeCallsOf(fn)
 	if !ok {
+		w.pointer.unseen = true
 		return
 	}
 	from := make([]WalkPoint, 0, len(calls))

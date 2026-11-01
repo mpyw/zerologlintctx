@@ -997,6 +997,7 @@ Info(&t8.log)             // reads t8.log, and t8 is t1
 | The entry of a closure, past where the pointer is made, when the closure reads it from the variables it captures | Goes on before each call of the closure, when it is only called where it is made (below) |
 | The entry of a func literal, for a global | Goes on before each call of the func literal, when it is only called where it is made (below) |
 | The entry of the function, past where the pointer is loaded from a parameter, a field of one, or what one points to | Carries the caller's value, which is not known |
+| The entry of the function, for a global, when it cannot go on out of it | Carries what is not known, when another path carries a store |
 | The entry of the function, otherwise | Carries nothing |
 
 A path that carries nothing gets to where the function does not know what is
@@ -1147,6 +1148,19 @@ calls it in the same way (`walkGlobalOut`). A func literal that is run by a
 ```go
 globalHolder.log = zerolog.Ctx(ctx).With().Logger() // reaches the read
 func() { globalHolder.log.Info().Msg("x") }()       // not reported
+```
+
+A path that gets to the entry of a declared function, or of a func literal it
+cannot go on out of, reads the global as it was there, which is not known.
+When another path carries a store, that path carries what is not known, and
+the read is reported (#340). When none does, the global itself is traced, as
+for any pointer with no store found:
+
+```go
+if cond {
+    globalHolder.log = zerolog.Ctx(ctx).With().Logger()
+}
+globalHolder.log.Info().Msg("x") // the global as it was when cond is false: reported
 ```
 
 #### Address Matching
