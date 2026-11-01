@@ -20,7 +20,6 @@ zerologlintctx/
 │   │   ├── memo.go            # The verdict of each value, and the traces in progress
 │   │   ├── closure.go         # Index of closures and func literals
 │   │   ├── store.go           # Values stored at an address
-│   │   ├── aggregate.go       # The copies of a struct or array
 │   │   ├── match.go           # Whether two addresses are the same
 │   │   ├── place.go           # An address as a root and its selections
 │   │   ├── walk.go            # Walks the paths of the control flow
@@ -410,14 +409,10 @@ leads back to the Phi is (see [Cycles](#cycles)).
 | The entry of a closure, for a variable it captures | What can be in the variable when the closure runs: what reaches the `make closure` and the stores after it, or what reaches the returns after a `defer` of it |
 
 This holds for a local variable, a pointer parameter, a captured variable, and
-a field or element of one, wherever the read runs. A field of a
-global, or of a struct reached through a pointer the function loads, can be
-changed elsewhere. For those, every store in the function must have context.
-Each load of the same pointer, such as a receiver that a closure captures,
-which is loaded again at each use, is taken for the same pointer when the same
-stores to the pointer reach both loads, and so is each read of the same
-pointer field of a struct value, such as `h.m`. After `p = b`, a load of `p`
-is another pointer than the one before it.
+a field or element of one, wherever the read runs. A field of a global, or of
+a struct reached through a pointer that is not in a variable, is walked for
+the same way, through the stores that the function makes through the same
+pointer (see [Pointers Not in a Variable](#pointers-not-in-a-variable)).
 
 A field read through a Phi of pointers, such as `h.l` after
 `h := &holder{...}; if cond { h = &holder{...} }`, with no store through the
@@ -481,9 +476,9 @@ A range over an array value reads each element at a variable index, from the
 array loaded before the loop. The store of each element is a may store, so
 every element must have context.
 
-For an address whose stores are not walked, such as an element of a slice
-that `make` returns, every store in the function to an element that may be
-the one read is taken too (`findStores`).
+The same holds for an element of a slice that `make` returns, whose root is
+a pointer that is not in a variable (see
+[Pointers Not in a Variable](#pointers-not-in-a-variable)).
 
 `Logger.UpdateContext(fn)` neither stops a path nor reads the Logger.
 zerolog keeps only the fields `fn` writes, and drops the context
@@ -551,7 +546,7 @@ and is not followed when it picks more than `storePickedMax`.
 |---------------------|----------------------|
 | From a field or element of a tracked root, or of a struct value loaded from one | What the stores to that place left there |
 | From what another such pointer points to | The same, through that pointer first |
-| And a store reaches it from a pointer parameter, a captured variable or anything else not known | Not followed. The address is matched as before (`findStores`) |
+| And a store reaches it from a pointer parameter, a captured variable or anything else not known | Not followed. The stores through the pointer itself are walked for (below) |
 
 A nil pointer has nothing to read, and is left out. So is a path of the walk
 that leads back to the entry of the function without making the struct a
@@ -570,6 +565,59 @@ h.p.l.Info().Msg("x")                 // not reported
 
 `storePointers` keeps what each pointer can point to, and a pointer reached
 again while it is followed is not followed again.
+
+#### Pointers Not in a Variable
+
+Some pointers are not in a variable, or are read from one that can change
+where the function does not see it: a pointer a call returns, a Phi of
+pointers, a receiver that a closure captures, which is loaded again at each
+use, `(*pp).log`, `arr[0].log`, `h.m.log`, or a global. When `storePointers`
+cannot follow such a pointer, `storesReachingPointer` walks back from the
+read for the stores through the same pointer, and stops each path at the
+first one, as for a variable. A store through another load of the pointer is
+a store through the same pointer when `addressesMatch` says so: the same
+stores to where it is loaded from reach both loads (see
+[Address Matching](#address-matching)).
+
+```
+t1 = *t0 ; *&t1.log = v   // reaches the read
+t8 = *t0                  // where the pointer is made
+Info(&t8.log)             // reads t8.log, and t8 is t1
+```
+
+| Where a path gets | What it does |
+|-------------------|--------------|
+| A store through the same pointer | Records the value, and stops (or goes on for a may store) |
+| Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable |
+| Where the pointer is made, any other instruction, such as a call or a Phi | Stops, and carries nothing |
+| The entry of the function | Carries nothing |
+
+A path that carries nothing gets to where the function does not know what is
+at the address: the callee that returned the pointer, the caller, or a time
+before another pointer was put where it is read from, may have stored there.
+Only the stores of the function itself are traced. When no path carries one,
+the address is taken as not known to the walk, and the pointer itself is
+traced. For a Phi of pointers with no store through it, the variables it
+picks are walked instead (see [Stores That Reach a Read](#stores-that-reach-a-read)).
+
+A store of another pointer where the pointer is loaded from, between the
+load and the read, does not stop a path: the pointer read is the one loaded.
+
+```go
+p := newMonitor()
+p.log = zerolog.Ctx(ctx).With().Logger() // the only store that reaches the read
+p.log.Info().Msg("x")                    // not reported
+p.log = logger                           // after the read
+```
+
+A global can be changed anywhere, by another goroutine too, so what a load of
+it read is not known either. An update of a global, which builds on such a
+load, is left out, and the path goes on past it:
+
+```go
+globalHolder.log = globalHolder.log.With().Ctx(ctx).Logger() // left out
+globalHolder.log.Info().Msg("x")                             // reported
+```
 
 #### Address Matching
 
@@ -601,9 +649,9 @@ t6 = &t0.event     // the address we want the value of
 When the walk back from a read meets a store of the whole root, or of a
 place the path starts with, `storeWalk.copied` follows the copy back to the
 temporary, and walks on from the load of it with the rest of the path.
-`findStoresThroughAggregateCopy` does the same for an address whose stores are
-not walked. Both shapes are handled, since whether the compiler emits the
-temporary depends on the x/tools version.
+The copy is followed the same way when the root is a pointer that is not in a
+variable, and so is a copy from one. Both shapes are handled, since whether
+the compiler emits the temporary depends on the x/tools version.
 
 A copy from a variable that a closure captures is followed too. Each walk
 that reaches the entry of the closure adds its variable to the result, so

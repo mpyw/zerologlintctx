@@ -1,6 +1,6 @@
 // store.go finds what can be at an address when it is read. storesReaching is
-// the entry; it leans on walk.go to walk the control flow, on aggregate.go to
-// follow copies and on match.go to decide whether two addresses are the same.
+// the entry; it leans on walk.go to walk the control flow, and on match.go to
+// decide whether two pointers that are not in a variable are the same.
 
 package chain
 
@@ -55,8 +55,11 @@ import (
 // The read is then found as for an address in that pointer's variable (see
 // storePointers).
 //
-// For any other address, such as a global, ok is true when the function
-// stores to it, and holds every value it stores there, wherever it runs.
+// For any other address, whose root is a pointer that is not in a variable,
+// such as one a call returns, or a global, the walk goes back from read to
+// where the pointer is made (see storesReachingPointer). ok is false when no
+// store of the function reaches read, and for a Phi of pointers with no such
+// store, the variables it picks are walked instead (see storesReachingPicked).
 //
 // positions finds where each instruction is in its block, and may be kept
 // across calls.
@@ -74,14 +77,13 @@ func storesReaching(
 				return r, true
 			}
 		}
-		plain := findStores(addr, make(map[ssa.Value]bool))
-		for _, store := range plain {
-			r.values = append(r.values, store.Val)
+		if r, ok := storesReachingPointer(at, read, positions); ok {
+			return r, true
 		}
-		if phi, isPhi := at.root.(*ssa.Phi); isPhi && len(plain) == 0 {
+		if phi, isPhi := at.root.(*ssa.Phi); isPhi {
 			return storesReachingPicked(phi, at.path, read, positions)
 		}
-		return r, len(plain) > 0
+		return r, false
 	}
 
 	w := &storeWalk{at: at, positions: positions, out: &r}
@@ -97,6 +99,123 @@ func storesReaching(
 		w.walkEscape(esc)
 	}
 	return r, true
+}
+
+// storesReachingPointer finds the values that can be at at when read runs,
+// for at whose root is a pointer that is not in a variable, and that
+// storePointers cannot follow: a pointer a call returns, a Phi of pointers, a
+// pointer read from a variable that another reference may change, such as a
+// receiver a closure captures, a field of a struct value that holds one, or
+// a global. A store through the same pointer is one through root, or through
+// another read of it that addressesMatch takes for the same pointer:
+//
+//	t1 = *t0 ; *&t1.log = v   // reaches the read
+//	t8 = *t0 ; Info(&t8.log)  // t8 and t1 are the same pointer
+//
+// The walk goes back from read, and stops each path at the first store, as
+// for a variable, up to where the pointer is made (see
+// storeWalk.walkPointerBefore). A path that gets there, or to the entry of
+// the function, carries nothing: what is there was stored where the function
+// cannot see, by the callee that returned the pointer, by the caller, or
+// before another pointer was put where it is read from. Only the stores of
+// the function itself are traced, and ok is false when no path carries one,
+// so that the caller traces the pointer itself.
+//
+// For a global, an update is left out, and the path goes on past it (see
+// storePointer.global).
+func storesReachingPointer(at place, read ssa.Instruction, positions instrPositions) (r storeReaching, ok bool) {
+	if _, isConst := at.root.(*ssa.Const); isConst || read == nil {
+		return r, false
+	}
+	w := &storeWalk{at: at, positions: positions, out: &r, pointer: storePointerOf(at.root)}
+	w.walkToRead(read)
+	return r, len(r.values) > 0 || r.unknown || len(r.captured) > 0 || len(r.params) > 0
+}
+
+// storePointer is where a pointer that is not in a variable is made, for a
+// walk of the stores through it.
+type storePointer struct {
+	// def is the instruction that makes the pointer, or the value it is a
+	// field of, and nil when the function does not make it, as for a
+	// parameter or a global.
+	def ssa.Instruction
+	// from is the address def loads the pointer from, when def is a load.
+	// Before def, the same pointer is there until a store puts another one
+	// there.
+	from ssa.Value
+	// same holds whether each root of a store is the same pointer, as
+	// addressesMatch tells.
+	same map[ssa.Value]bool
+	// global reports that the root is a global. It can be changed anywhere,
+	// by another goroutine too, so what a load of it read is not known
+	// either: an update of it, which builds on such a load, is left out.
+	global bool
+}
+
+// storePointerOf returns where root, a pointer that is not in a variable, is
+// made: by root, or by the struct value it is a field of.
+func storePointerOf(root ssa.Value) *storePointer {
+	for {
+		f, isField := root.(*ssa.Field)
+		if !isField {
+			break
+		}
+		root = f.X
+	}
+	_, global := root.(*ssa.Global)
+	p := &storePointer{same: make(map[ssa.Value]bool), global: global}
+	p.def, _ = root.(ssa.Instruction)
+	if load, isLoad := asLoad(root); isLoad {
+		p.from = load.X
+	}
+	return p
+}
+
+// walkPointerBefore walks every path that leads to instr, for a walk whose
+// root is a pointer that is not in a variable. Each path goes back to def,
+// where the pointer is made, and on from there only when def loads it from
+// an address: up to a store of another pointer there, or the declaration of
+// the variable the address is in.
+//
+//	*t0 = a                   // stops the path: before it, t0 holds another pointer
+//	t1 = *t0 ; *&t1.log = v   // reaches the read, past def
+//	t8 = *t0                  // def
+//	Info(&t8.log)
+//
+// A store of another pointer at from between def and instr does not stop a
+// path: the pointer read is the one def loaded.
+func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
+	def, reached := w.pointer.def, false
+	toDef := func(in ssa.Instruction) walkStep {
+		if def != nil && in == def {
+			reached = true
+			return walkStop
+		}
+		return w.stepAt(in)
+	}
+	walkBack([]walkPoint{walkPointBefore(instr, w.positions)}, toDef, nil, nil)
+	from := w.pointer.from
+	if !reached || from == nil {
+		return
+	}
+	pastDef := func(in ssa.Instruction) walkStep {
+		if matchOverwrites(in, from) {
+			return walkStop
+		}
+		return w.stepAt(in)
+	}
+	walkBack([]walkPoint{walkPointBefore(def, w.positions)}, pastDef, nil, nil)
+}
+
+// samePointer reports whether root, the root of a store, is the pointer the
+// walk looks for the stores through.
+func (p *storePointer) samePointer(root, pointer ssa.Value) bool {
+	same, done := p.same[root]
+	if !done {
+		same = addressesMatch(root, pointer)
+		p.same[root] = same
+	}
+	return same
 }
 
 // storePickedMax bounds the variables a Phi of pointers may point to that
@@ -574,7 +693,7 @@ func storeReturnsAfter(d *ssa.Defer, positions instrPositions) []ssa.Instruction
 // So is one for a walk with a picked variable, whose paths walkDeferred does
 // not keep to.
 func (w *storeWalk) walkToRead(read ssa.Instruction) {
-	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() && w.picked == nil {
+	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() && w.picked == nil && w.pointer == nil {
 		w.walkDeferred(d)
 		return
 	}
@@ -697,6 +816,9 @@ type storeWalk struct {
 	// pointers, when not nil, follows the pointers read from memory, so that
 	// a store through one that points to root is a store to root.
 	pointers *storePointers
+	// pointer, when not nil, is where root is made, when it is a pointer
+	// that is not in a variable (see storesReachingPointer).
+	pointer *storePointer
 }
 
 // storeCopy is a load that a copied walk starts from, and the selections it
@@ -714,6 +836,10 @@ type storeCopy struct {
 // variable itself. At the top of the block of that Phi, the walk
 // goes on through the edges that may hold the variable only.
 func (w *storeWalk) walkBefore(instr ssa.Instruction) {
+	if w.pointer != nil {
+		w.walkPointerBefore(instr)
+		return
+	}
 	if w.picked == nil {
 		w.walkBackFrom([]walkPoint{walkPointBefore(instr, w.positions)})
 		return
@@ -799,7 +925,7 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 		}
 	case *ssa.Store:
 		n, cover := w.storeCover(in.Addr)
-		if cover == coverNone {
+		if cover == coverNone || w.pointer != nil && w.pointer.global && w.updates(in) {
 			return walkOn
 		}
 		if n == len(w.at.path) {
@@ -815,6 +941,21 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 	return walkOn
 }
 
+// updates reports whether store is an update of the address of the walk: the
+// value it stores derives from a load of the address, as
+// l = l.With().Logger() does.
+func (w *storeWalk) updates(store *ssa.Store) bool {
+	isLoadOfAddr := func(v ssa.Value) bool {
+		load, isLoad := asLoad(v)
+		if !isLoad {
+			return false
+		}
+		n, cover := w.storeCover(load.X)
+		return n == len(w.at.path) && cover == coverMust
+	}
+	return derivesFrom(store.Val, isLoadOfAddr, unOpOperand, make(map[ssa.Value]bool))
+}
+
 // storeCover tells how much of the address of the walk a store to addr
 // writes, as place.covers does, and how many selections addr takes.
 //
@@ -824,7 +965,11 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
 	at, _ := placeOf(addr)
 	limit := coverMust
-	if at.root != w.at.root && w.pointers != nil {
+	switch {
+	case at.root == w.at.root:
+	case w.pointer != nil && w.pointer.samePointer(at.root, w.at.root):
+		at.root = w.at.root
+	case w.pointers != nil:
 		at, limit = w.pointers.through(at, w.at.root)
 	}
 	return len(at.path), min(at.covers(w.at, w.indexOnce), limit)
@@ -834,10 +979,6 @@ func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
 // that an element at the same index is the same element, for a test of places
 // that runs nowhere in particular.
 func storeIndexAlways(ssa.Value) bool { return true }
-
-// storeIndexNever is an index that is never taken to have one value, for a
-// test of places that runs nowhere in particular.
-func storeIndexNever(ssa.Value) bool { return false }
 
 // indexOnce reports whether index, the index of an element of the address of
 // the walk, has one value wherever the walk meets it: it is not computed by
@@ -885,16 +1026,19 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 		return
 	}
 	from, tracked := placeOf(load.X)
-	if !tracked {
-		w.out.unknown = true
-		return
-	}
 	src := &storeWalk{
 		at:        from.with(rest...),
 		positions: w.positions,
 		out:       w.out,
 		copies:    w.copies,
 		pointers:  w.pointers,
+	}
+	if !tracked {
+		if w.pointer == nil {
+			w.out.unknown = true
+			return
+		}
+		src.pointer = storePointerOf(from.root)
 	}
 	// An aggregate copied back and forth in a loop leads back to a copy
 	// already followed, which adds nothing new.
@@ -1011,58 +1155,4 @@ func storeReadsOf(addr ssa.Value, at place) (reads, escapes []ssa.Instruction) {
 		}
 	}
 	return reads, escapes
-}
-
-// findStores finds the plain stores to addr, carrying the set of addresses
-// already resolved so that following aggregate copies terminates. A store
-// whose value loads from addr is an update, which is built from the plain
-// stores, and is left out.
-//
-// A store to an element that may be the one at addr, or not, as one to s[0]
-// may be s[i], is among them too: every store is taken, wherever it runs.
-func findStores(addr ssa.Value, visited map[ssa.Value]bool) []*ssa.Store {
-	if visited[addr] {
-		return nil
-	}
-	visited[addr] = true
-
-	fn := parentFunc(addr)
-	if fn == nil {
-		return nil
-	}
-
-	at, _ := placeOf(addr)
-	mayWrite := func(store ssa.Value) bool {
-		p, _ := placeOf(store)
-		return len(p.path) == len(at.path) && p.covers(at, storeIndexNever) == coverMay
-	}
-	var plain []*ssa.Store
-	for instr := range instrsIn(fn) {
-		store, ok := instr.(*ssa.Store)
-		if ok && (addressesMatch(store.Addr, addr) || mayWrite(store.Addr)) && !valueLoadsFromMatchingAddress(store.Val, addr) {
-			plain = append(plain, store)
-		}
-	}
-	if len(plain) > 0 {
-		return plain
-	}
-
-	return findStoresThroughAggregateCopy(fn, addr, visited)
-}
-
-// findStoresThroughAggregateCopy resolves stores hidden behind a whole-aggregate
-// copy, as storeWalk.copied does for a local variable.
-func findStoresThroughAggregateCopy(fn *ssa.Function, addr ssa.Value, visited map[ssa.Value]bool) []*ssa.Store {
-	at, _ := placeOf(addr)
-	if len(at.path) == 0 {
-		return nil
-	}
-
-	var plain []*ssa.Store
-	for src := range copySourcesOfAggregate(fn, at.root) {
-		for _, equivalent := range resolveAggregatePath(fn, src, at.path) {
-			plain = append(plain, findStores(equivalent, visited)...)
-		}
-	}
-	return plain
 }

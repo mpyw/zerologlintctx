@@ -614,8 +614,9 @@ func goodCapturedPointerInLoop(ctx context.Context, ms []*reloadedMonitor) {
 	}
 }
 
-// A pointer that a call returns is not followed to what it points to, so
-// the loads of it are matched as above.
+// A pointer that a call returns is not followed to what it points to. The
+// stores through it, or through loads of it that addressesMatch takes for
+// the same pointer, are walked for from the read, back to the call.
 
 func newReloadedMonitor() *reloadedMonitor { return &reloadedMonitor{} }
 
@@ -641,6 +642,49 @@ func badReturnedPointerOnOneBranchInLoop(ctx context.Context, logger zerolog.Log
 		p.log.Info().Msg("returned pointer, declared in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
 		go func() { _ = p }()
 	}
+}
+
+// The stores through a pointer that a call returns are those that reach the
+// read, from where the call returns it. A store after the read, or one that
+// a later store replaces, is not what the read sees.
+
+func goodReturnedPointerStoredAfterRead(ctx context.Context, logger zerolog.Logger) {
+	p := newReloadedMonitor()
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	p.log.Info().Msg("returned pointer, stored after the read") // OK - the store that reaches the read has ctx
+	p.log = logger
+}
+
+func goodReturnedPointerStoreReplaced(ctx context.Context, logger zerolog.Logger) {
+	p := newReloadedMonitor()
+	p.log = logger
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	p.log.Info().Msg("returned pointer, store replaced") // OK - the store that reaches the read has ctx
+}
+
+func badReturnedPointerStoredOnOneBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	p := newReloadedMonitor()
+	p.log = zerolog.Ctx(ctx).With().Logger()
+	if cond {
+		p.log = logger
+	}
+	p.log.Info().Msg("returned pointer, one branch lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func newReloadedMonitorHolder() reloadedMonitorHolder {
+	return reloadedMonitorHolder{&reloadedMonitor{}}
+}
+
+func goodPointerFieldOfReturnedValue(ctx context.Context) {
+	h := newReloadedMonitorHolder()
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+	h.m.log.Info().Msg("pointer field of a returned value") // OK - the only store has ctx
+}
+
+func badPointerFieldOfReturnedValue(ctx context.Context, logger zerolog.Logger) {
+	h := newReloadedMonitorHolder()
+	h.m.log = logger
+	h.m.log.Info().Msg("pointer field of a returned value") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== STRUCT THROUGH A POINTER IN A FIELD =====

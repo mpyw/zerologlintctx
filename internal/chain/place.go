@@ -1,5 +1,5 @@
 // place.go is the model of an address in memory that store.go, match.go,
-// aggregate.go, tracing.go and context.go share: a place is a root, the
+// tracing.go and context.go share: a place is a root, the
 // variable or pointer the address is in, and the fields and elements selected
 // from it. Whether two selections are the same is decided here only.
 //
