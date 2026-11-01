@@ -271,15 +271,7 @@ func (p *storePointers) reachingThrough(at place, read ssa.Instruction) (r store
 		tat, tracked := placeOf(t.v)
 		tat = tat.with(at.path...)
 		var tr storeReaching
-		switch {
-		case t.picked != nil && !tracked:
-			return storeReaching{}, false
-		case t.picked != nil:
-			switch read.(type) {
-			case *ssa.Defer, *ssa.Go:
-				return storeReaching{}, false // walkToRead does not keep to the picked paths
-			}
-		case !tracked:
+		if !tracked {
 			// A pointer copied from another one read from memory
 			if tr, ok = p.reachingThrough(tat, read); !ok {
 				return storeReaching{}, false
@@ -579,8 +571,10 @@ func storeReturnsAfter(d *ssa.Defer, positions instrPositions) []ssa.Instruction
 // after it, and a go call at any point after it, as an escape does. A
 // deferred call that reads a variable declared in a loop is read as an
 // escape too, since a return may meet a later iteration's variable first.
+// So is one for a walk with a picked variable, whose paths walkDeferred does
+// not keep to.
 func (w *storeWalk) walkToRead(read ssa.Instruction) {
-	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() {
+	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() && w.picked == nil {
 		w.walkDeferred(d)
 		return
 	}
@@ -768,7 +762,13 @@ func (w *storeWalk) pickedThrough(edge ssa.Value) (*ssa.Phi, bool) {
 // captured variable is the one the closure was made with. A local variable is
 // declared before any read, and a walk from a return where a deferred call
 // runs only takes the paths through its defer, so its walk never gets here.
+// A walk for a variable that a pointer read from memory points to may get
+// here, on a path where the pointer is another one, such as nil, and the
+// variable is not made: that path carries nothing.
 func (w *storeWalk) reachEntry() {
+	if _, isAlloc := w.at.root.(*ssa.Alloc); isAlloc && w.pointers != nil {
+		return
+	}
 	if fv, ok := w.at.root.(*ssa.FreeVar); ok {
 		w.out.addCaptured(place{root: fv, path: slices.Clone(w.at.path)})
 		return

@@ -544,7 +544,8 @@ Info(&t3.l)                   // h.p.l.Info(): t3 is t1
 stores that reach its read left in the field. The address is then walked for
 as an address in each of those, with the same selections, from the read
 (`t1.l` above), and every value that reaches it must have context. A Phi of
-pointers is walked for each pointer it picks, as `storesReachingPicked` does.
+pointers is walked for each pointer it picks, as `storesReachingPicked` does,
+and is not followed when it picks more than `storePickedMax`.
 
 | The pointer is read | What it can point to |
 |---------------------|----------------------|
@@ -552,7 +553,9 @@ pointers is walked for each pointer it picks, as `storesReachingPicked` does.
 | From what another such pointer points to | The same, through that pointer first |
 | And a store reaches it from a pointer parameter, a captured variable or anything else not known | Not followed. The address is matched as before (`findStores`) |
 
-A nil pointer has nothing to read, and is left out. In the walk for each
+A nil pointer has nothing to read, and is left out. So is a path of the walk
+that leads back to the entry of the function without making the struct a
+pointer points to: the pointer is another one there. In the walk for each
 variable, a store through another read of a pointer is a store to the
 variable when that pointer can point to it: one that stops the path when it
 can point to that variable only, and a may store otherwise. A pointer that
