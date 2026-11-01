@@ -1119,6 +1119,11 @@ h := box{p}
 h.p.Print("x")                        // not reported
 ```
 
+A field that the pointer is copied into from another field, such as `o.v`
+in `o := outer{h.p}`, holds the Phi alone too, when `h.p` does where it is
+loaded (#379). A store of that load is followed back to the field it loads,
+and so on.
+
 A deferred call takes its receiver at the `defer` statement. A store after
 the statement, through the pointer the receiver was loaded as, counts in
 the same way. So `defer (&box{p}).p.Print("x")` before that store is not

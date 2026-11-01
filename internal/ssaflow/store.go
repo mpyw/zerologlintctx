@@ -1293,9 +1293,13 @@ func (g *storeGuard) loadedThrough(w *storeWalk, pointer ssa.Value, store *ssa.S
 
 // holdsOnly reports whether at, a place in a variable, holds pointer when
 // read runs, on every path. Each store that reaches read stores pointer
-// itself, and no path carries another value. pointer is not in a variable,
+// itself, or a load of another place that holds pointer only where it is
+// loaded, and no path carries another value. pointer is not in a variable,
 // such as a Phi of pointers: a variable itself is the leaf or not, as a
 // store to it shows.
+//
+//	h := box{p}                       // h.p holds p only
+//	o := outer{h.p}                   // t8 = *&h.p ; *&o.v = t8: o.v holds p only too
 func (g *storeGuard) holdsOnly(w *storeWalk, at Place, read ssa.Instruction, pointer ssa.Value) bool {
 	if isTrackedRoot(pointer) {
 		return false
@@ -1304,11 +1308,28 @@ func (g *storeGuard) holdsOnly(w *storeWalk, at Place, read ssa.Instruction, poi
 	if held, done := g.pointers.held[key]; done {
 		return held
 	}
+	g.pointers.held[key] = false // A place loaded back into itself, in a loop, holds nothing more
 	r, ok := storesReachingWith(at, read, g.pointers)
 	held := ok && len(r.values) > 0 && !r.unknown && len(r.captured) == 0 && len(r.params) == 0 && len(r.made) == 0 &&
-		!slices.ContainsFunc(r.values, func(v ssa.Value) bool { return v != pointer })
+		!slices.ContainsFunc(r.values, func(v ssa.Value) bool { return !g.holdsLoaded(w, v, pointer) })
 	g.pointers.held[key] = held
 	return held
+}
+
+// holdsLoaded reports whether v, a value stored to a place, is pointer: the
+// pointer itself, or a load of a place in a variable that holds pointer only
+// where v is loaded (see holdsOnly).
+func (g *storeGuard) holdsLoaded(w *storeWalk, v, pointer ssa.Value) bool {
+	if v == pointer {
+		return true
+	}
+	load, isLoad := AsLoad(v)
+	if !isLoad {
+		return false
+	}
+	from, _ := PlaceOf(load.X)
+	from, ok := g.pointed(from)
+	return ok && g.holdsOnly(w, from, load, pointer)
 }
 
 // storeHeld keys what holdsOnly found, for the walks of every leaf of a
