@@ -636,11 +636,24 @@ func (q *eventQuery) counts(cc *eventCtxCall, src eventSource) bool {
 //	    }
 //	    last = e
 //	}
+//
+// The walk before the latest run goes on with what each path carries there,
+// not the receiver, so a path that passed a store of the event, as into a
+// box, still carries the value it stored:
+//
+//	var evs [2]*zerolog.Event
+//	for i := range 2 {
+//	    evs[i] = logger.Info()
+//	}
+//	evs[0].Ctx(ctx)
+//	(&box{evs[1]}).v.Msg("x") // reported: evs[1], not the box, before the run
 func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bool {
 	def := q.defOf(src)
 	runs := q.runsOf(src)
 	// earlier tells that the walk is before the latest run of src
-	earlier, reachesLatest := false, false
+	earlier := false
+	// latest are the paths that reach the latest run, to go on from there
+	var latest []ssaflow.WalkFrom[eventPath]
 	visit := func(instr ssa.Instruction, p *eventPath) ssaflow.WalkStep {
 		q.ix.work++
 		switch q.ctxCallOn(instr, p.src, q.carriedValue(p.carried), earlier) {
@@ -656,7 +669,10 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 		case instr == def && (earlier || !runs.onlyEarlier()):
 			return ssaflow.WalkAbort // src is made on this path, and Ctx does not run after
 		case instr == def:
-			reachesLatest = true
+			from := ssaflow.WalkFrom[eventPath]{Point: ssaflow.WalkPointBefore(def, q.ix.positions), State: *p}
+			if !slices.Contains(latest, from) {
+				latest = append(latest, from)
+			}
 			return ssaflow.WalkStop // The latest run, after the one the receiver holds
 		case q.storesOther(instr, *p, false):
 			return ssaflow.WalkStop // Another event is stored on this path
@@ -674,12 +690,11 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	if !ssaflow.WalkBackIn([]ssaflow.WalkFrom[eventPath]{{Point: before, State: start}}, visit, atEntry, edge) {
 		return false
 	}
-	if !reachesLatest {
+	if len(latest) == 0 {
 		return true
 	}
 	earlier = true
-	from := ssaflow.WalkPointBefore(def, q.ix.positions)
-	return ssaflow.WalkBackIn([]ssaflow.WalkFrom[eventPath]{{Point: from, State: start}}, visit, atEntry, edge)
+	return ssaflow.WalkBackIn(latest, visit, atEntry, edge)
 }
 
 // freshCtxLastBefore reports whether a path that leads to before, and carries
