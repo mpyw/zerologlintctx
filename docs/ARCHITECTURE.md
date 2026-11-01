@@ -28,6 +28,7 @@ zerologlintctx/
 │   │   ├── match.go           # Whether two addresses are the same
 │   │   ├── place.go           # An address as a root and its selections
 │   │   ├── walk.go            # Walks the paths of the control flow
+│   │   ├── live.go            # The blocks and edges a branch on a constant leaves
 │   │   ├── model.go           # Model: what a library does with memory
 │   │   └── value.go           # SSA plumbing the other files stand on
 │   ├── directive/             # Comment directive handling
@@ -286,6 +287,38 @@ reaches another without running a given instruction. The in-place `Ctx`
 check asks it to tell whether a value kept at a Phi or in memory still holds
 the event of the latest run of a call in a loop (see
 [Events made in a loop](#events-made-in-a-loop)).
+
+#### Branches on Constants
+
+go/ssa keeps both edges of a branch on a constant. `if true`, and `if debug`
+for `const debug = true`, become an `If` on an `*ssa.Const`:
+
+```go
+e := log.Info()
+if debug {     // if true:untyped bool goto 1 else 2
+	e.Ctx(ctx)
+}
+e.Msg("x")     // not reported
+```
+
+`live.go` tells which blocks can run, and which edges control can take
+(`LiveFlow`). The edge that the `If` never takes is dead. So is each block
+that no path from the entry or the recover block reaches without such an
+edge. go/ssa drops no block for `if false`. It keeps the branch on the
+constant, and the block it never runs.
+
+| Who asks | What it takes |
+|----------|---------------|
+| `walkBackStates`, `matchStoresBeforeBy` | The live predecessors of each block (`LiveFlow.pred`) |
+| `WalkFwd`, `WalkReachable`, `Positions.following`, `runsOnEveryReturn` | The live successors of each block (`LiveFlow.Succs`) |
+| Each look at the edges of a Phi, in `ssaflow` and `chain` | The edges from live predecessors (`LiveEdges`, `LiveEdgeValues`) |
+
+Inside a dead block, every edge is still taken. A walk that starts there,
+or a Phi there, sees what it saw before. A walk that starts in a live block
+reaches only live blocks. Only an `If` on an `*ssa.Const` counts, so a path
+that can run is never dropped. `LiveFlowOf` finds the flow of a function once.
+It keeps it by a weak pointer to the function, so the cache holds no SSA. A `for range 1` checks a counter, not a
+constant. Its loop is not folded (see [Known Limitations](#known-limitations)).
 
 `walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
 the visit of each instruction too, which may change it for the rest of the
@@ -1492,7 +1525,7 @@ negative is a missed report.
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
-| Constant conditions (#266) | A branch on a constant is not folded, such as `if true`, `if debug` for `const debug = true`, or the check of `for range 1`. The path that skips a `Ctx` call in the branch or the loop still reaches the terminator | `inplace` |
+| A loop of one run (#266) | The check of `for range 1` is on a counter, not on a constant, so it is not folded. The path that skips a `Ctx` call in the loop still reaches the terminator. A branch on a constant, such as `if true`, is folded (see [Branches on Constants](#branches-on-constants)) | `inplace` |
 
 ### False negatives
 

@@ -1253,6 +1253,7 @@ func (ix *eventIndex) runsOnEveryReturn(cc *eventCtxCall, set []*eventCtxCall, f
 	}
 	queue := []*ssa.BasicBlock{fn.Blocks[0]}
 	seen := map[*ssa.BasicBlock]bool{fn.Blocks[0]: true}
+	flow := ssaflow.LiveFlowOf(fn)
 	for len(queue) > 0 {
 		b := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
@@ -1262,7 +1263,7 @@ func (ix *eventIndex) runsOnEveryReturn(cc *eventCtxCall, set []*eventCtxCall, f
 		if _, isReturn := b.Instrs[len(b.Instrs)-1].(*ssa.Return); isReturn {
 			return false
 		}
-		for _, succ := range b.Succs {
+		for _, succ := range flow.Succs(b) {
 			if !seen[succ] {
 				seen[succ] = true
 				queue = append(queue, succ)
@@ -1512,7 +1513,7 @@ func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 		}
 	case *ssa.Phi:
 		var step eventStep
-		for _, edge := range val.Edges {
+		for _, edge := range ssaflow.LiveEdges(val) {
 			if !ssaflow.IsNilConst(edge) {
 				step.next = append(step.next, edge)
 			}
@@ -1962,7 +1963,7 @@ func (g *eventRunGraph) value(v ssa.Value, use ssaflow.WalkPoint, u eventRunUse)
 		g.step(x, g.ix.stepOf(v), instr)
 		return
 	}
-	for i, edge := range phi.Edges {
+	for i, edge := range ssaflow.LiveEdges(phi) {
 		if ssaflow.IsNilConst(edge) {
 			continue
 		}

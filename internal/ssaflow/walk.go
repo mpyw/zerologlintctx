@@ -1,7 +1,8 @@
 // walk.go walks the paths of the control flow of a function, block by block:
 // backwards to a point with walkBack and walkBackWith, and forwards from one
 // with WalkFwd. The callers decide what each instruction means to a path;
-// the walk only takes each block once and in the same order.
+// the walk only takes each block once and in the same order. It takes only
+// the edges that control can take, which live.go tells.
 //
 // store.go walks back from a read to the stores that reach it, and
 // internal/chain walks to and from an Event.Ctx call. Every declaration is
@@ -138,6 +139,7 @@ func walkBackStates[S comparable](
 	queue := make([]WalkFrom[S], len(from))
 	copy(queue, from)
 	seen := make(map[visited]bool)
+	flows := make(liveFlows)
 	for len(queue) > 0 {
 		s := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
@@ -158,7 +160,11 @@ func walkBackStates[S comparable](
 			}
 			continue
 		}
+		flow := flows.of(b)
 		for i, pred := range b.Preds {
+			if !flow.pred(b, i) {
+				continue // Control never comes this way
+			}
 			state := s.State
 			if edge != nil {
 				var takes bool
@@ -185,6 +191,7 @@ func walkBackStates[S comparable](
 func WalkFwd(from WalkPoint, visit walkVisit) bool {
 	queue := []WalkPoint{from}
 	seen := make(map[*ssa.BasicBlock]bool)
+	flow := LiveFlowOf(from.block.Parent())
 	for len(queue) > 0 {
 		p := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
@@ -198,7 +205,7 @@ func WalkFwd(from WalkPoint, visit walkVisit) bool {
 		if step == WalkStop {
 			continue
 		}
-		for _, succ := range p.block.Succs {
+		for _, succ := range flow.Succs(p.block) {
 			if !seen[succ] {
 				seen[succ] = true
 				queue = append(queue, WalkPoint{succ, 0})
@@ -221,9 +228,10 @@ func WalkReachable(from WalkPoint, avoid ssa.Instruction, positions Positions, w
 	var entered map[*ssa.BasicBlock]bool
 	enter := func() {
 		entered = make(map[*ssa.BasicBlock]bool)
+		flow := LiveFlowOf(from.block.Parent())
 		var queue []*ssa.BasicBlock
 		if avoidsAt(from.block, from.index) {
-			queue = append(queue, from.block.Succs...)
+			queue = append(queue, flow.Succs(from.block)...)
 		}
 		for len(queue) > 0 {
 			b := queue[len(queue)-1]
@@ -236,7 +244,7 @@ func WalkReachable(from WalkPoint, avoid ssa.Instruction, positions Positions, w
 				*work++
 			}
 			if avoidsAt(b, 0) {
-				queue = append(queue, b.Succs...)
+				queue = append(queue, flow.Succs(b)...)
 			}
 		}
 	}

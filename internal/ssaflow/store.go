@@ -916,7 +916,7 @@ func storePickedLeaves(phi *ssa.Phi) (leaves []ssa.Value, ok bool) {
 	for len(queue) > 0 {
 		p := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
-		for _, edge := range p.Edges {
+		for _, edge := range LiveEdges(p) {
 			if seen[edge] || IsNilConst(edge) {
 				continue
 			}
@@ -1789,7 +1789,7 @@ func (w *storeWalk) walkEscape(esc ssa.Instruction, st storePath) {
 // matches it, so some edge holds it.
 func (w *storeWalk) walkToPhiEdges(phi *ssa.Phi) {
 	var from []WalkPoint
-	for i, edge := range phi.Edges {
+	for i, edge := range LiveEdges(phi) {
 		if w.phiEdgeHolds(edge) {
 			pred := phi.Block().Preds[i]
 			from = append(from, WalkPoint{block: pred, index: len(pred.Instrs)})

@@ -238,7 +238,7 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 	case *ssa.Phi:
 		// Every edge must have context. One that leads back to the Phi, as an
 		// update in a loop does, is neutral there
-		return all(verdictsOf(val.Edges, func(edge ssa.Value) verdict {
+		return all(verdictsOf(ssaflow.LiveEdgeValues(val), func(edge ssa.Value) verdict {
 			return tr.traceSource(edge, st)
 		}))
 	case *ssa.UnOp:

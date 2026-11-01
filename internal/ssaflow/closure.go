@@ -122,7 +122,7 @@ func (c *Closures) findCalls(fn *ssa.Function) (calls []ssa.CallInstruction, ok 
 					changed = true
 				}
 			case *ssa.Phi:
-				if !phis[in] && slices.ContainsFunc(in.Edges, mayBeFn) {
+				if !phis[in] && slices.ContainsFunc(LiveEdgeValues(in), mayBeFn) {
 					phis[in], changed = true, true
 				}
 			}
@@ -174,7 +174,7 @@ func (c *Closures) FuncLiteralsOf(v ssa.Value, seen map[ssa.Value]bool) ([]*ssa.
 	var values []ssa.Value
 	switch val := v.(type) {
 	case *ssa.Phi:
-		values = val.Edges
+		values = LiveEdgeValues(val)
 	case *ssa.UnOp:
 		if val.Op != token.MUL {
 			return nil, false

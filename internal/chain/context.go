@@ -192,7 +192,7 @@ func (f *contextFreshness) trace(v ssa.Value) verdict {
 		fn, ok := sfn.Object().(*types.Func)
 		return verdictOf(ok && zerologapi.MakesFreshContext(fn))
 	case *ssa.Phi:
-		return all(verdictsOf(val.Edges, f.isFresh))
+		return all(verdictsOf(ssaflow.LiveEdgeValues(val), f.isFresh))
 	case *ssa.ChangeType:
 		return f.isFresh(val.X)
 	case *ssa.UnOp:
