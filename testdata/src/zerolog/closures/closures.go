@@ -209,6 +209,26 @@ func limitationClosureModifiesCapturedWithCtx(ctx context.Context, logger zerolo
 	e.Msg("modified by closure with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// LIMITATION (false negative): the same store, without ctx, over a variable
+// that has it. The read after the call still sees the value before it.
+func limitationClosureReplacesCapturedWithoutCtx(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info().Ctx(ctx)
+	f := func() {
+		e = logger.Info()
+	}
+	f()
+	e.Msg("replaced by closure without ctx") // LIMITATION: should report but doesn't
+}
+
+// LIMITATION (false negative): nor is a store through a pointer the closure
+// captures.
+func limitationClosureStoresThroughCapturedPointer(ctx context.Context, logger zerolog.Logger) {
+	l := logger.With().Ctx(ctx).Logger()
+	p := &l
+	func() { *p = logger }()
+	p.Print("stored through by closure without ctx") // LIMITATION: should report but doesn't
+}
+
 // ===== FUNCTION LITERAL AS ARGUMENT =====
 
 func badFuncLiteralArg(ctx context.Context, logger zerolog.Logger) {
@@ -914,12 +934,20 @@ func limitationCapturedStructFieldPtrPassed(ctx context.Context, h monHolder) {
 	runPtrHolderFunc(func() { h.m.log.Info().Msg("pointer in a captured struct, passed") }) // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-func limitationCapturedStructCopiedInClosure(ctx context.Context, h monHolder) {
+// A pointer in a copy of the captured struct made in the closure is followed
+// past the copy, out of the closure.
+func goodCapturedStructCopiedInClosure(ctx context.Context, h monHolder) {
 	h.m.log = zerolog.Ctx(ctx).With().Logger()
 	func() {
 		c := h
-		// LIMITATION: nor is a pointer in a copy of the captured struct made in
-		// the closure
+		c.m.log.Info().Msg("pointer in a copy of a captured struct") // OK
+	}()
+}
+
+func badCapturedStructCopiedInClosure(ctx context.Context, h monHolder, logger zerolog.Logger) {
+	h.m.log = logger
+	func() {
+		c := h
 		c.m.log.Info().Msg("pointer in a copy of a captured struct") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
 }

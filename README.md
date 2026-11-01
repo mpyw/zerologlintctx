@@ -773,6 +773,35 @@ w.Msg("hello")
 <td>
 
 ```go
+l := log.With().Ctx(ctx).Logger()
+func() {
+	l = log
+}()
+l.Info().Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Not reported (limitation).</b> A store by a closure is not seen after the call here either. The read sees <code>l</code> as it was before the call, with the context</td>
+</tr>
+<tr>
+<td>
+
+```go
+l := log.With().Ctx(ctx).Logger()
+p := &l
+func() {
+	*p = log
+}()
+p.Info().Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Not reported (limitation).</b> The same for a store through a pointer the closure captures</td>
+</tr>
+<tr>
+<td>
+
+```go
 e := log.Info()
 defer e.Msg("done")
 if failed {
