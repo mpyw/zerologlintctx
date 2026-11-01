@@ -265,8 +265,6 @@ func addrSel(v ssa.Value) (from ssa.Value, s sel, ok bool) {
 // valueSel returns the selection v makes, a field of a struct value or an
 // element of an array value, and the value it selects from. ok is false for
 // any other value.
-//
-//declscope:private
 func valueSel(v ssa.Value) (from ssa.Value, s sel, ok bool) {
 	switch v := v.(type) {
 	case *ssa.Field:

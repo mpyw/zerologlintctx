@@ -669,7 +669,9 @@ func badCapturedPtrStoreInClosure(ctx context.Context, logger zerolog.Logger) {
 	}()
 }
 
-func limitationCapturedPtrPickedOnBranch(ctx context.Context, cond bool) {
+// A pointer a closure captures that is picked on a branch is walked for each
+// variable it can point to, along the paths of the Phi, out of the closure.
+func goodCapturedPtrPickedOnBranch(ctx context.Context, cond bool) {
 	a := ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
 	b := ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
 	q := &a
@@ -677,10 +679,18 @@ func limitationCapturedPtrPickedOnBranch(ctx context.Context, cond bool) {
 		q = &b
 	}
 	p := q
-	// LIMITATION: a pointer a closure captures that is picked on a branch is
-	// not followed, as the walk from where the closure runs does not keep to
-	// the paths of the Phi
-	func() { p.log.Info().Msg("captured pointer picked on a branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	func() { p.log.Info().Msg("captured pointer picked on a branch") }() // OK - both loggers have ctx
+}
+
+func badCapturedPtrPickedOnBranch(ctx context.Context, cond bool) {
+	a := ptrHolder{log: zerolog.Ctx(ctx).With().Logger()}
+	b := ptrHolder{log: zerolog.Nop()}
+	q := &a
+	if cond {
+		q = &b
+	}
+	p := q
+	func() { p.log.Info().Msg("captured pointer picked on a branch, one without ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== A POINTER CHAIN READ IN A CLOSURE =====

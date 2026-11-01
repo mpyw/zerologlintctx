@@ -96,6 +96,8 @@ func walkBack(
 // nil, carries into each predecessor, or drops a path with. A block is walked
 // into once in each state. With a nil edge, every predecessor is taken in the
 // same state.
+//
+//declscope:private
 func walkBackWith[S comparable](
 	from []WalkFrom[S],
 	visit walkVisit,
@@ -112,6 +114,21 @@ func WalkBackIn[S comparable](
 	from []WalkFrom[S],
 	visit func(ssa.Instruction, *S) WalkStep,
 	atEntry func() bool,
+	edge walkEdge[S],
+) bool {
+	var entered func(S) bool
+	if atEntry != nil {
+		entered = func(S) bool { return atEntry() }
+	}
+	return walkBackStates(from, visit, entered, edge)
+}
+
+// walkBackStates is WalkBackIn with atEntry shown the state of the path that
+// gets to the entry.
+func walkBackStates[S comparable](
+	from []WalkFrom[S],
+	visit func(ssa.Instruction, *S) WalkStep,
+	atEntry func(S) bool,
 	edge walkEdge[S],
 ) bool {
 	type visited struct {
@@ -136,7 +153,7 @@ func WalkBackIn[S comparable](
 			continue
 		}
 		if len(b.Preds) == 0 {
-			if atEntry != nil && !atEntry() {
+			if atEntry != nil && !atEntry(s.State) {
 				return false
 			}
 			continue

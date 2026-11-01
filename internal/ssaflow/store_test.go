@@ -14,38 +14,6 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
-// TestStorePickedThrough checks which edges of a Phi of pointers walkBefore
-// takes for a picked variable, through edges that are Phis themselves.
-func TestStorePickedThrough(t *testing.T) {
-	leaf := ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int])
-	other := ssa.NewConst(constant.MakeInt64(2), types.Typ[types.Int])
-	inner := &ssa.Phi{Edges: []ssa.Value{other, leaf}}
-	elsewhere := &ssa.Phi{Edges: []ssa.Value{other}}
-	loop := &ssa.Phi{}
-	loop.Edges = []ssa.Value{loop, elsewhere} // Leads back to itself, never to leaf
-	outer := &ssa.Phi{Edges: []ssa.Value{inner, loop, leaf}}
-	w := &storeWalk{picked: &storePick{phi: outer, leaf: leaf}}
-
-	for _, tt := range []struct {
-		name  string
-		edge  ssa.Value
-		need  *ssa.Phi
-		takes bool
-	}{
-		{"the variable itself", leaf, nil, true},
-		{"a Phi that holds it", inner, inner, true},
-		{"a Phi that leads only back to itself and elsewhere", loop, nil, false},
-		{"another value", other, nil, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			need, takes := w.pickedThrough(tt.edge)
-			if need != tt.need || takes != tt.takes {
-				t.Errorf("pickedThrough = (%p, %v), want (%p, %v)", need, takes, tt.need, tt.takes)
-			}
-		})
-	}
-}
-
 // TestStorePointerOf checks where storePointerOf finds a pointer made: by
 // the load of the struct value a field of it is selected from, through the
 // fields of fields too.
@@ -59,31 +27,25 @@ func TestStorePointerOf(t *testing.T) {
 	}
 }
 
-// TestStorePickedStoredLater checks that a pointer a Phi picks, made in a
-// loop after the Phi, is walked for only when no store goes through it.
-func TestStorePickedStoredLater(t *testing.T) {
+// TestStoreGuardNeed checks what a path needs when a value must be the leaf:
+// nothing for the leaf, the value for a Phi or a load, the struct value
+// loaded for a field of it, and no path for another value.
+func TestStoreGuardNeed(t *testing.T) {
 	const src = `package p
 
 type L struct{ n int }
 
-func mk() *L { return new(L) }
+func (*L) m() {}
 
-func storedThrough(a *L, l L, n int) {
-	p := a
-	for range n {
-		_ = p.n
-		q := mk()
-		*q = l
-		p = q
-	}
-}
+type H struct{ *L }
 
-func onlyMade(a *L, n int) {
+func f(a, b *L, h *H, c bool) {
 	p := a
-	for range n {
-		_ = p.n
-		p = mk()
+	if c {
+		p = b
 	}
+	_ = p.n
+	(*h).m()
 }
 `
 	fset := token.NewFileSet()
@@ -95,32 +57,46 @@ func onlyMade(a *L, n int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	positions := make(Positions)
-	for name, want := range map[string]bool{"storedThrough": false, "onlyMade": true} {
-		var pick *storePick
-		for instr := range InstrsIn(pkg.Func(name)) {
-			phi, isPhi := instr.(*ssa.Phi)
-			if !isPhi {
-				continue
+	fn := pkg.Func("f")
+	a, b := fn.Params[0], fn.Params[1]
+	var phi *ssa.Phi
+	var field *ssa.Field
+	for instr := range InstrsIn(fn) {
+		switch v := instr.(type) {
+		case *ssa.Phi:
+			phi = v
+		case *ssa.Field:
+			field = v
+		}
+	}
+	if phi == nil || field == nil {
+		t.Fatalf("no Phi or no field of a struct value: %v, %v", phi, field)
+	}
+	load, _ := AsLoad(field.X)
+	g := newStoreGuard(phi, a, newStorePointers(make(Positions)))
+	for _, tt := range []struct {
+		name string
+		v    ssa.Value
+		ok   bool
+		kind storeGuardKind
+		root ssa.Value
+		path int
+	}{
+		{"the leaf", a, true, storeGuardResolved, nil, 0},
+		{"a Phi", phi, true, storeGuardValue, phi, 0},
+		{"a field of a loaded struct", field, true, storeGuardValue, load, 1},
+		{"another value", b, false, storeGuardResolved, nil, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var st storePath
+			ok := g.need(&st, PlaceAt(tt.v))
+			if ok != tt.ok || st.kind != tt.kind {
+				t.Fatalf("need = %v, kind %v; want %v, kind %v", ok, st.kind, tt.ok, tt.kind)
 			}
-			for _, edge := range phi.Edges {
-				if call, isCall := edge.(*ssa.Call); isCall && positions.reaches(phi, call) {
-					pick = &storePick{phi: phi, leaf: call}
-				}
+			if at := g.places[st.at]; tt.root != nil && (at.root != tt.root || len(at.path) != tt.path) {
+				t.Errorf("needs %v with %d selections, want %v with %d", at.root, len(at.path), tt.root, tt.path)
 			}
-		}
-		if pick == nil {
-			t.Fatalf("%s: no Phi with a pointer made after it", name)
-		}
-		pointer, ok := pick.pointerOf(positions)
-		if !ok {
-			t.Fatalf("%s: pointerOf ok = false, want true", name)
-		}
-		at, _ := PlaceOf(pick.leaf)
-		w := &storeWalk{at: at, positions: positions, picked: pick, pointer: pointer}
-		if got := !w.pickedStoredLater(); got != want {
-			t.Errorf("%s: walked for = %v, want %v", name, got, want)
-		}
+		})
 	}
 }
 

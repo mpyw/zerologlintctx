@@ -754,13 +754,14 @@ pointer (see [Pointers Not in a Variable](#pointers-not-in-a-variable)).
 A field read through a Phi of pointers, such as `h.l` after
 `h := &holder{...}; if cond { h = &holder{...} }`, with no store through the
 Phi itself, has what each variable the Phi may point to holds there. Each one
-is walked from the read along the paths on which the Phi points to it: at the
-top of the block of the Phi, the walk goes on through the edges that hold it
-only. Every value that reaches the read must have context. A Phi that may
-point to more than a few variables is not walked. A `go` or `defer` statement
-takes the pointer when it runs, and reads what it points to later: the walk
-goes back from the statement along the same paths, and every store after it
-counts too.
+is walked from the read along the paths on which the Phi points to it (see
+[The Leaves of a Pointer](#the-leaves-of-a-pointer)). Every value that
+reaches the read must have context. A Phi that may point to more than a few
+variables is not walked. A `defer` statement takes the pointer when it runs,
+and reads what it points to at the returns after it: the walk goes back from
+each return to the statement, and from there along the paths of the Phi. A
+`go` statement reads it at any point after: the walk goes back from the
+statement, and every store after it counts too.
 
 A pointer the Phi picks that is not in a variable, such as `b.p` read from a
 pointer parameter, is walked for as below (see
@@ -768,11 +769,8 @@ pointer parameter, is walked for as below (see
 paths back to where it is made, and on from there on every path. A path that
 gets back to where it is made, as for `zerolog.Ctx(ctx)`, carries what tracing
 the pointer itself finds. When no path carries a store or such a pointer, the
-Phi is not walked. Nor is it when such a pointer may be made after the Phi, as
-in a loop, unless no store goes through it and it is not a load: a path back
-from the read may meet it on a later iteration, which makes another pointer,
-but every path that gets to it carries the pointer itself all the same. A
-pointer receiver that a Phi picks is such an address too
+Phi is not walked. The same holds for such a pointer made after the Phi, as in
+a loop. A pointer receiver that a Phi picks is such an address too
 (`Resolver.ResolvesThrough`):
 
 ```go
@@ -904,9 +902,10 @@ Info(&t3.l)                   // h.p.l.Info(): t3 is t1
 `storePointers` follows such a pointer to what it can point to: what the
 stores that reach its read left in the field. The address is then walked for
 as an address in each of those, with the same selections, from the read
-(`t1.l` above), and every value that reaches it must have context. A Phi of
-pointers is walked for each pointer it picks, as `storesReachingPicked` does,
-and is not followed when it picks more than `storePickedMax`.
+(`t1.l` above), along the paths on which the pointer is that one (see
+[The Leaves of a Pointer](#the-leaves-of-a-pointer)). Every value that reaches
+it must have context. A Phi of pointers among them is walked for each pointer
+it picks, and is not followed when it picks more than `storePickedMax`.
 
 | The pointer is read | What it can point to |
 |---------------------|----------------------|
@@ -944,20 +943,17 @@ the walk for it goes from the read back to the entry of the closure, then on
 in the function that makes the closure, from where the closure runs: before
 each call of a closure that is only called, at the returns of one that is only
 deferred, and from where it is made, with every store after it, otherwise
-(`storeWalk.walkOut`). A pointer that is not in a variable there, such as one
-a call returns, is walked for as below, and is taken as not known when no
-store through it is found, even when a path gets back to where it is made, as
-for `zerolog.Ctx(ctx)`. The walks for the other targets do not keep to the
-paths on which the variable holds each one, so the pointer is traced as a
-value instead:
+(`storeWalk.walkOut`). The walk keeps to the paths on which the variable holds
+that target where the closure runs. A pointer that is not in a variable there,
+such as one a call returns, is walked for as below:
 
 ```go
 p := zerolog.Ctx(ctx)
 if a {
-    l := base                         // reaches the call when b is false
+    l := base                         // on a path where p is still the logger of ctx
     if b {
         l = base.With().Ctx(ctx).Logger()
-        p = &l
+        p = &l                        // the only store that makes p &l
     }
 }
 func() { p.Info().Msg("x") }()        // p is &l only after the store with ctx: not reported
@@ -990,6 +986,77 @@ p := newHolder()
 p.log = base.With().Ctx(ctx).Logger()  // t2 = *t0 ; *&t2.log = ..., and t2 is t1
 go func() { p.log.Info().Msg("x") }()  // t0 = *p ; Info(&t0.log), and t0 is t1
 ```
+
+#### The Leaves of a Pointer
+
+A pointer that a Phi picks, or that is read from memory, can be one of
+several values on different paths. Its *leaves* are the values it can be in
+the end: the edges of the Phi, what the stores to where it is read from left
+there, through each pointer read from memory among them, and what a variable
+a closure captures holds where the closure runs. A leaf is a variable, a
+pointer parameter, or a pointer not in a variable, such as
+`zerolog.Ctx(ctx)`. `storesReachingLeaf` walks for each leaf from the read,
+and every path carries a guard (`storeGuard`, `storePath`): what must still
+hold, going back from the read, for the pointer to be that leaf there.
+
+| What the path needs | Where it changes | Into |
+|---------------------|------------------|------|
+| A value must be the leaf: a Phi, a load, a field of a loaded struct | The top of the block of the Phi; the load | The edge of the predecessor; the place loaded from |
+| A place must hold the leaf | A store to the place; the entry of a closure | The value stored; the same place in the variable bound where the closure runs |
+| Nothing: the pointer is the leaf | | |
+
+A path whose guard gets to another value, such as another edge, nil, or a
+store of another pointer, does not hold the leaf, and is dropped. A path that
+gets back to the entry of the function the leaf is in, with the guard not
+resolved, is dropped too. A place in what a pointer read from memory points
+to is the same place in the variable the pointer points to, when that is the
+only one.
+
+Before the guard is resolved, a path is between the read and where the
+pointer gets to be the leaf. A store to the leaf there is kept on the path,
+and counts only when the path resolves later. The path stops for the leaf at
+a store that writes it every time it runs, as for a variable, and goes on for
+the guard alone. A store through a pointer loaded from the guarded place, in
+the same block, with no store to the place between, is a store through the
+leaf on that path:
+
+```go
+p := zerolog.Ctx(ctx)
+if other {
+    l := base.With().Ctx(ctx).Logger()
+    p = &l
+}
+b := &loggerPtrBox{p}
+func() {
+    if cond {
+        *b.p = base                   // through the leaf, on each path: kept
+    }
+    defer func() { b.p.Info().Msg("x") }() // reported: base on either path, when cond is true
+}()
+```
+
+Where the leaf is made, met before the guard is resolved, drops what the path
+kept: in a loop, that store was to the leaf of a later iteration, and the
+Phi reads the one of the iteration before.
+
+```go
+p := l1                               // *l1 has ctx
+for range n {
+    q := new(zerolog.Logger)          // drops the store below
+    *q = l                            // to the q of this iteration
+    p.Print("x")                      // p is the q of the iteration before: not reported
+    *q = l.With().Ctx(ctx).Logger()
+    p = q
+}
+```
+
+A closure run by a `go` statement, or passed on, may run after the function
+stores to the guarded place again. A path that gets out of such a closure is
+then taken as resolved, as the walk cannot tell which store the closure
+sees. The walk gives up, and the pointer is traced as a value, on a
+store that may write the guarded place or not, such as one at a variable
+index, on a guarded place read through a pointer that may be one of several,
+and on more than one store kept on a path that may write the leaf or not.
 
 #### Pointers Not in a Variable
 
@@ -1295,7 +1362,6 @@ negative is a missed report.
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
 | A pointer read in a closure that is not only called | A closure may read a pointer from a captured variable, such as `h.m` or `*pp`, or the field of a global. The pointer is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures`, `memory` |
-| A captured pointer picked on a branch | A pointer that a closure captures, picked on a branch, is not followed. The walk from where the closure runs does not keep to the paths of the Phi | `closures` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
