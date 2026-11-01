@@ -239,15 +239,43 @@ func storesReachingClosure(
 // any point after, so what reaches esc, and every store after it, may be what
 // it reads. A closure that is only deferred reads it at the returns after it,
 // unless the variable is declared in a loop, and one that is only called reads
-// it at each call (see closureRuns).
+// it at each call (see closureRuns). A Phi passes the address on only from
+// the edges that are the address (see walkToPhiEdges).
 func (w *storeWalk) walkEscape(esc ssa.Instruction) {
-	if mc, ok := esc.(*ssa.MakeClosure); ok {
-		if w.walkToRuns(mc) {
+	switch e := esc.(type) {
+	case *ssa.MakeClosure:
+		if w.walkToRuns(e) {
 			return
 		}
+	case *ssa.Phi:
+		w.walkToPhiEdges(e)
+		w.addStoresAfter(esc)
+		return
 	}
 	w.walkBefore(esc)
 	w.addStoresAfter(esc)
+}
+
+// walkToPhiEdges walks to the ends of the predecessors of phi whose edge is
+// the address, or the variable that holds it. On another edge, phi points to
+// something else, and what the variable holds there is not what phi passes
+// on. That edge may not even run the declaration of the variable:
+//
+//	p := zerolog.Ctx(ctx)
+//	if cond {
+//	    l := base.With().Ctx(ctx).Logger() // phi takes &l from this edge only
+//	    p = &l
+//	}
+//	p.Info().Msg("msg")                    // p is phi
+func (w *storeWalk) walkToPhiEdges(phi *ssa.Phi) {
+	var from []walkPoint
+	for i, edge := range phi.Edges {
+		if _, ok := w.prefixLen(edge); ok {
+			pred := phi.Block().Preds[i]
+			from = append(from, walkPoint{block: pred, index: len(pred.Instrs)})
+		}
+	}
+	w.walkBackFrom(from)
 }
 
 // walkToRuns walks to where mc runs, when it is a closure that is only
@@ -477,13 +505,13 @@ type storeCopy struct {
 // variable itself. At the top of the block of that Phi, the walk
 // goes on through the edges that may hold the variable only.
 func (w *storeWalk) walkBefore(instr ssa.Instruction) {
+	if w.picked == nil {
+		w.walkBackFrom([]walkPoint{walkPointBefore(instr, w.positions)})
+		return
+	}
 	atEntry := func() bool {
 		w.reachEntry()
 		return true
-	}
-	if w.picked == nil {
-		walkBack([]walkPoint{walkPointBefore(instr, w.positions)}, w.stepAt, atEntry, nil)
-		return
 	}
 	from := []walkFrom[*ssa.Phi]{{walkPointBefore(instr, w.positions), w.picked.phi}}
 	edge := func(b *ssa.BasicBlock, i int, need *ssa.Phi) (*ssa.Phi, bool) {
@@ -493,6 +521,16 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 		return w.pickedThrough(need.Edges[i]) // The Phi may not point to the variable on this path
 	}
 	walkBackWith(from, w.stepAt, atEntry, edge)
+}
+
+// walkBackFrom walks every path that leads to a point of from, and stops each
+// at the first store to the address.
+func (w *storeWalk) walkBackFrom(from []walkPoint) {
+	atEntry := func() bool {
+		w.reachEntry()
+		return true
+	}
+	walkBack(from, w.stepAt, atEntry, nil)
 }
 
 // pickedThrough reports whether edge, of a Phi that points to the picked

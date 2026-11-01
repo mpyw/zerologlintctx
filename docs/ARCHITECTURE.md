@@ -414,7 +414,10 @@ as a closure that captures it, may read it later, so every store after it
 counts too. A closure that is only deferred runs at the returns after the
 `defer` statement, so the stores that reach those returns count instead. A
 closure that is only called runs at each call, and the stores that reach the
-calls count.
+calls count. A Phi passes the address on only from the edges that are the
+address, so the walk starts at the ends of those predecessors. On another
+edge the Phi points elsewhere, and that edge may not even run the declaration
+of a variable declared in a branch or a loop.
 
 #### Elements at a Variable Index
 
