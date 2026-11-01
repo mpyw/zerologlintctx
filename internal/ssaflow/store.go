@@ -5,7 +5,6 @@
 package ssaflow
 
 import (
-	"go/token"
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
@@ -1077,8 +1076,9 @@ func (w *storeWalk) indexOnce(a, b ssa.Value) bool {
 
 // storeLoadedVariable returns the local variable that v, a load, reads: its
 // address, or the variable bound to the free variable it loads, through the
-// closures that capture it at any depth. ok is false when v is not such a
-// load, or a closure on the way is made more than once, or nowhere.
+// closures that capture it at any depth. SSA makes a func literal once, where
+// it is written, so a closure has one MakeClosure. ok is false when v is not
+// such a load, or a closure on the way is made nowhere that can be seen.
 func storeLoadedVariable(v ssa.Value) (_ *ssa.Alloc, ok bool) {
 	load, isLoad := AsLoad(v)
 	if !isLoad {
@@ -1087,19 +1087,10 @@ func storeLoadedVariable(v ssa.Value) (_ *ssa.Alloc, ok bool) {
 	addr := load.X
 	for fv, isFreeVar := addr.(*ssa.FreeVar); isFreeVar; fv, isFreeVar = addr.(*ssa.FreeVar) {
 		fn := fv.Parent()
-		var bound ssa.Value
-		for instr := range InstrsIn(fn.Parent()) {
-			if mc, isMC := instr.(*ssa.MakeClosure); isMC && mc.Fn == fn {
-				if bound != nil {
-					return nil, false
-				}
-				bound = mc.Bindings[slices.Index(fn.FreeVars, fv)]
-			}
+		addr = nil
+		for _, mc := range storeMakersOf(fn) {
+			addr = mc.Bindings[slices.Index(fn.FreeVars, fv)]
 		}
-		if bound == nil {
-			return nil, false
-		}
-		addr = bound
 	}
 	alloc, isAlloc := addr.(*ssa.Alloc)
 	return alloc, isAlloc
@@ -1123,9 +1114,7 @@ func (w *storeWalk) storeVariableOnce(alloc *ssa.Alloc) bool {
 				}
 				store = in
 			case *ssa.UnOp:
-				if in.Op != token.MUL {
-					return false
-				}
+				// A load: the only unary operation on an address
 			case *ssa.MakeClosure:
 				fn := in.Fn.(*ssa.Function) // Always a function, a func literal or a wrapper
 				for i, bound := range in.Bindings {

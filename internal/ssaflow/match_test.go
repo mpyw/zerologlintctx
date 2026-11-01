@@ -127,3 +127,41 @@ func TestMatchFromGlobal(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchedPlacesKeyAtRun checks that a place whose root is not a load of a
+// free variable keeps its key.
+func TestMatchedPlacesKeyAtRun(t *testing.T) {
+	const src = `package p
+
+func f(x *int) {
+	func() { _ = *x }()
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := pkg.Func("f")
+	var mc *ssa.MakeClosure
+	var call *ssa.Call
+	for instr := range InstrsIn(fn) {
+		switch in := instr.(type) {
+		case *ssa.MakeClosure:
+			mc = in
+		case *ssa.Call:
+			call = in
+		}
+	}
+	if mc == nil || call == nil {
+		t.Fatal("no IIFE in f")
+	}
+	key := PlaceAt(fn.Params[0]).Key()
+	if got, ok := NewMatchedPlaces().KeyAtRun(key, mc, call); ok || got != key {
+		t.Errorf("KeyAtRun(x) = %v, %v, want %v, false", got, ok, key)
+	}
+}
