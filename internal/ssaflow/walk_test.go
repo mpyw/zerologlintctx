@@ -168,7 +168,7 @@ func TestWalkBack(t *testing.T) {
 			}
 			return s, true
 		}
-		WalkBackWith([]WalkFrom[int]{{from[0], -1}}, r.visit(nil), atEntry, edge)
+		walkBackWith([]WalkFrom[int]{{from[0], -1}}, r.visit(nil), atEntry, edge)
 		if entries != 2 {
 			t.Errorf("atEntry called %d times, want 2: once through each branch", entries)
 		}
@@ -182,7 +182,7 @@ func TestWalkBack(t *testing.T) {
 		edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
 			return s, b.Preds[i] != blocks["if.then"]
 		}
-		WalkBackWith([]WalkFrom[struct{}]{{Point: from[0]}}, r.visit(nil), nil, edge)
+		walkBackWith([]WalkFrom[struct{}]{{Point: from[0]}}, r.visit(nil), nil, edge)
 		if r.blocks["if.then"] || !r.blocks["if.else"] {
 			t.Errorf("walked %v, want if.else but not if.then", r.walked())
 		}

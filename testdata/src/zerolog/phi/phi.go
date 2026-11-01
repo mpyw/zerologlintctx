@@ -721,6 +721,115 @@ func goodEventFieldThroughPointerPickedInLoop(ctx context.Context, logger zerolo
 	}
 }
 
+// LIMITATION (false positive): the walk back does not tell which pointer a
+// path takes at a Phi of pointers. The path through the holder made here does
+// not carry the caller's event at q.e, yet it reaches the entry of the
+// function with no Ctx call on it.
+func limitationEventFieldThroughPointerPickedFromParamCtxOnBoth(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		q.e.Ctx(ctx)
+		h = q
+	}
+	h.e.Msg("both pointers have ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false negative): the same, the other way. The path through q
+// meets the store into the struct literal the event is read from, which ends
+// it as if another event were stored where the receiver is read.
+func limitationEventFieldThroughPointerPickedFromParamStructLiteral(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	h := &phiEventHolder{e: (&phiEventHolder{logger.Info()}).e.Ctx(ctx)}
+	if cond {
+		h = q
+	}
+	h.e.Msg("one pointer is the caller's") // LIMITATION: should report but doesn't
+}
+
+// ===== AN EVENT READ FROM MEMORY, PICKED WITH ANOTHER =====
+
+// A path that takes the other edge of a Phi carries the event of that edge,
+// so a store to where the first event is read from does not end it (#302).
+
+func badEventFromStructLiteralPickedWithParam(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e = e2
+	}
+	e.Msg("one edge is the caller's event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFromStructLiteralOfVariablePickedWithParam(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	x := logger.Info()
+	e := (&phiEventHolder{x}).e.Ctx(ctx)
+	if cond {
+		e = e2
+	}
+	e.Msg("one edge is the caller's event, the other from a variable") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFromNestedStructLiteralsPickedWithParam(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{(&phiEventHolder{logger.Info()}).e}).e.Ctx(ctx)
+	if cond {
+		e = e2
+	}
+	e.Msg("one edge is the caller's event, the other from nested struct literals") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventFromStructLiteralPickedWithParamCtx(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e2.Ctx(ctx)
+		e = e2
+	}
+	e.Msg("both edges have ctx") // OK
+}
+
+func goodEventFromStructLiteralPickedWithStructLiteral(ctx context.Context, logger zerolog.Logger, cond bool) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	if cond {
+		e = (&phiEventHolder{logger.Warn()}).e.Ctx(ctx)
+	}
+	e.Msg("both edges from struct literals have ctx") // OK
+}
+
+func badEventFromStructLiteralInPlacePickedWithParam(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	b := &phiEventHolder{logger.Info()}
+	e := b.e
+	if cond {
+		e = e2
+	}
+	b.e.Ctx(ctx)
+	e.Msg("ctx in place on the struct literal's event only") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventFromStructLiteralInPlacePickedWithParamCtx(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	b := &phiEventHolder{logger.Info()}
+	e := b.e
+	if cond {
+		e = e2
+	}
+	b.e.Ctx(ctx)
+	e2.Ctx(ctx)
+	e.Msg("ctx in place on both events") // OK
+}
+
+func goodEventFromStructLiteralPickedWithParamInLoopCtx(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info()}).e.Ctx(ctx)
+	for range n {
+		e.Msg("the caller's event with ctx on the later iterations") // OK
+		e = e2.Ctx(ctx)
+	}
+}
+
+func goodEventFromStructLiteralPickedWithParamFreshOnOther(ctx context.Context, logger zerolog.Logger, cond bool, e2 *zerolog.Event) {
+	e := (&phiEventHolder{logger.Info().Ctx(ctx)}).e
+	if cond {
+		e = e2.Ctx(ctx)
+	}
+	logger.Warn().Ctx(context.Background()).Msg("a fresh context on another event") // want `zerolog call chain missing .Ctx\(ctx\)`
+	e.Msg("both edges have ctx of their own") // OK
+}
+
 // ===== POINTER TO A VARIABLE DECLARED IN A BRANCH =====
 
 // A Phi of pointers that may point to a variable declared in a branch or a
