@@ -816,6 +816,17 @@ h := pointedLoggerHolder{a.p}           // t5 = *&a.p ; *&h.p = t5
 func() { h.p.l.Info().Msg("x") }()      // h.p is t5, which is a.p where h is made
 ```
 
+A copied pointer that cannot be followed, such as one read from a pointer
+parameter, is walked for as a pointer not in a variable (below): a store
+through the same pointer, read from the same place, is what the copy points
+to.
+
+```go
+*b.p = zerolog.Ctx(ctx).With().Logger() // b is a pointer parameter
+h := loggerPtrBox{b.p}                  // t3 = *&b.p ; *&h.p = t3
+h.p.Info().Msg("x")                     // h.p is t3, and t3 is the b.p stored through
+```
+
 ```go
 p := newHolder()
 p.log = base.With().Ctx(ctx).Logger()  // t2 = *t0 ; *&t2.log = ..., and t2 is t1
