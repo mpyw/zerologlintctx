@@ -1031,10 +1031,33 @@ same way, out to the function the variable is declared in. A closure in
 between that stores to the variable, or through it to where the pointer is
 read from, as `*pp = other` does, may change the pointer: such a path carries
 a value that is not known. A store through the pointer itself, as `**pp = l`
-or `*b.p = l` does, leaves the pointer as it is (`storesThrough`). So
-does a path that gets to the entry of the function the variable is declared
-in, when the variable only holds a parameter, as SSA makes for a parameter a
-closure captures (`storeHoldsCallerParam`).
+or `*b.p = l` does, leaves the pointer as it is (`storesThrough`).
+
+In the function the variable is declared in, one store of the whole variable
+may reach the call: the copy SSA makes of a parameter the closure captures,
+or `b := other`. The closure then reads the pointer the copy took
+(`storeCopiedTo`, `walkPastCopy`). A store through a pointer read from the
+value copied, or, for a struct, from the same field of where it was loaded
+from, is a store through the same pointer, before the copy or after it
+(`matchCopiedLoad`). A store of another pointer there, or over where the
+struct was loaded from before it was loaded, stops a path. A path that gets
+to the entry of the function, or to such a store of a parameter, carries the
+caller's value:
+
+```go
+*other.p = zerolog.Ctx(ctx).With().Logger() // a store through the pointer b copies
+b := other
+func() { b.p.Info().Msg("x") }()            // not reported
+
+if cond {
+    *h.p = h.p.With().Ctx(ctx).Logger()     // h is a struct parameter
+}
+func() { h.p.Info().Msg("x") }()            // the caller's Logger when cond is false: reported
+```
+
+When no such copy is found, a path that gets to the entry of the function
+the variable is declared in carries the caller's value when the variable
+only holds a parameter (`storeHoldsCallerParam`).
 
 ```go
 (*pp).log = zerolog.Ctx(ctx).With().Logger()
