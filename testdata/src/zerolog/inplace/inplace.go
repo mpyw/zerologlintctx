@@ -661,6 +661,34 @@ func limitationEventCtxOnLatestOrPreviousIteration(ctx context.Context, log zero
 	}
 }
 
+// ===== EVENTS STORED BACK =====
+
+// LIMITATION (false negative): e can be a or b at the Ctx call, and a or b at
+// the terminator, so the call counts for both. On the path where e is b at
+// the call and a is stored back, a has no Ctx call.
+func limitationEventCtxBeforeEventStoredBack(ctx context.Context, log zerolog.Logger, cond, back bool) {
+	a := log.Info()
+	b := log.Warn()
+	e := a
+	if cond {
+		e = b
+	}
+	e.Ctx(ctx)
+	if back {
+		e = a
+	}
+	e.Msg("a stored back after Ctx on b") // LIMITATION: should report but doesn't
+}
+
+// LIMITATION (false negative): The caller's event at p.e has a Ctx call. q
+// holds another event of the caller's, whose stores are not seen, so copying
+// it over p is not taken to store another event.
+func limitationEventCtxBeforeCallerEventCopiedOver(ctx context.Context, p, q *inPlaceHolder) {
+	p.e.Ctx(ctx)
+	*p = *q
+	p.e.Msg("caller's event copied over after Ctx") // LIMITATION: should report but doesn't
+}
+
 // ===== UPDATECONTEXT (changes the Logger in place) =====
 
 // UpdateContext keeps only the fields its func writes. What Context.Ctx sets

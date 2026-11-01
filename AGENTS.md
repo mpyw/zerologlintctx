@@ -61,10 +61,15 @@ Validate config changes with `goreleaser check`, and dry-run with `goreleaser re
 
 - Use `analysistest` for all analyzer tests
 - Test fixtures use `// want` comments for expected diagnostics
-- Test structure:
-  - `===== SHOULD REPORT =====` - Cases that should trigger warnings
-  - `===== SHOULD NOT REPORT =====` - Negative cases
-  - `===== EDGE CASES =====` - Corner cases
+- Each fixture package groups its cases under topic headings, such as `// ===== CHANNEL SEND/RECEIVE =====`
+- The name of a case tells what it expects:
+
+| Prefix | Case |
+|---|---|
+| `bad` | Reported. Its line has a `// want` comment |
+| `good` | Not reported. Its line may end with `// OK - <why>` |
+| `evil` | An unusual shape, reported or not |
+| `limitation` | A [known limitation](./docs/ARCHITECTURE.md#known-limitations), under a `// LIMITATION` comment that says why |
 
 ### Corpus Golden Test
 
@@ -111,6 +116,8 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 └── variables/   # Local variables: reassignment, shadowing, interfaces, results
 ```
 
+All fixture packages import the same zerolog stub under `testdata/src/github.com/rs/zerolog`. A new directory under `testdata/src/zerolog/` is picked up by `TestZerolog` as a subtest, and by the plugin test through `zerolog/...`.
+
 ## Code Style
 
 - Follow standard Go conventions
@@ -131,25 +138,11 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 1. **One description of the zerolog API**: `zerologapi.Classify` tells what each function and method does, from its signature and a small table of named exceptions. Code in `internal/chain` matches no zerolog names of its own
 2. **Value flow apart from zerolog**: `internal/ssaflow` finds what a read from memory can see: places, stores, closures, walks of the control flow. It imports nothing of this module, and asks a `Model` (`zerologapi.Model`) for the two facts about zerolog it needs. Keep zerolog out of it
 3. **SSA tracing**: One `tracer`, which traces each value in a state: its zerolog type, and the sources of context that still count for it. `Logger.Output` narrows the sources. Each trace answers `yes`, `no` or `neutral`, and a value reached again through a cycle is `neutral`: it adds no source
-4. **Zero false positives**: Prefer missing issues over false alarms
+4. **No false positives, as a goal**: Prefer missing issues over false alarms. Some false positives remain; see [Known Limitations](./docs/ARCHITECTURE.md#known-limitations)
 
 ## Known Limitations
 
-- **Helper function returns**: Can't track through interprocedural analysis (IIFE is supported)
-- **Channel send/receive**: Can't trace through channels
-- **Closure-modified capture**: Closure writes to outer variable
-- **Events made in a loop**: When a value can hold the event of the latest run of a call on one path, and of an earlier run on another, a `Ctx` call on it counts for the latest run on both paths
-- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`, or in a func literal `e` is passed to. In the same function, a `Ctx` call on any value that holds the same event counts: an earlier read of the same variable or field, or another variable the event was copied to, unless another event is stored in between. So does one that a func literal called in place makes on every run. Two reads of a global, or through a pointer read from one, are not taken for the same event
-- **Events stored back**: When a read can see several events, a `Ctx` call on an earlier read that sees the same events counts for each of them, even where a path stores one of those events back over another in between
-- **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it
-- **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
-- **Elements at an index computed in a loop**: A store at the same index, on the same iteration, is not taken to write the element, so a store without `.Ctx(ctx)` on an earlier iteration, or the caller's value in a slice parameter, may still be what the read sees
-- **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
-- **Fresh contexts not seen**: A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had. Nor does one given to the latest run of an event made in a loop, for a receiver that holds an earlier run
-
-These are documented in test cases with `// LIMITATION` comments, tagged `// LIMITATION(#n)` where an issue tracks the case.
-
-All fixture packages import the same zerolog stub under `testdata/src/github.com/rs/zerolog`. A new directory under `testdata/src/zerolog/` is picked up by `TestZerolog` as a subtest, and by the plugin test through `zerolog/...`.
+The known limitations are listed once, in [Architecture](./docs/ARCHITECTURE.md#known-limitations). Each has a `// LIMITATION` fixture. Add a new one to that list, with its fixture.
 
 ## Related Documentation
 

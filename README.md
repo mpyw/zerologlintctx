@@ -36,7 +36,7 @@ Run it in the project root. It pins the version in the project's `mise.toml`, so
 Add `-g` to install it for every project on your machine instead.
 
 > [!IMPORTANT]
-> The `go`-based methods below build zerologlintctx from source, which requires **Go 1.27 or later** (see [Requirements](#requirements)). `go tool` also needs Go 1.24+ on `PATH`, which is where tool directives were introduced.
+> The `go`-based methods below build zerologlintctx from source, which requires **Go 1.27 or later** (see [Requirements](#requirements)).
 
 ### Using [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool)
 
@@ -164,8 +164,9 @@ func handler(ctx context.Context, log zerolog.Logger) {
     // Good: includes .Ctx(ctx)
     log.Info().Ctx(ctx).Str("key", "value").Msg("hello")
 
-    // Also accepted: the logger stored in ctx, from log.Ctx() or zerolog.Ctx()
-    log.Ctx(ctx).Info().Str("key", "value").Msg("hello")
+    // Also accepted: the logger stored in ctx
+    // (zerolog.Ctx() or log.Ctx() of zerolog/log)
+    zerolog.Ctx(ctx).Info().Str("key", "value").Msg("hello")
 }
 ```
 
@@ -196,7 +197,7 @@ func handler(ctx context.Context, log zerolog.Logger, w io.Writer) {
 Detects direct logging calls (`Print`, `Printf`, `Println`, `Write`) on a logger that does not carry the context. These calls take no `.Ctx(ctx)`, so the event gets only the logger's own context:
 
 ```go
-func handler(ctx context.Context, log zerolog.Logger) {
+func handler(ctx context.Context, log zerolog.Logger, name string) {
     // Bad: the logger has no context
     log.Print("hello")
     log.Printf("hello %s", name)
@@ -239,7 +240,7 @@ Any other comment that starts with `zerologlintctx:`, such as `//zerologlintctx:
 
 ## Design Principles
 
-1. **Zero false positives** - Prefer missing issues over false alarms
+1. **No false positives, as a goal** - Prefer missing issues over false alarms. The [known limitations](./docs/ARCHITECTURE.md#known-limitations) list the false positives that remain
 2. **Type-safe analysis** - Uses [`go/types`](https://pkg.go.dev/go/types) for accurate detection
 3. **SSA-based tracking** - Uses [SSA](https://pkg.go.dev/golang.org/x/tools/go/ssa) form to track Event values through assignments and closures
 4. **Nested function support** - Correctly tracks context through closures

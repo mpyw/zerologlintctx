@@ -59,12 +59,12 @@ it must know of a library, it asks a `Model` (see
 
 | Pattern | Condition | Message |
 |---------|-----------|---------|
-| Event chain missing `.Ctx()` | `KindTerminator`: a method of Event that returns nothing | `zerolog call chain missing .Ctx(ctx)` |
-| Direct logging on Logger without context | `KindDirectLog` on a Logger, and the Logger has no context | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
-| Direct logging via log package | `KindDirectLog` on a function of `zerolog/log` | `zerolog direct logging bypasses context; use Event chain with .Ctx(ctx)` |
+| Event chain missing `.Ctx()` | `KindTerminator`: a method of Event that returns nothing | `zerolog call chain missing .Ctx(<name>)` |
+| Direct logging on Logger without context | `KindDirectLog` on a Logger, and the Logger has no context | `zerolog direct logging bypasses context; use Event chain with .Ctx(<name>)` |
+| Direct logging via log package | `KindDirectLog` on a function of `zerolog/log` | `zerolog direct logging bypasses context; use Event chain with .Ctx(<name>)` |
 
-The message names the first usable `context.Context` parameter, or `*name`
-for a `*context.Context` one. A parameter whose type is a type parameter
+`<name>` is the first usable `context.Context` parameter, such as `ctx` or
+`c`, or `*name` for a `*context.Context` one, such as `*pc`. A parameter whose type is a type parameter
 counts when the constraint is, or embeds, `context.Context`, as for
 `func f[C context.Context](ctx C)`. A closure without one of its own takes the name
 from the function it is declared in. Where that name means something else at
@@ -143,6 +143,7 @@ tells. Each row cites zerolog v1.35.1, and `zerologapi_test.go` tests each:
 | `Event.CreateDict()` | `KindChain`, not `SameAsRecv` | Returns a new event for a dict, with the context of its receiver |
 | `Context.CreateDict()` | `KindOther` | Returns a dict event. Tracing does not follow it back (a limitation) |
 | `Logger.Output(w)` | `KindChain`, keeps `SourceStored` only | Builds a new Logger with `zerolog.New(w)`, and drops the context `Context.Ctx` set |
+| `Logger.Write(p)` | `KindDirectLog` | Logs with `l.Log() ... Msg`, as `Print` does. Its name does not start with `Print` |
 | `Logger.UpdateContext(fn)` | `KindInPlaceUpdate` | Changes the fields of the Logger in place, but not its context |
 
 Type identity checks resolve aliases (`types.Unalias`) before comparing the
@@ -167,9 +168,9 @@ logger.UpdateContext(...)  // Configuration, not logging
 
 This is necessary because `UpdateContext` also returns void but is not a logging method.
 
-`Logger.Write` returns two results, so the prefix check does not find it. It
-logs with `l.Log() ... Msg`, so a row of exceptions makes it direct logging, as
-`Print` is. A use through `io.Writer`, such as `fmt.Fprint(l, "x")`, is not
+`Logger.Write` does not start with `Print`, so the prefix check does not find
+it. It logs with `l.Log() ... Msg`, so a row of exceptions makes it direct
+logging, as `Print` is. A use through `io.Writer`, such as `fmt.Fprint(l, "x")`, is not
 seen.
 
 `Logger.Print` builds its event from the Logger, as `Logger.Info` does, so the
@@ -895,21 +896,44 @@ None of these reported comments silences anything (#60). Guessing what was meant
 
 ## Known Limitations
 
-Due to SSA analysis constraints:
+This is the one list of known limitations. Each row has a `// LIMITATION`
+fixture under `testdata/src/zerolog/`, tagged `// LIMITATION(#n)` where an
+issue tracks the case.
 
-- **Helper function returns**: Can't track through interprocedural analysis (IIFE returns and arguments are supported)
-- **Channel send/receive**: Can't trace through channels
-- **Closure-modified capture**: Closure writes to outer variable
-- **Events made in a loop**: When a value can hold the event of the latest run of a call on one path, and of an earlier run on another, a `Ctx` call on it counts for the latest run on both paths
-- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`, or in a func literal `e` is passed to. In the same function, a `Ctx` call on any value that holds the same event counts: an earlier read of the same variable or field, or another variable the event was copied to, unless another event is stored in between
-- **Events stored back**: When a read can see several events, a `Ctx` call on an earlier read that sees the same events counts for each of them, even where a path stores one of those events back over another in between. In the same way, a `Ctx` call on the caller's event at a place counts at later reads of the place, even when it is copied over in between from where no store can be seen
-- **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it
-- **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
-- **Elements at an index computed in a loop**: A store at the same index, on the same iteration, is not taken to write the element, so a store without `.Ctx(ctx)` on an earlier iteration, or the caller's value in a slice parameter, may still be what the read sees
-- **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
-- **Fresh contexts not seen**: A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had. Nor does one given to the latest run of an event made in a loop, for a receiver that holds an earlier run
+A false positive is a report on code that passes the context. A false
+negative is a missed report.
 
-These are documented in test cases with `// LIMITATION` comments, tagged `// LIMITATION(#n)` where an issue tracks the case.
+### False positives
+
+| Limitation | What happens | Fixture |
+|------------|--------------|---------|
+| Helper function returns | An event or Logger a declared function returns is not traced into it. An IIFE and its arguments are | `iife` |
+| Channels | An event received from a channel is not traced to what was sent | `memory` |
+| `sync.Pool` | An event from `Pool.Get` is not traced to the `New` function | `memory` |
+| Slice and map elements | An event read back from a slice or a map is not traced. One stored with `.Ctx(ctx)` is still reported | `memory` |
+| Elements at an index computed in a loop | A store at the same index, on the same iteration, is not taken to write the element. A store without `.Ctx(ctx)` on an earlier iteration may still be what the read sees. So may the caller's value in a slice parameter | `memory` |
+| Stores by a closure | A store by a closure to a variable it captures is not seen by a read after the closure is called | `closures` |
+| In-place `Ctx` through another reference (#139) | `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to | `inplace` |
+| Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
+| A captured pointer picked on a branch | A pointer that a closure captures, picked on a branch, is not followed. The walk from where the closure runs does not keep to the paths of the Phi | `closures` |
+| A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
+| `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
+| An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
+
+### False negatives
+
+| Limitation | What happens | Fixture |
+|------------|--------------|---------|
+| Events logged in another function | An event passed to a method or function that logs it is not checked there | `memory` |
+| A Logger used as `io.Writer` | A call through `io.Writer`, such as `fmt.Fprint(l, "x")`, is not checked | `directlog` |
+| Events made in a loop | A value can hold the event of the latest run of a call on one path, and of an earlier run on another. A `Ctx` call on it counts for the latest run on both paths | `inplace` |
+| Events stored back | A `Ctx` call on a read that can see several events counts for each of them. It counts even where a path stores one of those events back over another after the call | `inplace` |
+| The caller's event copied over | A `Ctx` call on the caller's event at a place counts at later reads of the place. It counts even when another value of the caller's is copied over it in between | `inplace` |
+| Panics | A deferred call is checked at the returns after its `defer` statement. It is not checked at the points where a panic could run it | `deferred` |
+| Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. The value stored before it is taken as the one read | `memory` |
+| Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
+| Fresh contexts on another run | A fresh `Ctx` call on an event made in a loop counts only for a value that holds the latest run. It is not seen for the event kept from the last iteration | `freshctx` |
+| A captured pointer to a field | A pointer to a field of another variable, captured by a closure, may point anywhere. What it points to is not taken as fresh | `freshctx` |
 
 ## Testing
 
