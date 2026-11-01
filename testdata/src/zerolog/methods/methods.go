@@ -199,6 +199,16 @@ func goodPromotedMethodExpressionInIIFE(ctx context.Context, base zerolog.Logger
 	func() { capturedEventPtr.Msg(h, "promoted method expression in an IIFE") }() // OK
 }
 
+func goodPromotedPointerMethodExpressionInIIFE(ctx context.Context, base zerolog.Logger) {
+	h := &capturedEventPtr{&capturedEvent{base.Info().Ctx(ctx)}}
+	func() { (*capturedEventPtr).Msg(h, "promoted method expression on a pointer in an IIFE") }() // OK
+}
+
+func badPromotedPointerMethodExpressionInIIFE(ctx context.Context, base zerolog.Logger) {
+	h := &capturedEventPtr{&capturedEvent{base.Info()}}
+	func() { (*capturedEventPtr).Msg(h, "promoted method expression on a pointer in an IIFE") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func badPromotedMethodExpressionInIIFE(ctx context.Context, base zerolog.Logger) {
 	h := capturedEventPtr{&capturedEvent{base.Info()}}
 	func() { capturedEventPtr.Msg(h, "promoted method expression in an IIFE") }() // want `zerolog call chain missing .Ctx\(ctx\)`

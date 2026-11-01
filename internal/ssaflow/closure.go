@@ -8,6 +8,7 @@ package ssaflow
 
 import (
 	"go/token"
+	"go/types"
 	"iter"
 	"slices"
 
@@ -269,7 +270,8 @@ func (c *Closures) bindingOf(fv *ssa.FreeVar) ssa.Value {
 // The receiver of a method value is then what it is bound to, in the
 // function that declares the variable, and is read where the closure runs,
 // which Read is. So is the struct passed to a method expression of a promoted
-// method, when the closure loads it from a variable it captures:
+// method, when the closure loads it from a variable it captures, or the one
+// pointer to it that the variable holds:
 //
 //	h := outer{&inner{e}}
 //	func() { outer.Msg(h, "x") }() // reads h, then h.inner.Event, here
@@ -279,8 +281,20 @@ func (c *Closures) bindingOf(fv *ssa.FreeVar) ssa.Value {
 // expression takes its receiver from the call, which reads it there.
 func (c *Closures) CalleeOf(cc *ssa.CallCommon) (Callee, bool) {
 	if callee, ok := CalleeOf(cc); ok {
-		if addr, read := c.capturedRead(callee.Recv); callee.Embedded != nil && addr != nil {
+		if callee.Embedded == nil {
+			return callee, true
+		}
+		addr, read := c.capturedRead(callee.Recv)
+		if addr == nil {
+			return callee, true
+		}
+		if _, isPtr := callee.Recv.Type().Underlying().(*types.Pointer); !isPtr {
 			callee.Recv, callee.Read = addr, read
+			return callee, true
+		}
+		// A pointer: the one value the variable holds, if it is made there
+		if held, ok := c.funcsHeldBy(addr); ok && len(held) == 1 && held[0].Parent() == read.Parent() {
+			callee.Recv, callee.Read = held[0], read
 		}
 		return callee, true
 	}
