@@ -201,11 +201,12 @@ func NewMatchedPlaces() *MatchedPlaces {
 
 // KeyOf returns the key of at: that of a place keyed before whose root is the
 // same pointer, with the same selections, or its own. ok is false when the
-// root of at is a global, or is read from one. Another goroutine may change
-// what is there between two reads, so two reads of it are not the same.
+// root of at is a global, or is read from one, and key is then its own.
+// Another goroutine may change what is there between two reads, so two reads
+// of it are not the same.
 func (m *MatchedPlaces) KeyOf(at Place) (key PlaceKey, ok bool) {
 	if matchFromGlobal(at.root) {
-		return PlaceKey{}, false
+		return at.Key(), false
 	}
 	fn := parentFunc(at.root)
 	for _, root := range m.roots[fn] {
@@ -219,33 +220,29 @@ func (m *MatchedPlaces) KeyOf(at Place) (key PlaceKey, ok bool) {
 
 // KeyAtRun returns the key that the function making mc has for key, the key
 // of a place the func literal of mc reads through a pointer it loads from a
-// variable it captures, as run, a call of mc, runs it. That is the key of the
-// same place through a load of the variable bound there, which the same
-// stores reach as reach run:
+// variable it captures, through any number of loads, as run, a call of mc,
+// runs it. That is the key of the same place through the same loads of the
+// variable bound there, which the same stores reach as reach run (see
+// matchAcrossClosure):
 //
 //	t2 = make closure f$1 [t1] ; t3 = t2()   // f$1: t0 = *h ; &t0.e
 //	t4 = *t1 ; t5 = &t4.e                     // the same place: t4 is *h at t3
 //
+// Any such load is the same pointer as the others, as KeyOf takes them, so
+// the key is the same as that of the load the function reads the place by.
+//
 // ok is false when key is not such a place, the closure stores to the
 // variable before the load, or the function has no such load.
 func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Instruction) (_ PlaceKey, ok bool) {
-	load, isLoad := AsLoad(key.base())
-	if !isLoad {
+	if _, isLoad := AsLoad(key.base()); !isLoad {
 		return key, false
 	}
-	fn := mc.Fn.(*ssa.Function) // Always a function, a func literal or a wrapper
-	fv, isFreeVar := load.X.(*ssa.FreeVar)
-	if !isFreeVar || fv.Parent() != fn || !maps.Equal(matchReachingStores(load), map[ssa.Instruction]bool{nil: true}) {
-		return key, false
-	}
-	bound := mc.Bindings[slices.Index(fn.FreeVars, fv)]
-	want := matchStoresBefore(bound, run)
 	for instr := range InstrsIn(mc.Parent()) {
 		v, isValue := instr.(ssa.Value)
 		if !isValue {
 			continue
 		}
-		if outer, isLoad := AsLoad(v); isLoad && addressesMatch(outer.X, bound) && maps.Equal(matchReachingStores(outer), want) {
+		if outer, isLoad := AsLoad(v); isLoad && matchAcrossClosure(key.base(), outer, []matchClosureRun{{mc: mc, run: run}}) {
 			at, ok := m.KeyOf(PlaceAt(outer))
 			return key.rooted(at.base()), ok
 		}

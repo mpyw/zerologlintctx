@@ -912,14 +912,22 @@ func (ix *eventIndex) selectedStep(v ssa.Value) (eventStep, bool) {
 }
 
 // resolvedStep is the step back to sources, what a read of the place at can
-// see. A source that resolve cannot tell is the event at that place.
+// see. A source that resolve cannot tell is the event at that place, keyed as
+// ssaflow.MatchedPlaces.KeyOf has it, so that two reads of it through the same
+// pointer, loaded again for each, see the same event:
+//
+//	func() {
+//	    h.e.Ctx(ctx)        // t0 = *h ; *&t0.e
+//	    h.e.Msg("x")        // t5 = *h ; *&t5.e: the same event
+//	}()
 func (ix *eventIndex) resolvedStep(sources iter.Seq[ssaflow.Resolved], at ssaflow.Place) eventStep {
 	read := at.Key()
+	unknown, _ := ix.places.KeyOf(at) // At a global, its own key
 	step := eventStep{read: &read, readVariable: at.Variable()}
 	for src := range sources {
 		switch {
 		case src.V == nil:
-			step.sources = append(step.sources, eventSource{at: read})
+			step.sources = append(step.sources, eventSource{at: unknown})
 		case src.Pointer:
 			step.sources = append(step.sources, eventSource{at: ssaflow.PlaceAt(src.V).Key()})
 		case !ssaflow.IsNilConst(src.V):

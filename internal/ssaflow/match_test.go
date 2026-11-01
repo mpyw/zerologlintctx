@@ -102,8 +102,8 @@ func TestMatchedPlacesKeyOf(t *testing.T) {
 	}
 	for _, arg := range args[4:7] {
 		at, _ := PlaceOf(matchAddr(t, arg))
-		if _, ok := m.KeyOf(at); ok {
-			t.Errorf("KeyOf(%v) of a global: ok", at.root)
+		if key, ok := m.KeyOf(at); ok || key != at.Key() {
+			t.Errorf("KeyOf(%v) of a global = %v, %v, want %v, false", at.root, key, ok, at.Key())
 		}
 	}
 }
