@@ -198,6 +198,25 @@ func badEventCtxBackgroundAfterCtxAfterDefer(ctx context.Context, log zerolog.Lo
 	e.Ctx(context.TODO())
 }
 
+func badEventCtxBackgroundInLoopAfterDefer(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	defer e.Msg("deferred, Background in a loop after ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	e.Ctx(ctx)
+	for range n {
+		e.Ctx(context.Background())
+	}
+}
+
+func goodEventCtxInLoopAfterDefer(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	defer e.Msg("deferred, ctx in a loop after ctx") // OK - ctx is the last
+	e.Ctx(ctx)
+	for range n {
+		e.Ctx(context.Background())
+		e.Ctx(ctx)
+	}
+}
+
 func badEventCtxBackgroundAfterCtxInLoop(ctx context.Context, log zerolog.Logger, n int) {
 	for range n {
 		e := log.Info().Ctx(ctx)
