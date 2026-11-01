@@ -1800,6 +1800,145 @@ func badLoggerPointerPickedInFieldDeferredStoredWithoutCtxAfter(ctx context.Cont
 	*p = base
 }
 
+// A field that the pointer is copied into from another field holds the Phi
+// alone too, when that one does where it is loaded (#379).
+type (
+	phiLoggerPtrOuter struct{ v *zerolog.Logger }
+	phiLoggerPtrThird struct{ w *zerolog.Logger }
+)
+
+func goodLoggerPointerPickedInNestedFieldDeferredStoredAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	defer (&phiLoggerPtrOuter{(&phiLoggerPtrBox{p}).p}).v.Print("picked, in a nested field, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func badLoggerPointerPickedInNestedFieldDeferredStoredWithoutCtxAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base.With().Ctx(ctx).Logger()
+	b := base.With().Ctx(ctx).Logger()
+	p := &a
+	if other {
+		p = &b
+	}
+	defer (&phiLoggerPtrOuter{(&phiLoggerPtrBox{p}).p}).v.Print("picked, in a nested field, deferred, stored through without ctx after") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	*p = base
+}
+
+func goodLoggerPointerPickedInNestedFieldStoredThrough(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	o := &phiLoggerPtrOuter{(&phiLoggerPtrBox{p}).p}
+	*p = base.With().Ctx(ctx).Logger()
+	o.v.Print("picked, in a nested field, stored through") // OK - the store through p has ctx
+}
+
+func badLoggerPointerPickedInNestedFieldStoredThroughWithoutCtx(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base.With().Ctx(ctx).Logger()
+	b := base.With().Ctx(ctx).Logger()
+	p := &a
+	if other {
+		p = &b
+	}
+	o := &phiLoggerPtrOuter{(&phiLoggerPtrBox{p}).p}
+	*p = base
+	o.v.Print("picked, in a nested field, stored through without ctx") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+}
+
+func goodLoggerPointerPickedInThreeFieldsDeferredStoredAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	defer (&phiLoggerPtrThird{(&phiLoggerPtrOuter{(&phiLoggerPtrBox{p}).p}).v}).w.Print("picked, in three fields, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func goodLoggerPointerPickedInNestedLocalFieldsStoredThrough(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	o := phiLoggerPtrOuter{h.p}
+	*p = base.With().Ctx(ctx).Logger()
+	o.v.Info().Msg("picked, in nested local fields, stored through") // OK - the store through p has ctx
+}
+
+func goodLoggerPointerPickedInNestedFieldOfCopyStoredThrough(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	g := h
+	o := phiLoggerPtrOuter{g.p}
+	*p = base.With().Ctx(ctx).Logger()
+	o.v.Info().Msg("picked, copied, in a nested field, stored through") // OK - the store through p has ctx
+}
+
+func goodLoggerPointerPickedInNestedFieldReadInClosure(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	o := phiLoggerPtrOuter{(&phiLoggerPtrBox{p}).p}
+	*p = base.With().Ctx(ctx).Logger()
+	func() {
+		o.v.Info().Msg("picked, in a nested field, read in a closure") // OK - the store through p has ctx
+	}()
+}
+
+// The inner field is replaced after the outer one is loaded from it, so the
+// outer field still holds p alone.
+func goodLoggerPointerPickedInNestedFieldInnerReplacedAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	c := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	o := phiLoggerPtrOuter{h.p}
+	h.p = &c
+	*p = base.With().Ctx(ctx).Logger()
+	o.v.Info().Msg("picked, in a nested field, the inner one replaced after") // OK - o.v holds p
+}
+
+// The inner field holds another pointer when the outer one is loaded from
+// it, so the store through p is not through the pointer read back.
+func badLoggerPointerPickedInNestedFieldInnerReplacedBefore(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	c := base
+	p := &a
+	if other {
+		p = &b
+	}
+	h := phiLoggerPtrBox{p}
+	h.p = &c
+	o := phiLoggerPtrOuter{h.p}
+	*p = base.With().Ctx(ctx).Logger()
+	o.v.Info().Msg("picked, in a nested field, the inner one replaced before") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func goodLoggerPointerPickedInFieldOfCopyStoredThrough(ctx context.Context, base zerolog.Logger, other bool) {
 	a := base
 	b := base
