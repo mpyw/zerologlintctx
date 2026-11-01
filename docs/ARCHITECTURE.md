@@ -346,6 +346,18 @@ e.Ctx(ctx)
 e.Msg("x") // OK
 ```
 
+An event in memory is read again at each use. A `Ctx` call on any read of
+the same variable or field counts, unless another event is stored there in
+between (`traceCtxCallsInMemory`). A read is a load of the event, or the
+field it is embedded in, selected from a load of the struct, which is how a
+promoted method of a struct value of a local variable reads it:
+
+```go
+h := holder{logger.Info()} // type holder struct{ *zerolog.Event }
+h.Ctx(ctx)                 // t4 = *t1 ; t5 = t4.Event ; Ctx(t5, ctx)
+h.Msg("x")                 // t6 = *t1 ; t7 = t6.Event ; Msg(t7, "x"), OK
+```
+
 A deferred terminator runs at each return after the `defer` statement, so for
 one a `Ctx` call that runs on every path from the `defer` to a return counts
 too.
@@ -588,7 +600,7 @@ Due to SSA analysis constraints:
 - **Helper function returns**: Can't track through interprocedural analysis (IIFE returns and arguments are supported)
 - **Channel send/receive**: Can't trace through channels
 - **Closure-modified capture**: Closure writes to outer variable
-- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier load of it counts, unless another event is stored in between. For a method expression of a promoted method, one through an embedded pointer partway is not seen
+- **In-place `Ctx` through another reference**: `e.Ctx(ctx)` with its result unused is not seen by a terminator that reaches the event through another reference: a closure that captures `e`, a func literal `e` is passed to, or another variable `e` was copied to. The same variable or field in memory is followed: a `Ctx` call on an earlier read of it counts, a load or a promoted method on a struct value alike, unless another event is stored in between. For a promoted method, one through an embedded pointer partway is not seen
 - **Panics**: A deferred call is checked at the returns after its `defer` statement, not at the points where a panic could run it
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Elements at an index computed in a loop**: A store at the same index, on the same iteration, is not taken to write the element, so a store without `.Ctx(ctx)` on an earlier iteration, or the caller's value in a slice parameter, may still be what the read sees

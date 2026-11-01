@@ -246,25 +246,81 @@ func (tr *tracer) traceCtxCalledBefore(v ssa.Value, before walkPoint) bool {
 	calls := make(map[ssa.Instruction]bool)
 	makes := make(map[ssa.Instruction]bool) // Where another event is in v on the path
 	def, made := v.(ssa.Instruction)        // A parameter or a free variable is not made, but given at the entry
-	if load, ok := asLoad(v); ok && parentFunc(load.X) == fn {
-		// An event in memory, read by a load of its own at each use. A Ctx call
-		// on any load of the same address counts, unless another event is
-		// stored there in between.
-		if loads, overwrites, ok := storeLoadsOf(load.X); ok {
-			for _, other := range loads {
-				tr.traceCtxCalls(other, fn, calls, make(map[ssa.Value]bool))
-			}
-			makes = overwrites
-			at, _ := placeOf(load.X)
-			_, local := at.root.(*ssa.Alloc)
-			made = local
-		}
+	if overwrites, local, ok := tr.traceCtxCallsInMemory(v, fn, calls); ok {
+		makes = overwrites
+		made = local
 	}
 	if len(makes) == 0 && made {
 		makes[def] = true
 	}
 	tr.traceCtxCalls(v, fn, calls, make(map[ssa.Value]bool))
 	return tr.traceCtxCalledOnEveryPath(calls, makes, made, before)
+}
+
+// traceCtxCallsInMemory adds to calls the Event.Ctx calls in fn on each read
+// of the event v, when v is read from memory: a load, or fields selected one
+// after another from a load of a struct. Each read of the same place counts,
+// a load of it or a selection of it from a load of a struct it is in, as
+// each load of a struct value of a local variable is:
+//
+//	h := holder{logger.Info()}   // type holder struct{ *zerolog.Event }
+//	h.Ctx(ctx)                   // t4 = *t1 ; t5 = t4.Event ; Ctx(t5, ctx)
+//	h.Msg("x")                   // t6 = *t1 ; t7 = t6.Event ; Msg(t7, "x")
+//
+// overwrites holds the instructions after which another event is there, and
+// local reports whether the place is in a local variable, which a path that
+// leads back to the entry does not have yet. ok is false when v is not read
+// from a place in fn whose stores can all be seen.
+func (tr *tracer) traceCtxCallsInMemory(
+	v ssa.Value,
+	fn *ssa.Function,
+	calls map[ssa.Instruction]bool,
+) (overwrites map[ssa.Instruction]bool, local, ok bool) {
+	var fields []int // Selected from the load, outermost first
+	for {
+		f, isField := v.(*ssa.Field)
+		if !isField {
+			break
+		}
+		fields = append(fields, f.Field)
+		v = f.X
+	}
+	slices.Reverse(fields)
+	load, isLoad := asLoad(v)
+	if !isLoad || parentFunc(load.X) != fn {
+		return nil, false, false
+	}
+	base, _ := placeOf(load.X)
+	at := base.withFields(fields)
+	overwrites, ok = tr.traceCtxCallsAt(at, fn, calls)
+	_, local = at.root.(*ssa.Alloc)
+	return overwrites, local, ok
+}
+
+// traceCtxCallsAt adds to calls the Event.Ctx calls in fn on the event at
+// the place at: on each load of it, or selection of it from a load of a
+// struct it is a field of, at any depth. It returns the instructions after
+// which another event is there. ok is false when the stores to the place
+// cannot all be seen.
+func (tr *tracer) traceCtxCallsAt(
+	at place,
+	fn *ssa.Function,
+	calls map[ssa.Instruction]bool,
+) (overwrites map[ssa.Instruction]bool, ok bool) {
+	_, overwrites, ok = storeLoadsAt(at)
+	if !ok {
+		return nil, false
+	}
+	start, fields := at.trailingFields() // An element is selected with Index, which selectedFields does not follow
+	for k := start; k <= len(at.path); k++ {
+		loads, _, _ := storeLoadsAt(at.prefix(k))
+		for _, load := range loads {
+			for _, ev := range selectedFields(load, fields[k-start:]) {
+				tr.traceCtxCalls(ev, fn, calls, make(map[ssa.Value]bool))
+			}
+		}
+	}
+	return overwrites, true
 }
 
 // traceCtxCalledOnEveryPath reports whether every path that leads to before
@@ -762,19 +818,10 @@ func (tr *tracer) traceEmbeddedCtxSetInPlace(c callee, call ssa.Instruction) boo
 	if n < len(c.embedded) {
 		return false // Reading past a pointer is a load, which a path does not take
 	}
-	_, overwrites, ok := storeLoadsAt(at)
+	calls := make(map[ssa.Instruction]bool)
+	overwrites, ok := tr.traceCtxCallsAt(at, call.Parent(), calls)
 	if !ok {
 		return false
-	}
-	fn := call.Parent()
-	calls := make(map[ssa.Instruction]bool)
-	for k := len(base.path); k <= len(at.path); k++ {
-		loads, _, _ := storeLoadsAt(at.prefix(k))
-		for _, load := range loads {
-			for _, ev := range selectedFields(load, c.embedded[k-len(base.path):]) {
-				tr.traceCtxCalls(ev, fn, calls, make(map[ssa.Value]bool))
-			}
-		}
 	}
 	_, local := at.root.(*ssa.Alloc)
 	return tr.traceCtxCalledOnEveryPath(calls, overwrites, local, walkPointBefore(call, tr.positions))
