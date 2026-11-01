@@ -28,6 +28,10 @@ func use(*int) {}
 
 func mk() *holder { return nil }
 
+func mka() [1]*holder { return [1]*holder{} }
+
+var ch chan *holder
+
 func f(pp **holder, i int) {
 	use((*pp).e)
 	use((*pp).e)
@@ -39,6 +43,8 @@ func f(pp **holder, i int) {
 	use(ga[i].e)
 	use(func() holder { return gh }().e)
 	use(gs[i].e)
+	use((<-ch).e)
+	use(mka()[0].e)
 }
 `
 
@@ -60,8 +66,8 @@ func matchArgs(t *testing.T) []ssa.Value {
 			args = append(args, call.Call.Args[0])
 		}
 	}
-	if len(args) != 9 {
-		t.Fatalf("calls of use = %d, want 9", len(args))
+	if len(args) != 11 {
+		t.Fatalf("calls of use = %d, want 11", len(args))
 	}
 	return args
 }
@@ -114,5 +120,10 @@ func TestMatchFromGlobal(t *testing.T) {
 	}
 	if !matchFromGlobal(matchAddr(t, args[8])) {
 		t.Errorf("matchFromGlobal(%v) of an element of a global slice: false", args[8])
+	}
+	for _, arg := range args[9:] {
+		if addr := matchAddr(t, arg); matchFromGlobal(addr) {
+			t.Errorf("matchFromGlobal(%v) of a receive or an element of a call: true", addr)
+		}
 	}
 }
