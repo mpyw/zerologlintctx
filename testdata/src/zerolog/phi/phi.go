@@ -1774,3 +1774,82 @@ func badPhiEventPtrWrapperInPlaceOther(ctx context.Context, logger zerolog.Logge
 	a.Ctx(ctx)
 	w.Msg("Ctx in place on one of the events only") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+func newPhiEventWrapper(logger zerolog.Logger) phiEventWrapper { return phiEventWrapper{logger.Info()} }
+
+func newPhiEventWrapperPtr(logger zerolog.Logger) *phiEventWrapper {
+	return &phiEventWrapper{logger.Info()}
+}
+
+func newPhiEventPtrWrapperPtr(logger zerolog.Logger) *phiEventPtrWrapper {
+	return &phiEventPtrWrapper{&phiEventEmbedded{logger.Info()}}
+}
+
+func goodPhiEventWrapperInPlaceInLoop(ctx context.Context, logger zerolog.Logger, cond bool, n int) {
+	for range n {
+		w := phiEventWrapper{logger.Info()}
+		if cond {
+			w = phiEventWrapper{logger.Warn()}
+		}
+		w.Ctx(ctx)
+		w.Msg("event wrapper in a loop, Ctx in place") // OK
+	}
+}
+
+func badPhiEventWrapperInPlaceInLoopEarlier(ctx context.Context, logger zerolog.Logger, cond bool, n int) {
+	var last phiEventWrapper
+	for i := range n {
+		w := phiEventWrapper{logger.Info()}
+		if cond {
+			w = phiEventWrapper{logger.Warn()}
+		}
+		if i > 0 {
+			last.Ctx(ctx)
+			w.Msg("Ctx in place on the event of the last iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = w
+	}
+}
+
+func badPhiEventWrapperFromCall(ctx context.Context, logger zerolog.Logger) {
+	w := phiEventWrapper{logger.Info()}
+	w.Ctx(ctx)
+	newPhiEventWrapper(logger).Msg("another wrapper a call returns") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPhiEventPtrWrapperOneFromCall(ctx context.Context, logger zerolog.Logger, cond bool) {
+	w := *newPhiEventPtrWrapperPtr(logger)
+	if cond {
+		w = phiEventPtrWrapper{&phiEventEmbedded{logger.Warn().Ctx(ctx)}}
+	}
+	w.Msg("one wrapper a call returns") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION: a struct value loaded through a pointer a call returns is not
+// followed, so each read of the event in it is an event of its own.
+func limitationPhiEventWrapperLoadedFromCall(ctx context.Context, logger zerolog.Logger) {
+	w := *newPhiEventWrapperPtr(logger)
+	w.Ctx(ctx)
+	w.Msg("wrapper loaded through a pointer a call returns") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventWrapperInPlaceInLoopEarlier(ctx context.Context, logger zerolog.Logger, n int) {
+	var last phiEventWrapper
+	for i := range n {
+		w := phiEventWrapper{logger.Info()}
+		if i > 0 {
+			last.Ctx(ctx)
+			w.Msg("Ctx in place on the event of the last iteration, no branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = w
+	}
+}
+
+func goodEventWrapperInPlaceLoadedBeforeLoop(ctx context.Context, logger zerolog.Logger, n int) {
+	w := phiEventWrapper{logger.Info()}
+	w.Ctx(ctx)
+	for range n {
+		w.Str("k", "v")
+	}
+	w.Msg("Ctx in place before a loop") // OK
+}

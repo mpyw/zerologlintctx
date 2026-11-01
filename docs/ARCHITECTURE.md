@@ -489,7 +489,7 @@ the graph is not built for the others.
 - **Alloc** - Local variable allocation (traces stored values)
 - **FreeVar** - Closure captured variables
 - **Parameter** - A parameter of a func literal that is only called where it is written, as an IIFE is, takes the argument of every such call, including calls from closures that capture the variable it is kept in, and calls of a variable or a Phi that may hold another func too. A parameter of a declared function, or of a func literal passed on, is not known
-- **FieldAddr/Field** - Struct field access. A field or element selected from a struct or array value loaded whole is read from the same selection of the address it is loaded from. One selected from a Phi of such values is read from each load an edge leads to, and every one must have context (`ssaflow.LoadedSelection`). A pointer read that way is followed by `storePointers` the same way:
+- **FieldAddr/Field** - Struct field access. A field or element selected from a struct or array value loaded whole is read from the same selection of the address it is loaded from. One selected from a Phi of such values is read from each load an edge leads to, and every one must have context (`ssaflow.LoadedSelection`). Each read keeps the edges it is taken through, so that the in-place `Ctx` check still tells, at a Phi at the top of a loop, the event of an earlier iteration. A pointer read that way is followed by `storePointers` the same way:
 
   ```go
   w := wrapper{&a}         // type wrapper struct{ *zerolog.Logger }

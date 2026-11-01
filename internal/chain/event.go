@@ -91,6 +91,10 @@ type eventStep struct {
 	// more are the other steps the value is too, each a read of its own, for
 	// a value selected from a Phi of struct or array values.
 	more []eventStep
+	// load is the load a step of more reads from, and through the edges of
+	// Phis the value loaded is taken through, as ssaflow.LoadedRead has them.
+	load    ssa.Instruction
+	through []ssaflow.LoadedEdge
 }
 
 // eventCtxCall is a call of Event.Ctx given a context that is not fresh, and
@@ -604,8 +608,9 @@ func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 // selectedStep is the step back from v, a field of a struct value or an
 // element of an array value, to what each read of it from memory can see
 // (see ssaflow.LoadedSelection). A value selected from a Phi of such values
-// is a read for each load an edge leads to, and the first read is the step
-// itself, the rest its more. ok is false when a read cannot be resolved.
+// is a read for each load an edge leads to. Each read is a step of the more
+// of the step, which has nothing of its own, and none for an edge that is
+// the zero value. ok is false when a read cannot be resolved.
 func (ix *eventIndex) selectedStep(v ssa.Value) (eventStep, bool) {
 	reads, ok := ssaflow.LoadedSelection(v)
 	if !ok {
@@ -617,14 +622,11 @@ func (ix *eventIndex) selectedStep(v ssa.Value) (eventStep, bool) {
 		if !ok {
 			return eventStep{}, false
 		}
-		steps = append(steps, ix.resolvedStep(sources, rd.At))
+		step := ix.resolvedStep(sources, rd.At)
+		step.load, step.through = rd.Load, rd.Through
+		steps = append(steps, step)
 	}
-	if len(steps) == 0 {
-		return eventStep{}, true // Only zero values, which hold no event
-	}
-	step := steps[0]
-	step.more = steps[1:]
-	return step, true
+	return eventStep{more: steps}, true
 }
 
 // resolvedStep is the step back to sources, what a read of the place at can
@@ -955,8 +957,41 @@ func (g *eventRunGraph) step(x *eventRunVertex, step eventStep, at ssa.Instructi
 		}
 	}
 	for _, m := range step.more {
-		g.step(x, m, at)
+		g.selected(x, m, at)
 	}
+}
+
+// selected adds what m, a read of step.more for the value of x used by at,
+// leads to. The value is taken from the load through each Phi of m.through,
+// used at the end of the predecessor of the edge, as value does for a Phi of
+// events, so that a Phi at the top of a loop tells an earlier run. The load
+// reads what the stores before it left:
+//
+//	t2 = phi [0: W{}, 6: t12] #last   // at the top of the loop
+//	t14 = t2.Event                    // x: read from the load of t12, past t2
+func (g *eventRunGraph) selected(x *eventRunVertex, m eventStep, at ssa.Instruction) {
+	use := g.pointBefore(at)
+	hop := func(v ssa.Value) {
+		node := eventRunNode{v, use}
+		next, ok := g.vertices[node]
+		if !ok {
+			next = &eventRunVertex{eventRunNode: node}
+			g.vertices[node] = next
+			g.ix.work++
+		}
+		next.users = append(next.users, eventRunUse{by: x})
+		x = next
+	}
+	for _, e := range m.through {
+		hop(e.Phi)
+		use = ssaflow.WalkPoint{}
+		pred := e.Phi.Block().Preds[e.Index]
+		if p := g.pointAfter(pred.Instrs[len(pred.Instrs)-1]); p != nil {
+			use = *p
+		}
+	}
+	hop(m.load.(ssa.Value))
+	g.step(x, m, m.load)
 }
 
 // value adds v, used at the point use by u.

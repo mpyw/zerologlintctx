@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"slices"
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
@@ -281,7 +282,9 @@ func g(c bool, n int, p, q *pair, mk func() pair) {
 	}
 	w.use()
 	for range n {
-		w = *q
+		if c {
+			w = *q
+		}
 	}
 	w.use()
 	var z pair
@@ -354,5 +357,32 @@ func TestLoadedSelection(t *testing.T) {
 	}
 	if _, ok := LoadedSelection(p); ok {
 		t.Error("ok for a value that selects nothing")
+	}
+}
+
+// TestLoadedSelectionThrough checks the edges a read is taken through, and
+// the bound on the reads found.
+func TestLoadedSelectionThrough(t *testing.T) {
+	addr := ssa.NewConst(nil, types.NewPointer(types.NewStruct(nil, nil)))
+	load := func() *ssa.UnOp { return &ssa.UnOp{Op: token.MUL, X: addr} }
+	a, b := load(), load()
+	inner := &ssa.Phi{Edges: []ssa.Value{a, b}}
+	outer := &ssa.Phi{Edges: []ssa.Value{inner}}
+	inner.Edges = append(inner.Edges, outer) // Back to a Phi on the way
+	reads, ok := LoadedSelection(&ssa.Field{X: outer})
+	if !ok || len(reads) != 2 {
+		t.Fatalf("LoadedSelection = %d reads, %v, want 2 reads", len(reads), ok)
+	}
+	want := []LoadedEdge{{outer, 0}, {inner, 1}}
+	if got := reads[1].Through; reads[1].Load != b || !slices.Equal(got, want) {
+		t.Errorf("second read = %v through %v, want %v through %v", reads[1].Load, got, b, want)
+	}
+
+	many := &ssa.Phi{}
+	for range loadedReadsMax + 1 {
+		many.Edges = append(many.Edges, load())
+	}
+	if _, ok := LoadedSelection(&ssa.Field{X: many}); ok {
+		t.Errorf("LoadedSelection of %d loads: ok", len(many.Edges))
 	}
 }
