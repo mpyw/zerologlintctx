@@ -1463,6 +1463,35 @@ func goodNestedCopyOfStructParamStoredOutside(ctx context.Context, other loggerP
 	}()
 }
 
+// A struct parameter whose field is stored to holds more than one value, so
+// a path to its entry does not carry the caller's Logger.
+func goodNestedCopyOfStructParamFieldPickedOutside(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	l1 := base.With().Ctx(ctx).Logger()
+	l2 := base.With().Ctx(ctx).Logger()
+	p := &l1
+	if cond {
+		p = &l2
+	}
+	other.p = p
+	func() {
+		b := other
+		func() { b.p.Info().Msg("nested copy of a struct, its field picked outside") }() // OK
+	}()
+}
+
+func badNestedCopyOfStructParamFieldPickedOutside(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	l1 := base.With().Ctx(ctx).Logger()
+	p := &l1
+	if cond {
+		p = &base
+	}
+	other.p = p
+	func() {
+		b := other
+		func() { b.p.Info().Msg("nested copy of a struct, its field picked outside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
 func goodNestedCopyOfLocalStructPtrDerefStored(ctx context.Context, l zerolog.Logger) {
 	o := &loggerPtrBox{p: &l}
 	*o.p = l.With().Ctx(ctx).Logger()
