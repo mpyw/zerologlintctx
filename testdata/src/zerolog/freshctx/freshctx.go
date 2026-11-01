@@ -413,6 +413,26 @@ func limitationEventCtxBackgroundInFuncLiteralOverCtx(ctx context.Context, log z
 	e.Msg("Background in a func literal over ctx") // LIMITATION: should report but doesn't
 }
 
+// LIMITATION (false negative): A fresh in-place Ctx call is not seen by a
+// terminator in a closure, or in a func literal the event is passed to. The
+// mirror of #139: the event reaches it through another reference, so the
+// context it had before is taken to stay.
+func limitationEventCtxBackgroundInPlaceTerminatorInClosure(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	e.Ctx(context.Background())
+	func() {
+		e.Msg("Background in place, terminator in a closure") // LIMITATION: should report but doesn't
+	}()
+}
+
+func limitationEventCtxBackgroundInPlacePassedToFuncLiteral(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	e.Ctx(context.Background())
+	func(ev *zerolog.Event) {
+		ev.Msg("Background in place, passed to a func literal") // LIMITATION: should report but doesn't
+	}(e)
+}
+
 // LIMITATION (false negative): A fresh context in a variable whose address is
 // given to a func literal more than once, as on two branches, is not taken as
 // fresh. Given once, it is.

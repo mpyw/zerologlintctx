@@ -907,10 +907,20 @@ func badHelperChainedImmediately(ctx context.Context, logger zerolog.Logger) {
 	createEvent(logger).Str("key", "val").Msg("immediate chain") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// LIMITATION (false positive): An event or a Logger that a declared function
+// returns is not traced into the function.
 func limitationHelperWithCtx(ctx context.Context, logger zerolog.Logger) {
-	// LIMITATION: SSA doesn't track .Ctx() through helper function returns
 	e := createEventWithCtx(ctx, logger)
 	e.Msg("helper with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationHelperLoggerWithCtx(ctx context.Context, logger zerolog.Logger) {
+	l := createLoggerWithCtx(ctx, logger)
+	l.Info().Msg("Logger from a helper with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func createLoggerWithCtx(ctx context.Context, logger zerolog.Logger) zerolog.Logger {
+	return logger.With().Ctx(ctx).Logger()
 }
 
 func createEvent(logger zerolog.Logger) *zerolog.Event {

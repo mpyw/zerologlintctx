@@ -864,6 +864,14 @@ func limitationEventCtxInPlaceUnderNamedConstant(ctx context.Context, log zerolo
 	e.Msg("ctx in place under a named constant") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func limitationEventCtxInPlaceInLoopOfOneRun(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	for range 1 {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under for range 1") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== UPDATECONTEXT (changes the Logger in place) =====
 
 // UpdateContext keeps only the fields its func writes. What Context.Ctx sets
