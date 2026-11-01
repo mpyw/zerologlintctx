@@ -904,6 +904,74 @@ func badEventCtxInPlaceInIIFEOneBranch(ctx context.Context, log zerolog.Logger, 
 	e.Msg("ctx in place in an IIFE on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func goodEventCtxInPlaceInIIFEBothBranches(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	func() {
+		if cond {
+			e.Ctx(ctx)
+		} else {
+			e.Ctx(ctx)
+		}
+	}()
+	e.Msg("ctx in place in an IIFE on both branches") // OK
+}
+
+func goodEventCtxInPlaceInIIFEEveryCase(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	func() {
+		switch n {
+		case 0:
+			e.Ctx(ctx)
+			return
+		case 1:
+			e.Ctx(ctx)
+		default:
+			e.Ctx(ctx)
+		}
+	}()
+	e.Msg("ctx in place in an IIFE in every case") // OK
+}
+
+func badEventCtxInPlaceInIIFEBranchesOtherEvent(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	other := log.Warn()
+	func() {
+		if cond {
+			e.Ctx(ctx)
+		} else {
+			other.Ctx(ctx)
+		}
+	}()
+	e.Msg("ctx in place in an IIFE, on another event on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInIIFEBranchesEitherEvent(ctx context.Context, log zerolog.Logger, cond, pick bool) {
+	e := log.Info()
+	either := e
+	if pick {
+		either = log.Warn()
+	}
+	func() {
+		if cond {
+			e.Ctx(ctx)
+		} else {
+			either.Ctx(ctx)
+		}
+	}()
+	e.Msg("ctx in place in an IIFE, on either event on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInIIFEEarlyReturn(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	func() {
+		if cond {
+			return
+		}
+		e.Ctx(ctx)
+	}()
+	e.Msg("ctx in place in an IIFE after an early return") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func badEventCtxInPlaceInClosureCalledAfter(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
 	setCtx := func() { e.Ctx(ctx) }

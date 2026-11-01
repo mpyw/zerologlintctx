@@ -449,8 +449,9 @@ for range n {
 ```
 
 A func literal called where it is made, as an IIFE is, runs at each call,
-and so does each `Ctx` call it makes on every run, one whose block dominates
-every return of the func literal. Such a `Ctx` call counts at the call of
+and so do the `Ctx` calls it makes on every run: those on the same events
+when every path from the entry of the func literal to a return passes one of
+them, as on both branches of an `if`. Such a `Ctx` call counts at the call of
 the func literal, with the events it runs on there (`addClosureCtxCalls`). A
 `go` or `defer` statement runs the func literal at another time, and is not
 such a call:
