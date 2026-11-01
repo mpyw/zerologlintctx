@@ -965,8 +965,22 @@ h.p.l = base.With().Ctx(ctx).Logger() // through another read of h.p: stops the 
 h.p.l.Info().Msg("x")                 // not reported
 ```
 
+The walk for a variable read where it is, such as `l` for `l.Info()`, takes
+such stores too. A store through a pointer read back from a field where `&l`
+was put is a store to `l` (#381). It stops the path when the field can hold
+`&l` only, and is a may store otherwise:
+
+```go
+h := box{p: &l}                       // t3 = &t2.p ; *t3 = t0 ; t4 = *t2 ; *t1 = t4
+*h.p = base.With().Ctx(ctx).Logger()  // t6 = *&t1.p ; *t6 = ..., and t6 is t0
+l.Info().Msg("x")                     // Info(t0): not reported
+```
+
 `storePointers` keeps what each pointer can point to, and a pointer reached
-again while it is followed is not followed again.
+again while it is followed is not followed again. A walk that another walk
+starts, such as one for what a place holds (`storeGuard.holdsOnly`) or for
+the variable a closure binds, shares the `storePointers` of that walk
+(`storesReachingWith`).
 
 A closure that captures a pointer variable reads it as a free variable, and
 loads the pointer at each use. What the free variable holds as the closure

@@ -3954,6 +3954,185 @@ func badLoggerPtrCopiedPickedInLoop(ctx context.Context, b *loggerPtrBox, l *zer
 	}
 }
 
+// ===== A STORE THROUGH A FIELD, READ THROUGH THE VARIABLE =====
+// The address of a variable is put in a struct field. A store through the
+// pointer read back from the field is a store to the variable, which a read
+// of the variable sees (#381). This is the mirror of #282.
+
+type throughFieldOuter struct{ b *loggerPtrBox }
+type throughFieldPair struct{ b loggerPtrBox }
+
+func goodLoggerStoredThroughFieldReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log
+	h := loggerPtrBox{p: &l}
+	*h.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("stored through a field, read through the variable") // OK - h.p is &l
+}
+
+func goodLoggerStoredThroughFieldOfPointerReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log
+	h := &loggerPtrBox{p: &l}
+	*h.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("stored through a field of a pointer, read through the variable") // OK - h.p is &l
+}
+
+func badLoggerStoredThroughFieldReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log.With().Ctx(ctx).Logger()
+	h := loggerPtrBox{p: &l}
+	*h.p = log
+	l.Info().Msg("stored through a field without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLoggerStoredThroughFieldReadThroughField(ctx context.Context, log zerolog.Logger) {
+	l := log
+	h := loggerPtrBox{p: &l}
+	*h.p = log.With().Ctx(ctx).Logger()
+	h.p.Info().Msg("stored through a field, read through the field") // OK
+}
+
+func goodLoggerStoredThroughPointerCopyReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log
+	p := &l
+	q := p
+	*q = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("stored through a copy of the pointer") // OK
+}
+
+func badLoggerStoredThroughFieldOnBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	l := log
+	h := loggerPtrBox{p: &l}
+	if cond {
+		*h.p = log.With().Ctx(ctx).Logger()
+	}
+	l.Info().Msg("stored through a field on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLoggerStoredThroughFieldOnBothBranches(ctx context.Context, log zerolog.Logger, cond bool) {
+	l := log
+	h := loggerPtrBox{p: &l}
+	if cond {
+		*h.p = log.With().Ctx(ctx).Logger()
+	} else {
+		*h.p = log.With().Ctx(ctx).Str("k", "v").Logger()
+	}
+	l.Info().Msg("stored through a field on both branches") // OK
+}
+
+func badLoggerStoredThroughFieldPointedElsewhere(ctx context.Context, log zerolog.Logger) {
+	l := log
+	m := log
+	h := loggerPtrBox{p: &l}
+	h.p = &m
+	*h.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("the field points to another variable") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerStoredThroughFieldMaybePointedElsewhere(ctx context.Context, log zerolog.Logger, cond bool) {
+	l := log.With().Ctx(ctx).Logger()
+	m := log
+	h := loggerPtrBox{p: &l}
+	if cond {
+		h.p = &m
+	}
+	*h.p = log
+	l.Info().Msg("the field may point to l") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerStoredThroughFieldOfPickedPointer(ctx context.Context, log zerolog.Logger, cond bool) {
+	l := log
+	m := log.With().Ctx(ctx).Logger()
+	p := &l
+	if cond {
+		p = &m
+	}
+	h := loggerPtrBox{p: p}
+	*h.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("the store is to m when cond is true") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLoggerStoredThroughFieldReadInClosure(ctx context.Context, log zerolog.Logger) {
+	l := log
+	h := loggerPtrBox{p: &l}
+	*h.p = log.With().Ctx(ctx).Logger()
+	func() {
+		l.Info().Msg("stored through a field, read in a closure") // OK
+	}()
+}
+
+func badLoggerStoredThroughFieldReadInClosure(ctx context.Context, log zerolog.Logger) {
+	l := log.With().Ctx(ctx).Logger()
+	h := loggerPtrBox{p: &l}
+	*h.p = log
+	func() {
+		l.Info().Msg("stored through a field without ctx, read in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodLoggerStoredThroughFieldAfterDefer(ctx context.Context, log zerolog.Logger) {
+	l := log
+	h := loggerPtrBox{p: &l}
+	defer l.Print("stored through a field after the defer") // OK - the store runs before the return
+	*h.p = log.With().Ctx(ctx).Logger()
+}
+
+func badLoggerStoredThroughFieldAfterDefer(ctx context.Context, log zerolog.Logger) {
+	l := log.With().Ctx(ctx).Logger()
+	h := loggerPtrBox{p: &l}
+	defer l.Print("stored through a field without ctx after the defer") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	*h.p = log
+}
+
+func goodLoggerStoredThroughNestedFieldReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log
+	o := throughFieldOuter{b: &loggerPtrBox{p: &l}}
+	*o.b.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("stored through a nested field") // OK
+}
+
+func badLoggerStoredThroughNestedFieldReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log.With().Ctx(ctx).Logger()
+	o := throughFieldOuter{b: &loggerPtrBox{p: &l}}
+	*o.b.p = log
+	l.Info().Msg("stored through a nested field without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLoggerStoredThroughFieldOfFieldReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log
+	o := throughFieldPair{b: loggerPtrBox{p: &l}}
+	*o.b.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("stored through a field of a field") // OK
+}
+
+func goodLoggerStoredThroughCopiedBoxReadThroughVariable(ctx context.Context, log zerolog.Logger) {
+	l := log
+	h := loggerPtrBox{p: &l}
+	g := h
+	*g.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("stored through a copy of the struct") // OK
+}
+
+func goodLoggerParamStoredThroughFieldReadThroughParam(ctx context.Context, l *zerolog.Logger, log zerolog.Logger) {
+	h := loggerPtrBox{p: l}
+	*h.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("a pointer parameter stored through a field") // OK
+}
+
+func badLoggerParamStoredThroughFieldReadThroughParam(ctx context.Context, l *zerolog.Logger, log zerolog.Logger) {
+	*l = log.With().Ctx(ctx).Logger()
+	h := loggerPtrBox{p: l}
+	*h.p = log
+	l.Info().Msg("a pointer parameter stored through a field without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodLoggerStoredThroughFieldInLoop(ctx context.Context, log zerolog.Logger, n int) {
+	for range n {
+		l := log
+		h := loggerPtrBox{p: &l}
+		*h.p = log.With().Ctx(ctx).Logger()
+		l.Info().Msg("stored through a field in a loop") // OK
+	}
+}
+
 // ===== A POINTER PICKED ON A BRANCH, TO A VARIABLE CHANGED ELSEWHERE =====
 
 var sinkLoggerPtr *zerolog.Logger
