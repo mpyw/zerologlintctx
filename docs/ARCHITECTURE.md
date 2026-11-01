@@ -383,6 +383,18 @@ func() { bg = ctx }()
 l.Info().Ctx(bg).Msg("x") // OK: a closure stores to bg
 ```
 
+A pointer that a closure loads from a variable it captures, such as a pointer
+parameter, is what the variable holds (`closureHolders`). The variable must
+hold only pointers to such variables, or to fields of them, and only be stored
+to, loaded and captured. Then what it points to is fresh when the same holds
+for each variable it can point to, and for each pointer loaded from it, and no
+closure that the walk does not see stores another pointer in it:
+
+```go
+*pc = context.Background()                // pc is a parameter
+func() { l.Info().Ctx(*pc).Msg("x") }()   // reported: *pc is fresh
+```
+
 `Event.Ctx` sets the context on the event it runs on, and returns that same
 event. So an event whose chain has no `Ctx` call is still accepted when one
 runs on it before the terminator on every path, with its result unused or not
@@ -1028,7 +1040,7 @@ negative is a missed report.
 | Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. The value stored before it is taken as the one read | `memory` |
 | Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
 | Fresh contexts on another run | A fresh `Ctx` call on an event made in a loop counts only for a value that holds the latest run. It is not seen for the event kept from the last iteration | `freshctx` |
-| A captured pointer to a field | A pointer to a field of another variable, captured by a closure, may point anywhere. What it points to is not taken as fresh | `freshctx` |
+| A pointer in a field | A pointer read from a field of a struct, such as `*h.p`, is not followed to a fresh context it points to. One read from a variable is | `freshctx` |
 
 ## Testing
 

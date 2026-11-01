@@ -73,6 +73,7 @@ func storesReaching(
 	if !tracked {
 		if read != nil {
 			if r, ok := newStorePointers(positions).reachingThrough(at, read); ok {
+				r.followed = true
 				return r, true
 			}
 		}
@@ -959,6 +960,10 @@ type storeReaching struct {
 	// them, whose values some path carries from the entry of the func literal.
 	// Tracing them finds what the calls of the func literal pass.
 	params []storeParamPath
+	// followed reports that the address is in what a pointer read from
+	// memory points to, and the stores were found in each variable it can
+	// point to (see storePointers).
+	followed bool
 }
 
 // storeParamPath is the value at path, selections from a parameter of a func
@@ -990,7 +995,9 @@ func storesReachingAt(
 	positions Positions,
 ) (r storeReaching, ok bool) {
 	if !isTrackedRoot(at.root) {
-		return newStorePointers(positions).reachingThrough(at, read)
+		r, ok = newStorePointers(positions).reachingThrough(at, read)
+		r.followed = true
+		return r, ok
 	}
 	w := &storeWalk{at: at, positions: positions, out: &r}
 	w.walkToRead(read)

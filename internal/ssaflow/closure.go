@@ -246,6 +246,16 @@ func (c *Closures) findHeld(alloc *ssa.Alloc) ([]ssa.Value, bool) {
 	return stored, true
 }
 
+// boundTo returns v, or the value that v, a free variable, stands for: the
+// value bound where its closure is made, at any depth. It is nil when that is
+// not found.
+func (c *Closures) boundTo(v ssa.Value) ssa.Value {
+	for fv, ok := v.(*ssa.FreeVar); ok; fv, ok = v.(*ssa.FreeVar) {
+		v = c.bindingOf(fv)
+	}
+	return v
+}
+
 // bindingOf returns the value bound to fv where its closure is made, or nil
 // when that is not found. With more than one MakeClosure, it takes the last
 // (see makersOf).
@@ -357,6 +367,15 @@ func (c *Closures) capturedRead(v ssa.Value) (addr ssa.Value, read ssa.Instructi
 // its closure is made, at any depth. One bound to anything else, such as the
 // address of a field of another variable, may be written anywhere.
 //
+// When followed, the walk followed the pointers read from memory (see
+// storePointers), and the root of at may also be a pointer loaded from a
+// local variable that holds only pointers to such variables, as a pointer
+// parameter that a closure captures is (see closureHolders). Each of them is asked of then, and
+// so is each pointer loaded from the variable, which is the same address:
+//
+//	*pc = context.Background()       // t1 = new *Context ; *t1 = pc ; t2 = *t1 ; *t2 = ...
+//	func() { e.Ctx(*pc).Msg("x") }() // t0 = *pc ; Ctx(*t0): t0 is pc
+//
 // The stores of a function that walked is declared in reach it as the
 // closure starts, which a walk of that function finds (see
 // storesReachingClosure). via, when not nil, is the call of a func literal
@@ -364,29 +383,105 @@ func (c *Closures) capturedRead(v ssa.Value) (addr ssa.Value, read ssa.Instructi
 // func literal sees.
 //
 //declscope:shared // resolve.go finds the variables whose stores a walk cannot all see
-func (c *Closures) writtenUnseen(at Place, walked *ssa.Function, via ssa.Instruction) bool {
-	root := at.root
-	for fv, ok := root.(*ssa.FreeVar); ok; fv, ok = root.(*ssa.FreeVar) {
-		root = c.bindingOf(fv)
+func (c *Closures) writtenUnseen(at Place, walked *ssa.Function, via ssa.Instruction, followed bool) bool {
+	h := closureHolders{c: c, follow: followed, holders: make(map[ssa.Value]bool), stores: make(map[ssa.Instruction]bool)}
+	if !h.add(at.root) {
+		return true
 	}
-	switch root.(type) {
-	case *ssa.Alloc, *ssa.Parameter:
-	default:
-		return true // Bound to an address in another variable, or not found
-	}
-	for alias := range c.aliasesOf(root) {
-		fn := parentFunc(alias)
-		if fv, isFreeVar := alias.(*ssa.FreeVar); isFreeVar {
-			fn = fv.Parent()
+	for store := range h.stores {
+		if !closureEncloses(store.Parent(), walked) {
+			return true // Another pointer put in a holder unseen
 		}
+	}
+	writes := func(p Place, fn *ssa.Function) bool {
 		other := !closureEncloses(fn, walked)
 		for instr := range InstrsIn(fn) {
-			if instr != via && closureWritesUnseen(instr, Place{root: alias, path: at.path}, other) {
+			if instr != via && !h.stores[instr] && closureWritesUnseen(instr, p, other) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, root := range h.roots {
+		for alias := range c.aliasesOf(root.root) {
+			fn := parentFunc(alias)
+			if fv, isFreeVar := alias.(*ssa.FreeVar); isFreeVar {
+				fn = fv.Parent()
+			}
+			if writes(Place{root: alias, path: append(slices.Clip(root.path), at.path...)}, fn) {
 				return true
 			}
 		}
 	}
+	for _, load := range h.loads {
+		if writes(Place{root: load, path: at.path}, load.Parent()) {
+			return true
+		}
+	}
 	return false
+}
+
+// closureHolders gathers the variables that the root of a place for
+// writtenUnseen can be: roots, each a local variable or a parameter, or a
+// field or element of one. A root that is a pointer loaded from a local
+// variable is each pointer the variable holds, as funcsHeldBy finds them. The variable is then a holder,
+// stores holds its stores, and loads holds each load of it, in its function
+// and in the closures that capture it. A store to a holder in a closure that
+// a walk does not see may put another pointer there. A nil pointer has no variable to
+// write, and is left out.
+type closureHolders struct {
+	c *Closures
+	// follow reports that the walk followed the pointers read from memory to
+	// what they point to. Without it, a pointer loaded is not followed.
+	follow  bool
+	roots   []Place
+	holders map[ssa.Value]bool
+	stores  map[ssa.Instruction]bool
+	loads   []*ssa.UnOp
+}
+
+// add adds the variables that v can be, and reports whether each of them is
+// one that writtenUnseen can tell of.
+func (h *closureHolders) add(v ssa.Value) bool {
+	at, _ := PlaceOf(v)
+	if _, isFreeVar := v.(*ssa.FreeVar); isFreeVar {
+		at = Place{root: v} // What it is bound to, even the address of a field
+	}
+	at.root = h.c.boundTo(at.root)
+	switch at.root.(type) {
+	case *ssa.Alloc, *ssa.Parameter:
+		h.roots = append(h.roots, at)
+		return true
+	}
+	load, isLoad := AsLoad(at.root)
+	if !isLoad || len(at.path) > 0 || !h.follow {
+		return false // Bound to an address in another variable, or not found
+	}
+	held, ok := h.c.funcsHeldBy(load.X)
+	if !ok {
+		return false
+	}
+	holder := h.c.boundTo(load.X)
+	if h.holders[holder] {
+		return true // Its pointers are added already
+	}
+	h.holders[holder] = true
+	for alias := range h.c.aliasesOf(holder) {
+		for _, ref := range *alias.Referrers() {
+			switch in := ref.(type) {
+			case *ssa.Store:
+				h.stores[in] = true
+			case *ssa.UnOp:
+				h.loads = append(h.loads, in)
+			}
+		}
+	}
+	for _, v := range held {
+		if !IsNilConst(v) && !h.add(v) {
+			return false
+		}
+	}
+	return true
 }
 
 // aliasesOf returns v, a local variable or a parameter, and the free

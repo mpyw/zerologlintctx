@@ -459,16 +459,135 @@ func goodEventCtxBackgroundPassedOn(ctx context.Context, log zerolog.Logger) {
 	}()
 }
 
-// LIMITATION (false negative): A pointer to a field of another variable,
-// captured by a closure, may point anywhere, so what it points to is not
-// taken as fresh.
-func limitationEventCtxBackgroundThroughCapturedFieldPointer(ctx context.Context, log zerolog.Logger) {
+// ===== FRESH CONTEXTS THROUGH A CAPTURED POINTER =====
+
+// A pointer that a closure loads from a variable it captures is what the
+// variable holds. What it points to is fresh when nothing the walk does not
+// see can write there, through the pointer or the variable (#274).
+
+func badEventCtxBackgroundThroughCapturedPointerParam(ctx context.Context, log zerolog.Logger, pc *context.Context) {
+	*pc = context.Background()
+	func() {
+		log.Info().Ctx(*pc).Msg("captured pointer parameter") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badEventCtxBackgroundThroughCapturedLocalPointer(ctx context.Context, log zerolog.Logger) {
+	bg := ctx
+	pc := &bg
+	*pc = context.Background()
+	func() {
+		log.Info().Ctx(*pc).Msg("captured pointer to a variable") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badEventCtxBackgroundThroughCapturedPointerOnBranches(ctx context.Context, log zerolog.Logger, cond bool) {
+	a, b := context.Background(), context.TODO()
+	pc := &a
+	if cond {
+		pc = &b
+	}
+	func() {
+		log.Info().Ctx(*pc).Msg("captured pointer to either variable") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badEventCtxBackgroundThroughFuncLiteralParamInClosure(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	f := func(p *context.Context) {
+		func() {
+			log.Info().Ctx(*p).Msg("parameter captured") // want `zerolog call chain missing .Ctx\(\*p\)`
+		}()
+	}
+	f(&bg)
+}
+
+func badEventCtxBackgroundThroughCapturedFieldPointer(ctx context.Context, log zerolog.Logger) {
 	h := freshContextHolder{ctx: context.Background()}
 	pc := &h.ctx
 	func() {
-		log.Info().Ctx(*pc).Msg("captured pointer to a field") // LIMITATION: should report but doesn't
+		log.Info().Ctx(*pc).Msg("captured pointer to a field") // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
 }
+
+func goodEventCtxCapturedPointerPassedOn(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	pc := &bg
+	freshContextSet(pc, ctx)
+	func() {
+		log.Info().Ctx(*pc).Msg("pointer passed on") // OK - not known to be fresh
+	}()
+}
+
+func goodEventCtxCapturedPointerStoredElsewhere(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	pc := &bg
+	h := freshContextPointerHolder{pc}
+	freshContextSetHeld(h, ctx)
+	func() {
+		log.Info().Ctx(*pc).Msg("pointer stored elsewhere") // OK - not known to be fresh
+	}()
+}
+
+func goodEventCtxCapturedPointerReplacedByClosure(ctx context.Context, log zerolog.Logger) {
+	bg, other := context.Background(), ctx
+	pc := &bg
+	func() { pc = &other }()
+	func() {
+		log.Info().Ctx(*pc).Msg("another pointer put there by a closure") // OK - not known to be fresh
+	}()
+}
+
+func goodEventCtxCapturedFieldPointerStructPassedOn(ctx context.Context, log zerolog.Logger) {
+	h := freshContextHolder{ctx: context.Background()}
+	pc := &h.ctx
+	freshContextSetInHolder(&h, ctx)
+	func() {
+		log.Info().Ctx(*pc).Msg("the struct passed on") // OK - not known to be fresh
+	}()
+}
+
+func badEventCtxBackgroundThroughCapturedPointerCopiedBack(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	pa := &bg
+	pb := pa
+	pa = pb
+	func() {
+		log.Info().Ctx(*pa).Msg("pointer copied back and forth") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodEventCtxCapturedPointerReplacedInGoroutine(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	pc := &bg
+	go func() { pc = freshContextPointer(ctx) }()
+	func() {
+		log.Info().Ctx(*pc).Msg("another pointer put there by a goroutine") // OK - not known to be fresh
+	}()
+}
+
+var freshContextGlobal context.Context
+
+func goodEventCtxBackgroundInGlobal(ctx context.Context, log zerolog.Logger) {
+	freshContextGlobal = context.Background()
+	log.Info().Ctx(freshContextGlobal).Msg("a global") // OK - another goroutine may change it
+}
+
+// LIMITATION (false negative): A pointer read from a field of a struct is
+// not followed to what is fresh there, as one read from a variable is.
+func limitationEventCtxBackgroundThroughPointerInField(ctx context.Context, log zerolog.Logger) {
+	bg := context.Background()
+	h := freshContextPointerHolder{&bg}
+	log.Info().Ctx(*h.p).Msg("pointer in a field") // LIMITATION: should report but doesn't
+}
+
+type freshContextPointerHolder struct{ p *context.Context }
+
+func freshContextPointer(c context.Context) *context.Context { return &c }
+
+func freshContextSetHeld(h freshContextPointerHolder, c context.Context) { *h.p = c }
+
+func freshContextSetInHolder(h *freshContextHolder, c context.Context) { h.ctx = c }
 
 func freshContextRun(f func()) { f() }
 

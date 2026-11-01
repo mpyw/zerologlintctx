@@ -169,7 +169,7 @@ func (r Resolver) yieldWalked(
 	stored storeReaching,
 	yield func(Resolved) bool,
 ) bool {
-	if r.UnseenUnknown && r.Closures.writtenUnseen(at, walked, via) && !yield(Resolved{}) {
+	if r.UnseenUnknown && r.Closures.writtenUnseen(at, walked, via, stored.followed) && !yield(Resolved{}) {
 		return false
 	}
 	return r.yieldStored(stored, yield)
