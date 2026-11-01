@@ -389,6 +389,12 @@ whose result is their receiver (`SameAsRecv` in the API table), such as
 sources of its edges. A read from memory has the sources of what
 `ssaflow.Resolver` finds there. An event the function cannot tell, such as the caller's through
 a pointer parameter, is a source of its own for each place it is read from.
+So is one behind a pointer that is not in a variable, whose stores the
+resolver cannot follow, such as `h.e` for a holder `h` a call returns, or
+`(*pp).e`. Two reads through the same pointer, as `addressesMatch` takes
+them, are of the same place (`ssaflow.MatchedPlaces`). A pointer that is a
+global, or is read from one, is not: another goroutine may change what is
+there between the two reads, so `gh.e.Ctx(ctx); gh.e.Msg("x")` is reported.
 
 | Value | Sources |
 |-------|---------|
@@ -430,8 +436,22 @@ for range n {
 }
 ```
 
+A func literal called where it is made, as an IIFE is, runs at each call,
+and so does each `Ctx` call it makes on every run, one whose block dominates
+every return of the func literal. Such a `Ctx` call counts at the call of
+the func literal, with the events it runs on there (`addClosureCtxCalls`). A
+`go` or `defer` statement runs the func literal at another time, and is not
+such a call:
+
+```go
+e := logger.Info()
+func() { e.Ctx(ctx) }() // counts here
+e.Msg("x")              // OK
+```
+
 The index keeps the sources of each value it was asked about, as a set, and
-the `Ctx` calls of each function. A function with no `Ctx` call is not
+the `Ctx` calls of each function, with those of the func literals it calls
+in place, at each call. A function with no `Ctx` call is not
 walked at all. The walk looks at a `Ctx` call only where it meets one, and
 compares the sources of the call with those of the receiver once per query.
 `TestEventQueryWorkIsQuadratic` counts that work for two shapes that took

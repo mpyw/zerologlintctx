@@ -405,6 +405,19 @@ func closureRunsOf(mc *ssa.MakeClosure) (runs closureRuns, ok bool) {
 	return runs, true
 }
 
+// CallsOfClosure returns the calls of mc, a closure, where it is made: the
+// calls, not go or defer statements, whose callee is mc itself. Each runs the
+// func literal of mc there, and no other func, whatever else mc is used for.
+func CallsOfClosure(mc *ssa.MakeClosure) []*ssa.Call {
+	var calls []*ssa.Call
+	for _, ref := range *mc.Referrers() {
+		if call, isCall := ref.(*ssa.Call); isCall && call.Call.Value == mc {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
 // callsOnly reports whether every one of runs is a call, not a go or defer
 // statement, and returns them. Such a closure runs at each call, and reads
 // what reaches it there, as an IIFE does:

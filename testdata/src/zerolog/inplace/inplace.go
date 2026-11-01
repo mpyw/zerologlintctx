@@ -754,3 +754,165 @@ func badUpdateContextWithFuncValue(ctx context.Context, l zerolog.Logger, update
 	l.UpdateContext(update)
 	l.Info().Msg("func value") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// ===== Ctx IN PLACE THROUGH A POINTER NOT IN A VARIABLE =====
+
+// An event behind a pointer that is not in a variable, such as one a call
+// returns, is not known to the function. Two reads of the same place through
+// the same pointer see the same event, as for a pointer parameter.
+
+func newInPlaceHolder() *inPlaceHolder { return &inPlaceHolder{} }
+
+var inPlaceGlobalHolder inPlaceHolder
+
+var inPlaceGlobalPtr *inPlaceHolder
+
+func goodEventCtxInPlaceReturnedHolder(ctx context.Context) {
+	h := newInPlaceHolder()
+	h.e.Ctx(ctx)
+	h.e.Msg("ctx in place, holder a call returns") // OK - the same event
+}
+
+func goodEventCtxInPlaceDoublePointer(ctx context.Context, pp **inPlaceHolder) {
+	(*pp).e.Ctx(ctx)
+	(*pp).e.Msg("ctx in place, through a pointer to a pointer") // OK
+}
+
+func goodEventCtxInPlaceDoublePointerEvent(ctx context.Context, pp **zerolog.Event) {
+	(*pp).Ctx(ctx)
+	(*pp).Msg("ctx in place, pointer to a pointer to an event") // OK
+}
+
+func goodEventCtxInPlaceSliceElement(ctx context.Context, log zerolog.Logger) {
+	s := []*zerolog.Event{log.Info()}
+	s[0].Ctx(ctx)
+	s[0].Msg("ctx in place, the same element of a slice") // OK
+}
+
+func badEventCtxInPlaceOtherSliceElement(ctx context.Context, log zerolog.Logger) {
+	s := []*zerolog.Event{log.Info(), log.Warn()}
+	s[0].Ctx(ctx)
+	s[1].Msg("ctx in place on another element") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceSliceElementStoredBetween(ctx context.Context, log zerolog.Logger) {
+	s := []*zerolog.Event{log.Info()}
+	s[0].Ctx(ctx)
+	s[0] = log.Warn()
+	s[0].Msg("another event stored in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceReturnedHolderStoredBetween(ctx context.Context, log zerolog.Logger) {
+	h := newInPlaceHolder()
+	h.e.Ctx(ctx)
+	h.e = log.Info()
+	h.e.Msg("another event stored in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceOtherHolder(ctx context.Context) {
+	h1, h2 := newInPlaceHolder(), newInPlaceHolder()
+	h1.e.Ctx(ctx)
+	h2.e.Msg("ctx on another holder") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceDoublePointerReassigned(ctx context.Context, pp **inPlaceHolder, other *inPlaceHolder) {
+	(*pp).e.Ctx(ctx)
+	*pp = other
+	(*pp).e.Msg("another holder stored in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A global can be changed by another goroutine between the two reads, so the
+// two reads are not taken for the same event.
+
+func badEventCtxInPlaceGlobalHolder(ctx context.Context) {
+	inPlaceGlobalHolder.e.Ctx(ctx)
+	inPlaceGlobalHolder.e.Msg("global holder") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceGlobalPointer(ctx context.Context) {
+	inPlaceGlobalPtr.e.Ctx(ctx)
+	inPlaceGlobalPtr.e.Msg("global pointer to a holder") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// ===== Ctx IN PLACE IN A FUNC LITERAL CALLED IN PLACE =====
+
+// A func literal called where it is made runs at the call, and so do the Ctx
+// calls it makes on every run.
+
+func goodEventCtxInPlaceInIIFE(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	func() { e.Ctx(ctx) }()
+	e.Msg("ctx in place in an IIFE") // OK
+}
+
+func goodEventCtxInPlaceInClosureCalled(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	setCtx := func() { e.Ctx(ctx) }
+	setCtx()
+	e.Msg("ctx in place in a closure called before") // OK
+}
+
+func goodEventCtxInPlaceInNestedIIFE(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	func() {
+		func() { e.Ctx(ctx) }()
+	}()
+	e.Msg("ctx in place in a nested IIFE") // OK
+}
+
+func goodEventCtxInPlaceInIIFEDeferredTerminator(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	defer e.Msg("deferred, ctx in place in an IIFE after") // OK
+	func() { e.Ctx(ctx) }()
+}
+
+func badEventCtxInPlaceInIIFEOneBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info()
+	func() {
+		if cond {
+			e.Ctx(ctx)
+		}
+	}()
+	e.Msg("ctx in place in an IIFE on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInClosureCalledAfter(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	setCtx := func() { e.Ctx(ctx) }
+	e.Msg("closure called after the terminator") // want `zerolog call chain missing .Ctx\(ctx\)`
+	setCtx()
+}
+
+func badEventCtxInPlaceInGoroutine(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	go func() { e.Ctx(ctx) }()
+	e.Msg("ctx in place in a goroutine") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInDeferredClosure(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	defer func() { e.Ctx(ctx) }()
+	e.Msg("ctx in place in a deferred closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInIIFEOtherEvent(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	other := log.Warn()
+	func() { other.Ctx(ctx) }()
+	e.Msg("ctx in place on another event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInIIFEFreshContext(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	func() { e.Ctx(context.Background()) }()
+	e.Msg("fresh context in an IIFE") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInIIFEOwnEvent(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	func() {
+		e := log.Info()
+		e.Ctx(ctx)
+	}()
+	e.Msg("ctx in place on the IIFE's own event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
