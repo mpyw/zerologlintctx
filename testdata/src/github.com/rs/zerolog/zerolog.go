@@ -68,9 +68,10 @@ func (l Logger) Hook(hooks ...Hook) Logger     { return l }
 func (l Logger) Output(w io.Writer) Logger     { return l }
 
 // Direct logging methods (bypass Event chain)
-func (l *Logger) Print(v ...any)                 {}
-func (l *Logger) Printf(format string, v ...any) {}
-func (l *Logger) Println(v ...any)               {}
+func (l *Logger) Print(v ...any)                   {}
+func (l *Logger) Printf(format string, v ...any)   {}
+func (l *Logger) Println(v ...any)                 {}
+func (l Logger) Write(p []byte) (n int, err error) { return len(p), nil }
 
 // Package-level functions that return void (NOT direct logging)
 func SetGlobalLevel(l Level) {}

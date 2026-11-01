@@ -1,9 +1,10 @@
-// Package directlog covers direct logging (Print, Printf, Println), which bypasses
-// the Event chain.
+// Package directlog covers direct logging (Print, Printf, Println, Write),
+// which bypasses the Event chain.
 package directlog
 
 import (
 	"context"
+	"io"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -96,6 +97,42 @@ func badCtxLoggerPrintOnOneBranch(ctx context.Context, l zerolog.Logger, cond bo
 func badLoggerWithoutCtxPrint(ctx context.Context, base zerolog.Logger) {
 	l := base.With().Str("k", "v").Logger()
 	l.Print("no ctx") // want `zerolog direct logging bypasses context`
+}
+
+// Logger.Write logs with l.Log() ... Msg, so it is direct logging, as Print
+// is (#235).
+func badLoggerWrite(ctx context.Context, logger zerolog.Logger) {
+	_, _ = logger.Write([]byte("direct write\n")) // want `zerolog direct logging bypasses context`
+}
+
+func badLoggerPointerWrite(ctx context.Context, logger *zerolog.Logger) {
+	logger.Write([]byte("direct write\n")) // want `zerolog direct logging bypasses context`
+}
+
+func badLoggerWriteMethodValue(ctx context.Context, logger zerolog.Logger) {
+	w := logger.Write
+	w([]byte("bound write\n")) // want `zerolog direct logging bypasses context`
+}
+
+func goodCtxLoggerWrite(ctx context.Context, base zerolog.Logger) {
+	l := base.With().Ctx(ctx).Logger()
+	_, _ = l.Write([]byte("ctx logger write\n")) // OK
+}
+
+func goodCtxLoggerWriteMethodValue(ctx context.Context, base zerolog.Logger) {
+	l := base.With().Ctx(ctx).Logger()
+	w := l.Write
+	w([]byte("bound write\n")) // OK
+}
+
+func goodLogCtxWrite(ctx context.Context) {
+	log.Ctx(ctx).Write([]byte("logger from ctx\n")) // OK - the logger stored in ctx
+}
+
+// LIMITATION: a use of the Logger through io.Writer is not followed.
+func limitationLoggerAsWriter(ctx context.Context, logger zerolog.Logger) {
+	var w io.Writer = logger
+	w.Write([]byte("through io.Writer\n")) // not reported
 }
 
 // The global Logger of log.Print is not traced, so it is reported even when

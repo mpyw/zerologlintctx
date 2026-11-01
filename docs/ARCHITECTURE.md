@@ -99,7 +99,7 @@ Most of it comes from the signature:
 | Kind | Rule | Examples |
 |------|------|----------|
 | `KindTerminator` | A method of Event that returns nothing | `Msg`, `Msgf`, `MsgFunc`, `Send` |
-| `KindDirectLog` | A `Print*` method of Logger, or function of `zerolog/log`, that returns nothing | `Print`, `Printf`, `Println` |
+| `KindDirectLog` | A `Print*` method of Logger, or function of `zerolog/log`, that returns nothing, and `Logger.Write` | `Print`, `Printf`, `Println`, `Write` |
 | `KindChain` | A method that returns its receiver's type | `Event.Str`, `Context.Str`, `Logger.Level` |
 | `KindHandoff` | A method that returns another zerolog type | `Logger.Info`, `Logger.With`, `Context.Logger` |
 | `KindOther` | Anything else: a function, or a method that returns another type | `zerolog.New`, `log.Info`, `Logger.GetLevel` |
@@ -141,6 +141,11 @@ logger.UpdateContext(...)  // Configuration, not logging
 ```
 
 This is necessary because `UpdateContext` also returns void but is not a logging method.
+
+`Logger.Write` returns two results, so the prefix check does not find it. It
+logs with `l.Log() ... Msg`, so a row of exceptions makes it direct logging, as
+`Print` is. A use through `io.Writer`, such as `fmt.Fprint(l, "x")`, is not
+seen.
 
 `Logger.Print` builds its event from the Logger, as `Logger.Info` does, so the
 event takes the Logger's context. The receiver is traced in the `traceLogger` state
@@ -572,7 +577,7 @@ event.Send()
 3. `ignore` is the only name. Any other name, such as `ignre` or `ignore-reason`, is an unknown directive. `go/ast` takes the name up to the first space, so these parse as directives and would otherwise do nothing without a report.
 4. `ignore` takes no argument. A reason after ` - ` is kept for compatibility. Other text, such as `//zerologlintctx:ignore intentionally detached`, is reported.
 
-An ignore at the end of a line of code reaches that line only. An ignore on a line of its own reaches the line below. A report sits at the `(` of the reported call, so a chain that spans several lines is also reached from the line where its call expression starts. `directive.Scan` records that start for every call, and whether each ignore follows code on its line, from the file's AST.
+An ignore reaches the line it is on. An ignore on a line of its own also reaches the line below; one at the end of a line of code does not. A report sits at the `(` of the reported call, so a chain that spans several lines is also reached from the line where its call expression starts. So an ignore at the end of the first line of a chain reaches the whole chain. `directive.Scan` records that start for every call, and whether each ignore follows code on its line, from the file's AST.
 
 None of these reported comments silences anything (#60). Guessing what was meant would silence a report nobody asked to silence.
 
@@ -617,7 +622,7 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 ├── ctxname/     # Which context is in scope: several, named _, shadowed, pointer, type parameter
 ├── deferred/    # Deferred terminators and deferred closures
 ├── directive/   # Ignore directives and directive problems
-├── directlog/   # Print, Printf, Println on a logger
+├── directlog/   # Print, Printf, Println, Write on a logger
 ├── freshctx/    # context.Background() or TODO() in place of the context in scope
 ├── go127/       # Go 1.27 syntax (promoted field keys, generic methods)
 ├── iife/        # IIFE, func literals called through a variable, helpers

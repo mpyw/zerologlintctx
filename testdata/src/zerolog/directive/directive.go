@@ -55,6 +55,14 @@ func goodTrailingIgnoreOnMultiLineGo(ctx context.Context, log zerolog.Logger) {
 		Msg("ignored") //zerologlintctx:ignore
 }
 
+// A trailing ignore on the first line of a chain reaches the whole chain:
+// the report at Msg is at a call whose expression starts on that line (#236).
+func goodTrailingIgnoreOnFirstLineOfChain(ctx context.Context, log zerolog.Logger) {
+	log.Info(). //zerologlintctx:ignore
+		Str("k", "v").
+		Msg("ignored")
+}
+
 func badMultiLineDeferReportedAtCall(ctx context.Context, log zerolog.Logger) {
 	defer log.Info().
 		Str("k", "v").
