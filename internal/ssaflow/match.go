@@ -70,9 +70,8 @@ type matchClosureRun struct {
 	mc  *ssa.MakeClosure
 	run ssa.Instruction
 	// copied, when not nil, is the one store that reaches run of the whole
-	// variable that mc binds, in the last run only. What the closure reads
-	// from the variable is what that store copied there (see
-	// matchCopiedLoad).
+	// variable that mc binds, in one run only. What the closure reads from
+	// the variable is what that store copied there (see matchCopiedLoad).
 	copied *ssa.Store
 }
 
@@ -132,16 +131,25 @@ func matchAcrossClosure(inner, outer ssa.Value, runs []matchClosureRun) bool {
 //	t2 = *&t0.p ; *t2 = v             // outer: t0 is a local struct
 //	t8 = *t0 ; *t7 = t8               // copied: t7 is b
 //	t1 = *&b.p ; Info(t1)             // in the closure: t1 is t2
+//
+// When the run with the copy is not the last one, as for a copy made in a
+// closure from a variable it captures, what was copied is matched across the
+// runs after it as matchAcrossClosure matches a load: the load copied must
+// see what is at its address as that closure starts.
 func matchCopiedLoad(inner *ssa.UnOp, outer ssa.Value, runs []matchClosureRun) bool {
-	store := runs[len(runs)-1].copied
+	k := slices.IndexFunc(runs, func(r matchClosureRun) bool { return r.copied != nil })
+	if k < 0 {
+		return false
+	}
+	store, rest := runs[k].copied, runs[k+1:]
 	fv, sels := matchSelsOf(inner.X)
 	bound, isFreeVar := fv.(*ssa.FreeVar)
-	if store == nil || inner.Op != token.MUL || !isFreeVar || matchBoundOut(bound, runs) != store.Addr ||
+	if inner.Op != token.MUL || !isFreeVar || matchBoundOut(bound, runs[:k+1]) != store.Addr ||
 		!maps.Equal(matchReachingStores(inner), map[ssa.Instruction]bool{nil: true}) {
 		return false
 	}
 	if len(sels) == 0 {
-		return addressesMatch(store.Val, outer)
+		return len(rest) == 0 && addressesMatch(store.Val, outer) || len(rest) > 0 && matchAcrossClosure(store.Val, outer, rest)
 	}
 	from, isLoad := AsLoad(store.Val)
 	out, isOut := AsLoad(outer)
@@ -150,8 +158,15 @@ func matchCopiedLoad(inner *ssa.UnOp, outer ssa.Value, runs []matchClosureRun) b
 	}
 	x, outSels := matchSelsOf(out.X)
 	fromX, fromSels := matchSelsOf(from.X)
-	return slices.EqualFunc(append(fromSels, sels...), outSels, sel.same) && addressesMatch(x, fromX) &&
-		maps.Equal(matchStoresBefore(out.X, out), matchStoresBefore(out.X, from))
+	if !slices.EqualFunc(append(fromSels, sels...), outSels, sel.same) {
+		return false
+	}
+	if len(rest) == 0 {
+		return addressesMatch(x, fromX) && maps.Equal(matchStoresBefore(out.X, out), matchStoresBefore(out.X, from))
+	}
+	return matchAcrossClosure(fromX, x, rest) &&
+		maps.Equal(matchStoresBefore(from.X, from), map[ssa.Instruction]bool{nil: true}) &&
+		maps.Equal(matchStoresBefore(out.X, out), matchStoresBefore(out.X, rest[len(rest)-1].run))
 }
 
 // matchSelsOf returns the address that v, an address, selects from through
