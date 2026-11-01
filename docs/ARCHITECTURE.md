@@ -946,7 +946,22 @@ each call of a closure that is only called, at the returns of one that is only
 deferred, and from where it is made, with every store after it, otherwise
 (`storeWalk.walkOut`). A pointer that is not in a variable there, such as one
 a call returns, is walked for as below, and is taken as not known when no
-store through it is found.
+store through it is found, even when a path gets back to where it is made, as
+for `zerolog.Ctx(ctx)`. The walks for the other targets do not keep to the
+paths on which the variable holds each one, so the pointer is traced as a
+value instead:
+
+```go
+p := zerolog.Ctx(ctx)
+if a {
+    l := base                         // reaches the call when b is false
+    if b {
+        l = base.With().Ctx(ctx).Logger()
+        p = &l
+    }
+}
+func() { p.Info().Msg("x") }()        // p is &l only after the store with ctx: not reported
+```
 
 Each target keeps the closures that lead from the read out to the function it
 is in. A pointer found there may itself be read from memory, as for
