@@ -1241,8 +1241,19 @@ func() {
 
 When no such copy is found, a path that gets to the entry of the function
 the variable is declared in carries the caller's value when the variable
-only holds a parameter (`storeHoldsCallerParam`). A struct parameter whose
-fields are only loaded holds one value too.
+only holds a parameter (`storeHoldsCallerParam`). A struct or array
+parameter whose fields or elements are only loaded holds one value too:
+
+```go
+func() {
+    b := arr[0]                       // arr is an array parameter the closure captures
+    q := b.p
+    if other {
+        *q = l.With().Ctx(ctx).Logger()
+    }
+    q.Info().Msg("x")                 // the caller's Logger when other is false: reported
+}()
+```
 
 ```go
 (*pp).log = zerolog.Ctx(ctx).With().Logger()

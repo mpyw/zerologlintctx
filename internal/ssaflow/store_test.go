@@ -247,14 +247,14 @@ func g(n int) int { return n + 1 }
 }
 
 // TestStoreVariableOnce checks which local variables hold one value wherever
-// they are loaded, and that two loads of one, in a closure that captures it
+// they are loaded, whole or by a field or element, and that two loads of one, in a closure that captures it
 // too, are one index value.
 func TestStoreVariableOnce(t *testing.T) {
 	const src = `package p
 
 func use(*int) {}
 
-func f(a int, s []int, cond bool) {
+func f(a int, s []int, cond bool, arr [2]int, brr [2]int) {
 	_ = s[a]
 	func() { _ = s[a] }()
 	b := 0
@@ -275,6 +275,8 @@ func f(a int, s []int, cond bool) {
 		g = 1
 	}
 	func() { _ = g }()
+	func() { _ = arr[0] }()
+	func() { brr[1] = 1 }()
 }
 `
 	fset := token.NewFileSet()
@@ -294,7 +296,7 @@ func f(a int, s []int, cond bool) {
 		}
 	}
 	w := &storeWalk{positions: make(Positions)}
-	for name, want := range map[string]bool{"a": true, "b": false, "c": false, "d": false, "e": false, "g": false} {
+	for name, want := range map[string]bool{"a": true, "arr": true, "brr": false, "b": false, "c": false, "d": false, "e": false, "g": false} {
 		if got := w.storeVariableOnce(allocs[name]); got != want {
 			t.Errorf("storeVariableOnce(%s) = %v, want %v", name, got, want)
 		}
