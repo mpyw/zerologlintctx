@@ -5,6 +5,7 @@
 package ssaflow
 
 import (
+	"go/token"
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
@@ -1044,23 +1045,121 @@ func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
 	return len(at.path), min(at.covers(w.at, w.indexOnce), limit)
 }
 
-// storeIndexAlways is an index that is always taken to have one value, so
-// that an element at the same index is the same element, for a test of places
-// that runs nowhere in particular.
-func storeIndexAlways(ssa.Value) bool { return true }
+// storeIndexAlways takes an index to have one value, so that an element at
+// the same index is the same element, for a test of places that runs nowhere
+// in particular.
+func storeIndexAlways(a, b ssa.Value) bool { return a == b }
 
-// indexOnce reports whether index, the index of an element of the address of
-// the walk, has one value wherever the walk meets it: it is not computed by
-// an instruction that runs again, in a loop. A store at the same index is
-// then to the same element.
+// indexOnce reports whether a and b, the indexes of two elements of the
+// address of the walk, have one value wherever the walk meets them. A store
+// at the same index is then to the same element. Either a and b are the same
+// value, not computed by an instruction that runs again, in a loop:
 //
 //	for i := range arr {   // i is a Phi, which runs again on each iteration
 //	    arr[i].Info()      // the store below is to arr[i-1] here
 //	    arr[i] = base
 //	}
-func (w *storeWalk) indexOnce(index ssa.Value) bool {
-	def, ok := index.(ssa.Instruction)
+//
+// Or each is a load of the same variable that holds one value (see
+// storeVariableOnce), as one a closure captures does:
+//
+//	s[i] = l                  // t3 = *t1 ; *&t2[t3] = l
+//	func() { s[i].Info() }()  // t1 = *i  ; Info(&t0[t1]) reads the same element
+func (w *storeWalk) indexOnce(a, b ssa.Value) bool {
+	if a != b {
+		va, okA := storeLoadedVariable(a)
+		vb, okB := storeLoadedVariable(b)
+		return okA && okB && va == vb && w.storeVariableOnce(va)
+	}
+	def, ok := a.(ssa.Instruction)
 	return !ok || !w.positions.reaches(def, def)
+}
+
+// storeLoadedVariable returns the local variable that v, a load, reads: its
+// address, or the variable bound to the free variable it loads, through the
+// closures that capture it at any depth. ok is false when v is not such a
+// load, or a closure on the way is made more than once, or nowhere.
+func storeLoadedVariable(v ssa.Value) (_ *ssa.Alloc, ok bool) {
+	load, isLoad := AsLoad(v)
+	if !isLoad {
+		return nil, false
+	}
+	addr := load.X
+	for fv, isFreeVar := addr.(*ssa.FreeVar); isFreeVar; fv, isFreeVar = addr.(*ssa.FreeVar) {
+		fn := fv.Parent()
+		var bound ssa.Value
+		for instr := range InstrsIn(fn.Parent()) {
+			if mc, isMC := instr.(*ssa.MakeClosure); isMC && mc.Fn == fn {
+				if bound != nil {
+					return nil, false
+				}
+				bound = mc.Bindings[slices.Index(fn.FreeVars, fv)]
+			}
+		}
+		if bound == nil {
+			return nil, false
+		}
+		addr = bound
+	}
+	alloc, isAlloc := addr.(*ssa.Alloc)
+	return alloc, isAlloc
+}
+
+// storeVariableOnce reports whether alloc, a local variable, holds one value
+// wherever it is loaded: it is stored to once, outside a loop, before each
+// load of it and each closure that captures it, and is otherwise only
+// loaded, in its function and in those closures. A parameter that a closure
+// captures is such a variable.
+func (w *storeWalk) storeVariableOnce(alloc *ssa.Alloc) bool {
+	var store *ssa.Store
+	var uses []ssa.Instruction // Loads and captures in the function of alloc
+	var only func(addr ssa.Value, outer bool) bool
+	only = func(addr ssa.Value, outer bool) bool {
+		for _, ref := range *addr.Referrers() {
+			switch in := ref.(type) {
+			case *ssa.Store:
+				if !outer || in.Addr != addr || store != nil {
+					return false
+				}
+				store = in
+			case *ssa.UnOp:
+				if in.Op != token.MUL {
+					return false
+				}
+			case *ssa.MakeClosure:
+				fn := in.Fn.(*ssa.Function) // Always a function, a func literal or a wrapper
+				for i, bound := range in.Bindings {
+					if bound == addr && !only(fn.FreeVars[i], false) {
+						return false
+					}
+				}
+			default:
+				return false
+			}
+			if outer {
+				uses = append(uses, ref)
+			}
+		}
+		return true
+	}
+	if !only(alloc, true) || store == nil || w.positions.reaches(store, store) {
+		return false
+	}
+	for _, use := range uses {
+		if use != store && !storeDominates(store, use) {
+			return false
+		}
+	}
+	return true
+}
+
+// storeDominates reports whether a runs before b on every path to b, both
+// in one function.
+func storeDominates(a, b ssa.Instruction) bool {
+	if a.Block() != b.Block() {
+		return a.Block().Dominates(b.Block())
+	}
+	return slices.Index(a.Block().Instrs, a) < slices.Index(b.Block().Instrs, b)
 }
 
 // prefixLen reports whether addr is the root or a selection from it that the

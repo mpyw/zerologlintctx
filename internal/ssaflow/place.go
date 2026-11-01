@@ -100,6 +100,16 @@ func (p Place) Key() PlaceKey {
 	return PlaceKey{root: p.root, path: b.String()}
 }
 
+// rooted returns k with root in place of its root, and the same selections.
+func (k PlaceKey) rooted(root ssa.Value) PlaceKey {
+	return PlaceKey{root: root, path: k.path}
+}
+
+// base returns the root of k.
+func (k PlaceKey) base() ssa.Value {
+	return k.root
+}
+
 // Variable reports whether p selects an element whose index is not a
 // constant, which may be any element.
 func (p Place) Variable() bool {
@@ -154,12 +164,12 @@ const (
 //
 //   - Two fields, or two constant elements, as sel.same compares them. Two
 //     that differ make it coverNone.
-//   - Two elements at an index that is not a constant, with the same operand,
-//     for which once holds: the operand has one value everywhere it is
-//     compared, so they are the same element.
+//   - Two elements at an index that is not a constant, whose operands once
+//     takes for one value, everywhere they are compared: they are the same
+//     element.
 //   - Any other pair of elements, one of them at an index that is not a
 //     constant, may be the same element, or not. That makes it coverMay.
-func (p Place) covers(q Place, once func(index ssa.Value) bool) placeCover {
+func (p Place) covers(q Place, once func(a, b ssa.Value) bool) placeCover {
 	if p.root != q.root || len(p.path) > len(q.path) {
 		return coverNone
 	}
@@ -167,7 +177,7 @@ func (p Place) covers(q Place, once func(index ssa.Value) bool) placeCover {
 	for i, s := range p.path {
 		o := q.path[i]
 		switch {
-		case s.variable() && s.operand == o.operand && once(s.operand):
+		case s.variable() && o.variable() && once(s.operand, o.operand):
 		case s.variable() || o.variable():
 			cover = coverMay
 		case !s.same(o):

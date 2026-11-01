@@ -234,12 +234,12 @@ func TestPlaceCovers(t *testing.T) {
 	arrI1, _ := PlaceOf(addrs[4])
 	arrI2, _ := PlaceOf(addrs[5])
 	param, _ := PlaceOf(addrs[6])
-	once := func(ssa.Value) bool { return true }
-	again := func(ssa.Value) bool { return false }
+	once := func(a, b ssa.Value) bool { return a == b }
+	again := func(a, b ssa.Value) bool { return false }
 	for _, tt := range []struct {
 		name string
 		p, q Place
-		once func(ssa.Value) bool
+		once func(a, b ssa.Value) bool
 		want placeCover
 	}{
 		{"the same place", inB, inB, once, coverMust},

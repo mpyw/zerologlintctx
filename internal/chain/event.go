@@ -669,11 +669,34 @@ func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosu
 		for _, site := range sites {
 			for _, cc := range ccs {
 				if !cc.fresh {
-					calls.add(site, &eventCtxCall{call: site, sources: cc.sources, recv: cc.recv})
+					calls.add(site, &eventCtxCall{call: site, sources: ix.sourcesAtRun(cc.sources, mc, site), recv: cc.recv})
 				}
 			}
 		}
 	}
+}
+
+// sourcesAtRun returns sources, the events a Ctx call in the func literal of
+// mc runs on, as the function that makes mc has them where site runs it. An
+// event the closure cannot tell, at a place it reads through a pointer it
+// loads from a variable it captures, is the one at the same place through the
+// variable bound there (see MatchedPlaces.KeyAtRun):
+//
+//	func(ctx context.Context, h *holder) {
+//	    func() { h.e.Ctx(ctx) }() // the caller's event at h.e, read in the closure
+//	    h.e.Msg("x")              // the same event, read here
+//	}
+func (ix *eventIndex) sourcesAtRun(sources *eventSources, mc *ssa.MakeClosure, site ssa.Instruction) *eventSources {
+	mapped := &eventSources{}
+	for _, src := range sources.list {
+		if src.v == nil {
+			if at, ok := ix.places.KeyAtRun(src.at, mc, site); ok {
+				src.at = at
+			}
+		}
+		mapped.add(src)
+	}
+	return mapped
 }
 
 // eventRunsOnEveryReturn reports whether instr runs on every path from the
