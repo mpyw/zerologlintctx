@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"slices"
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
@@ -263,4 +264,125 @@ func TestPlaceCovers(t *testing.T) {
 // placePrefix returns the place that the first n selections of p select.
 func placePrefix(p Place, n int) Place {
 	return Place{root: p.root, path: p.path[:n]}
+}
+
+const placeLoadedSrc = `package p
+
+type inner struct{}
+
+func (*inner) use() {}
+
+type pair struct{ *inner }
+
+func g(c bool, n int, p, q *pair, mk func() pair) {
+	(*p).use()
+	w := *p
+	if c {
+		w = *q
+	}
+	w.use()
+	for range n {
+		if c {
+			w = *q
+		}
+	}
+	w.use()
+	var z pair
+	if c {
+		z = *p
+	}
+	z.use()
+	v := mk()
+	if c {
+		v = *p
+	}
+	v.use()
+}
+`
+
+func TestLoadedSelection(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", placeLoadedSrc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ssaPkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{f}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := ssaPkg.Func("g")
+	var args []ssa.Value
+	for instr := range InstrsIn(fn) {
+		if call, ok := instr.(*ssa.Call); ok && call.Call.StaticCallee() != nil && call.Call.StaticCallee().Name() == "use" {
+			args = append(args, call.Call.Args[0])
+		}
+	}
+	if len(args) != 5 {
+		t.Fatalf("calls of use = %d, want 5", len(args))
+	}
+	p, q := fn.Params[2], fn.Params[3]
+	tests := []struct {
+		name  string
+		roots []ssa.Value // The root of each read, nil when ok is false
+		ok    bool
+	}{
+		{"a field of a load", []ssa.Value{p}, true},
+		{"a field of a Phi of loads", []ssa.Value{p, q}, true},
+		{"a Phi that leads back to itself", []ssa.Value{p, q}, true},
+		{"a Phi with the zero value", []ssa.Value{p}, true},
+		{"a Phi with a call", nil, false},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reads, ok := LoadedSelection(args[i])
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			roots := make(map[ssa.Value]bool)
+			for _, rd := range reads {
+				if len(rd.At.path) != 1 {
+					t.Errorf("path of %v = %v, want one field", rd.At.root, rd.At.path)
+				}
+				roots[rd.At.root] = true
+			}
+			if len(roots) != len(tt.roots) {
+				t.Fatalf("roots = %v, want %v", roots, tt.roots)
+			}
+			for _, r := range tt.roots {
+				if !roots[r] {
+					t.Errorf("no read from %v", r)
+				}
+			}
+		})
+	}
+	if _, ok := LoadedSelection(p); ok {
+		t.Error("ok for a value that selects nothing")
+	}
+}
+
+// TestLoadedSelectionThrough checks the edges a read is taken through, and
+// the bound on the reads found.
+func TestLoadedSelectionThrough(t *testing.T) {
+	addr := ssa.NewConst(nil, types.NewPointer(types.NewStruct(nil, nil)))
+	load := func() *ssa.UnOp { return &ssa.UnOp{Op: token.MUL, X: addr} }
+	a, b := load(), load()
+	inner := &ssa.Phi{Edges: []ssa.Value{a, b}}
+	outer := &ssa.Phi{Edges: []ssa.Value{inner}}
+	inner.Edges = append(inner.Edges, outer) // Back to a Phi on the way
+	reads, ok := LoadedSelection(&ssa.Field{X: outer})
+	if !ok || len(reads) != 2 {
+		t.Fatalf("LoadedSelection = %d reads, %v, want 2 reads", len(reads), ok)
+	}
+	want := []LoadedEdge{{outer, 0}, {inner, 1}}
+	if got := reads[1].Through; reads[1].Load != b || !slices.Equal(got, want) {
+		t.Errorf("second read = %v through %v, want %v through %v", reads[1].Load, got, b, want)
+	}
+
+	many := &ssa.Phi{}
+	for range loadedReadsMax + 1 {
+		many.Edges = append(many.Edges, load())
+	}
+	if _, ok := LoadedSelection(&ssa.Field{X: many}); ok {
+		t.Errorf("LoadedSelection of %d loads: ok", len(many.Edges))
+	}
 }

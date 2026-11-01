@@ -271,18 +271,28 @@ func (tr *tracer) traceCommon(v ssa.Value, st traceState) verdict {
 //	t8 = *t4                // the whole struct, loaded
 //	t9 = t8.Logger          // v, read by value
 //
+// For a value selected from a Phi of such values, each load an edge leads to
+// is a read of its own, and every one must have context (see
+// ssaflow.LoadedSelection).
+//
 // ok is false when the value it selects from is not loaded from an address
 // whose stores Resolver.ResolveAt can find.
 func (tr *tracer) traceSelectedValue(v ssa.Value, st traceState) (found verdict, ok bool) {
-	at, load, ok := ssaflow.LoadedSelection(v)
+	reads, ok := ssaflow.LoadedSelection(v)
 	if !ok {
 		return no, false
 	}
-	sources, ok := tr.resolver(st).ResolveAt(at, load)
-	if !ok {
-		return no, false
+	resolved := make([]iter.Seq[ssaflow.Resolved], 0, len(reads))
+	for _, rd := range reads {
+		sources, ok := tr.resolver(st).ResolveAt(rd.At, rd.Load)
+		if !ok {
+			return no, false
+		}
+		resolved = append(resolved, sources)
 	}
-	return tr.traceResolved(sources, st), true
+	return all(verdictsOf(resolved, func(sources iter.Seq[ssaflow.Resolved]) verdict {
+		return tr.traceResolved(sources, st)
+	})), true
 }
 
 // =============================================================================

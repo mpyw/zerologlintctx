@@ -238,6 +238,8 @@ func addrSel(v ssa.Value) (from ssa.Value, s sel, ok bool) {
 // valueSel returns the selection v makes, a field of a struct value or an
 // element of an array value, and the value it selects from. ok is false for
 // any other value.
+//
+//declscope:private
 func valueSel(v ssa.Value) (from ssa.Value, s sel, ok bool) {
 	switch v := v.(type) {
 	case *ssa.Field:
@@ -259,6 +261,28 @@ func elemSel(index ssa.Value) sel {
 	return s
 }
 
+// LoadedRead is a read of a struct or array value loaded whole from an
+// address: the place selected from that address, and the load. Through are
+// the edges of Phis the value is taken through on the way from the load, the
+// one closest to the selection first.
+type LoadedRead struct {
+	At      Place
+	Load    *ssa.UnOp
+	Through []LoadedEdge
+}
+
+// LoadedEdge is the edge at Index of Phi.
+type LoadedEdge struct {
+	Phi   *ssa.Phi
+	Index int
+}
+
+// loadedReadsMax bounds the reads LoadedSelection finds through Phis. With
+// more, ok is false.
+//
+//declscope:private
+const loadedReadsMax = 64
+
 // LoadedSelection returns where v, a field of a struct value or an element of
 // an array value, selected from one loaded whole from an address, is read
 // from: the same selections from that address, and the load. ok is false when
@@ -266,23 +290,76 @@ func elemSel(index ssa.Value) sel {
 //
 //	t8 = *t4                // the whole struct, loaded
 //	t9 = t8.Logger          // v, read from t4.Logger
-func LoadedSelection(v ssa.Value) (at Place, load *ssa.UnOp, ok bool) {
-	var selections []sel
+//
+// A value selected from a Phi of such values is read from each edge, at the
+// same selections, so there is one read for each way through the Phis to a
+// load. An edge that is a constant, the zero value, has nothing to read, and
+// one that leads back to a Phi on the way adds nothing new:
+//
+//	t17 = phi [0: t12, 1: t16]  // t12 = *t10 ; t16 = *t14
+//	t18 = t17.Logger            // read from t10.Logger and t14.Logger
+//
+// ok is false when an edge is neither a load, a selection from one, nor
+// such a Phi, or when there are more than loadedReadsMax reads.
+func LoadedSelection(v ssa.Value) (reads []LoadedRead, ok bool) {
+	from, path := selectionsOf(v)
+	if len(path) == 0 {
+		return nil, false
+	}
+	if !appendLoadedReads(&reads, from, path, nil) {
+		return nil, false
+	}
+	return reads, true
+}
+
+// selectionsOf returns the value v selects fields and elements from, by
+// value, and the selections, first to last.
+//
+//declscope:private
+func selectionsOf(v ssa.Value) (from ssa.Value, path []sel) {
 	for {
-		from, s, isSel := valueSel(v)
+		x, s, isSel := valueSel(v)
 		if !isSel {
 			break
 		}
-		selections = append(selections, s)
-		v = from
+		path = append(path, s)
+		v = x
 	}
-	load, ok = AsLoad(v)
-	if !ok || len(selections) == 0 {
-		return Place{}, nil, false
+	slices.Reverse(path)
+	return v, path
+}
+
+// appendLoadedReads appends to reads where path, selections from the value
+// v, is read from, as LoadedSelection does, and reports whether it could
+// tell. through are the edges taken to v.
+//
+//declscope:private
+func appendLoadedReads(reads *[]LoadedRead, v ssa.Value, path []sel, through []LoadedEdge) bool {
+	if load, isLoad := AsLoad(v); isLoad {
+		if len(*reads) == loadedReadsMax {
+			return false
+		}
+		base, _ := PlaceOf(load.X)
+		*reads = append(*reads, LoadedRead{At: base.with(path...), Load: load, Through: slices.Clone(through)})
+		return true
 	}
-	slices.Reverse(selections)
-	base, _ := PlaceOf(load.X)
-	return base.with(selections...), load, true
+	phi, isPhi := v.(*ssa.Phi)
+	if !isPhi {
+		return false
+	}
+	if slices.ContainsFunc(through, func(e LoadedEdge) bool { return e.Phi == phi }) {
+		return true // Back to a Phi on the way
+	}
+	for i, edge := range phi.Edges {
+		if _, isConst := edge.(*ssa.Const); isConst {
+			continue // The zero value has nothing to read
+		}
+		from, more := selectionsOf(edge)
+		if !appendLoadedReads(reads, from, append(more, path...), append(slices.Clip(through), LoadedEdge{phi, i})) {
+			return false
+		}
+	}
+	return true
 }
 
 // AsLoad returns v as a load, `*x`, and reports whether it is one.

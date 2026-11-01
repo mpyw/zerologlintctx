@@ -396,6 +396,7 @@ a pointer parameter, is a source of its own for each place it is read from.
 | `e.Str("k", "v")`, `e.Ctx(ctx)` | Those of `e` |
 | A Phi | Those of each edge but nil |
 | A load, or a field selected from a load of a struct | Those of each value stored that reaches it |
+| A field selected from a Phi of struct values | Those of the same field of each load an edge leads to |
 | The receiver of a method expression of a promoted method | Those of each value stored at the embedded fields |
 | Anything else | Itself |
 
@@ -488,7 +489,15 @@ the graph is not built for the others.
 - **Alloc** - Local variable allocation (traces stored values)
 - **FreeVar** - Closure captured variables
 - **Parameter** - A parameter of a func literal that is only called where it is written, as an IIFE is, takes the argument of every such call, including calls from closures that capture the variable it is kept in, and calls of a variable or a Phi that may hold another func too. A parameter of a declared function, or of a func literal passed on, is not known
-- **FieldAddr/Field** - Struct field access
+- **FieldAddr/Field** - Struct field access. A field or element selected from a struct or array value loaded whole is read from the same selection of the address it is loaded from. One selected from a Phi of such values is read from each load an edge leads to, and every one must have context (`ssaflow.LoadedSelection`). Each read keeps the edges it is taken through, so that the in-place `Ctx` check still tells, at a Phi at the top of a loop, the event of an earlier iteration. A pointer read that way is followed by `storePointers` the same way:
+
+  ```go
+  w := wrapper{&a}         // type wrapper struct{ *zerolog.Logger }
+  if cond {
+      w = wrapper{&b}
+  }
+  w.Info().Msg("x")        // t18 = phi(t12, t16).Logger: reads t10.Logger and t14.Logger
+  ```
 - **Store tracking** - The stores that reach each read of an address
 
 #### Stores That Reach a Read
