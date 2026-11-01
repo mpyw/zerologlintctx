@@ -75,7 +75,7 @@ The code compiles, and the line is still logged. zerologlintctx finds it from th
 
 | Method | Command | Needs |
 | --- | --- | --- |
-| **[mise](https://mise.jdx.dev/)** *(recommended)* | `mise use "github:mpyw/zerologlintctx@0.14.0"` | Nothing. Installs the prebuilt binary |
+| **[mise](https://mise.jdx.dev/)** *(recommended)* | `mise use "github:mpyw/zerologlintctx@0.14.1"` | Nothing. Installs the prebuilt binary |
 | [`go tool`](https://pkg.go.dev/cmd/go#hdr-Run_specified_go_tool) | `go get -tool github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest` | Go 1.27+ |
 | [`go install`](https://pkg.go.dev/cmd/go#hdr-Compile_and_install_packages_and_dependencies) | `go install github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest` | Go 1.27+ |
 | [`go run`](https://pkg.go.dev/cmd/go#hdr-Compile_and_run_Go_program) | `go run github.com/mpyw/zerologlintctx/cmd/zerologlintctx@latest ./...` | Go 1.27+ |
@@ -90,7 +90,7 @@ zerologlintctx ./...
 Building from source needs Go 1.27 or later. The analyzed code may target any Go version.
 
 > [!CAUTION]
-> To prevent supply chain attacks, pin a version tag instead of `@latest` in CI/CD pipelines, such as `@v0.14.0`.
+> To prevent supply chain attacks, pin a version tag instead of `@latest` in CI/CD pipelines, such as `@v0.14.1`.
 
 <details>
 <summary>Pin a version, run through <code>go vet</code> or golangci-lint, or install from an archive</summary>
@@ -99,7 +99,7 @@ Building from source needs Go 1.27 or later. The analyzed code may target any Go
 
 ```toml
 [tools]
-"github:mpyw/zerologlintctx" = "0.14.0"
+"github:mpyw/zerologlintctx" = "0.14.1"
 ```
 
 As a tool dependency in `go.mod`:
@@ -119,7 +119,7 @@ go vet -vettool=$(which zerologlintctx) ./...
 From a release archive on [GitHub Releases](https://github.com/mpyw/zerologlintctx/releases), verified against the published checksums:
 
 ```bash
-export VERSION=0.14.0
+export VERSION=0.14.1
 export OS=linux    # or darwin
 export ARCH=amd64  # or arm64
 export BASE_URL="https://github.com/mpyw/zerologlintctx/releases/download/v${VERSION}"
@@ -144,7 +144,7 @@ version: v2.15.0  # the golangci-lint release to build
 plugins:
   - module: github.com/mpyw/zerologlintctx
     import: github.com/mpyw/zerologlintctx/plugin
-    version: v0.14.0
+    version: v0.14.1
 ```
 
 Turn it on in `.golangci.yml`. It takes no settings, and any key under `settings` stops the run. To skip test files, use golangci-lint's `run.tests: false` instead of `-test=false`:
