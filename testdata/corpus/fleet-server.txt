@@ -102,7 +102,6 @@ internal/pkg/file/delivery/delivery.go:133:138: zerolog call chain missing .Ctx(
 internal/pkg/file/delivery/delivery.go:85:28: zerolog call chain missing .Ctx(ctx)
 internal/pkg/file/delivery/delivery.go:90:40: zerolog call chain missing .Ctx(ctx)
 internal/pkg/file/delivery/delivery.go:93:60: zerolog call chain missing .Ctx(ctx)
-internal/pkg/monitor/monitor.go:213:28: zerolog call chain missing .Ctx(ctx)
 internal/pkg/monitor/monitor.go:449:21: zerolog call chain missing .Ctx(ctx)
 internal/pkg/policy/monitor.go:194:21: zerolog call chain missing .Ctx(ctx)
 internal/pkg/policy/monitor.go:283:30: zerolog call chain missing .Ctx(ctx)

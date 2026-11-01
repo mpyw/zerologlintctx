@@ -664,7 +664,8 @@ and is not followed when it picks more than `storePickedMax`.
 |---------------------|----------------------|
 | From a field or element of a tracked root, or of a struct value loaded from one | What the stores to that place left there |
 | From what another such pointer points to | The same, through that pointer first |
-| And a store reaches it from a pointer parameter, a captured variable or anything else not known | Not followed. The stores through the pointer itself are walked for (below) |
+| From a variable a closure captures, as the closure starts | What the variable bound where the closure is made holds when the closure runs (below) |
+| And a store reaches it from a pointer parameter, or anything else not known | Not followed. The stores through the pointer itself are walked for (below) |
 
 A nil pointer has nothing to read, and is left out. So is a path of the walk
 that leads back to the entry of the function without making the struct a
@@ -683,6 +684,24 @@ h.p.l.Info().Msg("x")                 // not reported
 
 `storePointers` keeps what each pointer can point to, and a pointer reached
 again while it is followed is not followed again.
+
+A closure that captures a pointer variable reads it as a free variable, and
+loads the pointer at each use. What the free variable holds as the closure
+starts is what the variable bound at the `MakeClosure` holds when the closure
+runs (see `storesReachingClosure`). Each pointer found there is a target, and
+the walk for it goes from the read back to the entry of the closure, then on
+in the function that makes the closure, from where the closure runs: before
+each call of a closure that is only called, at the returns of one that is only
+deferred, and from where it is made, with every store after it, otherwise
+(`storeWalk.walkOut`). A pointer that is not in a variable there, such as one
+a call returns, is walked for as below, and is taken as not known when no
+store through it is found.
+
+```go
+p := newHolder()
+p.log = base.With().Ctx(ctx).Logger()  // t2 = *t0 ; *&t2.log = ..., and t2 is t1
+go func() { p.log.Info().Msg("x") }()  // t0 = *p ; Info(&t0.log), and t0 is t1
+```
 
 #### Pointers Not in a Variable
 

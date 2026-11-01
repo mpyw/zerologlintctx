@@ -114,3 +114,42 @@ func TestStoreReadsOfLeavesReceiver(t *testing.T) {
 		t.Errorf("storeReadsOf calls = %v, want [Read]", names)
 	}
 }
+
+// TestStoreTargetsReachingWrapper checks that a pointer read from the free
+// variable of a wrapper, a method value made where it cannot be seen, is not
+// followed: the wrapper has no MakeClosure in a function it is declared in.
+func TestStoreTargetsReachingWrapper(t *testing.T) {
+	const src = `package p
+
+type T struct{}
+
+func (*T) m() {}
+
+func f(x *T) func() { return x.m }
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{f}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrapper *ssa.Function
+	for instr := range InstrsIn(pkg.Func("f")) {
+		if mc, ok := instr.(*ssa.MakeClosure); ok {
+			wrapper = mc.Fn.(*ssa.Function)
+		}
+	}
+	if wrapper == nil || len(wrapper.FreeVars) != 1 {
+		t.Fatalf("no method value wrapper with one free variable: %v", wrapper)
+	}
+	if makers := storeMakersOf(wrapper); makers != nil {
+		t.Errorf("storeMakersOf(%v) = %v, want nil", wrapper, makers)
+	}
+	stored := storeReaching{captured: []Place{PlaceAt(wrapper.FreeVars[0])}}
+	if _, ok := storeTargetsReaching(stored, nil, make(Positions)); ok {
+		t.Error("storeTargetsReaching of a free variable of a wrapper: ok")
+	}
+}
