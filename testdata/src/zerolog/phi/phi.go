@@ -721,28 +721,131 @@ func goodEventFieldThroughPointerPickedInLoop(ctx context.Context, logger zerolo
 	}
 }
 
-// LIMITATION (false positive): the walk back does not tell which pointer a
-// path takes at a Phi of pointers. The path through the holder made here does
-// not carry the caller's event at q.e, yet it reaches the entry of the
-// function with no Ctx call on it.
-func limitationEventFieldThroughPointerPickedFromParamCtxOnBoth(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+// A path back through a Phi of pointers reads the place the edge it takes
+// points to. The caller's event at q.e is carried only by the path through q,
+// and a Ctx call on q.e counts for it there (#313).
+
+func goodEventFieldThroughPointerPickedFromParamCtxOnBoth(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
 	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
 	if cond {
 		q.e.Ctx(ctx)
 		h = q
 	}
-	h.e.Msg("both pointers have ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	h.e.Msg("both pointers have ctx") // OK
 }
 
-// LIMITATION (false negative): the same, the other way. The path through q
-// meets the store into the struct literal the event is read from, which ends
-// it as if another event were stored where the receiver is read.
-func limitationEventFieldThroughPointerPickedFromParamStructLiteral(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+func goodEventFieldThroughPointerPickedFromParamCtxBeforePick(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	q.e.Ctx(ctx)
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		h = q
+	}
+	h.e.Msg("ctx on the caller's event before the pick") // OK
+}
+
+func badEventFieldThroughPointerPickedFromParamCtxOnOther(ctx context.Context, logger zerolog.Logger, cond bool, q, r *phiEventHolder) {
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		r.e.Ctx(ctx)
+		h = q
+	}
+	h.e.Msg("ctx on another caller's event") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventFieldThroughPointerPickedFromParamCtxOnHolderPath(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	h := &phiEventHolder{e: logger.Info()}
+	if cond {
+		h = q
+	} else {
+		q.e.Ctx(ctx)
+		h.e.Ctx(ctx)
+	}
+	h.e.Msg("ctx on the caller's event only where it is not picked") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventFieldThroughPointerPickedFromParamStoredOrCtx(ctx context.Context, logger zerolog.Logger, stored, cond bool, q *phiEventHolder) {
+	if stored {
+		q.e = logger.Warn().Ctx(ctx)
+	} else {
+		q.e.Ctx(ctx)
+	}
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		h = q
+	}
+	h.e.Msg("an event with ctx stored at q.e, or ctx on the caller's") // OK
+}
+
+func badEventFieldThroughPointerPickedFromParamStoredOnOnePath(ctx context.Context, logger zerolog.Logger, stored, cond bool, q *phiEventHolder) {
+	if stored {
+		q.e = logger.Warn().Ctx(ctx)
+	}
+	h := &phiEventHolder{e: logger.Info().Ctx(ctx)}
+	if cond {
+		h = q
+	}
+	h.e.Msg("the caller's event at q.e when nothing is stored") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventFieldThroughPointerPickedWithNilFromParamCtx(ctx context.Context, cond bool, q *phiEventHolder) {
+	var h *phiEventHolder
+	if cond {
+		q.e.Ctx(ctx)
+		h = q
+	}
+	h.e.Msg("the only holder is the caller's, with ctx") // OK - a nil holder has no event
+}
+
+func badEventFieldThroughPointerPickedWithNilFromParam(ctx context.Context, cond, other bool, q *phiEventHolder) {
+	var h *phiEventHolder
+	if cond {
+		h = q
+	}
+	if other {
+		q.e.Ctx(ctx)
+	}
+	h.e.Msg("the only holder is the caller's, with ctx on one path") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func phiNewEventHolder(e *zerolog.Event) *phiEventHolder {
+	return &phiEventHolder{e: e}
+}
+
+func badEventFieldThroughPointerPickedFromCallAndParamCtx(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	h := phiNewEventHolder(logger.Info())
+	if cond {
+		q.e.Ctx(ctx)
+		h = q
+	}
+	h.e.Msg("the holder a call returns lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventFieldThroughPointerPickedFromCallAndParamCtxAfter(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	h := phiNewEventHolder(logger.Info())
+	if cond {
+		h = q
+	}
+	h.e.Ctx(ctx)
+	h.e.Msg("ctx on the holder picked") // OK
+}
+
+// The path through q does not meet the store into the struct literal the
+// other event is read from.
+func badEventFieldThroughPointerPickedFromParamStructLiteral(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
 	h := &phiEventHolder{e: (&phiEventHolder{logger.Info()}).e.Ctx(ctx)}
 	if cond {
 		h = q
 	}
-	h.e.Msg("one pointer is the caller's") // LIMITATION: should report but doesn't
+	h.e.Msg("one pointer is the caller's") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventFieldThroughPointerPickedFromParamStructLiteralCtx(ctx context.Context, logger zerolog.Logger, cond bool, q *phiEventHolder) {
+	h := &phiEventHolder{e: (&phiEventHolder{logger.Info()}).e.Ctx(ctx)}
+	if cond {
+		q.e.Ctx(ctx)
+		h = q
+	}
+	h.e.Msg("both pointers have ctx, one from a struct literal") // OK
 }
 
 // ===== AN EVENT READ FROM MEMORY, PICKED WITH ANOTHER =====

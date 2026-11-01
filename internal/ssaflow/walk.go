@@ -47,7 +47,7 @@ const (
 // WalkFrom is a point a walk starts from, with the state of its path there.
 type WalkFrom[S comparable] struct {
 	Point WalkPoint
-	state S
+	State S
 }
 
 // walkVisit looks at an instruction on a path, and tells what the path does
@@ -125,7 +125,7 @@ func WalkBackIn[S comparable](
 		b := s.Point.block
 		step := WalkOn
 		for i := s.Point.index - 1; i >= 0 && step == WalkOn; i-- {
-			step = visit(b.Instrs[i], s.state)
+			step = visit(b.Instrs[i], s.State)
 		}
 		if step == WalkAbort {
 			return false
@@ -140,7 +140,7 @@ func WalkBackIn[S comparable](
 			continue
 		}
 		for i, pred := range b.Preds {
-			state := s.state
+			state := s.State
 			if edge != nil {
 				var takes bool
 				if state, takes = edge(b, i, state); !takes {

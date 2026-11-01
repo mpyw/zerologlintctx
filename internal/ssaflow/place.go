@@ -131,6 +131,23 @@ func (p Place) WithFields(fields []int) Place {
 	return at
 }
 
+// PickedBy returns the root of p when it is a Phi, which picks one of several
+// pointers on each path.
+func (p Place) PickedBy() (*ssa.Phi, bool) {
+	phi, ok := p.root.(*ssa.Phi)
+	return phi, ok
+}
+
+// PickedAt returns p with the i-th edge of its root, a Phi (see
+// Place.PickedBy), in place of the root: the place that a path that takes the
+// edge reads.
+//
+//	t8 = phi [0: t1, 1: q] #h
+//	t9 = &t8.e              // the place t8.e: t1.e on edge 0, q.e on edge 1
+func (p Place) PickedAt(i int) Place {
+	return Place{root: p.root.(*ssa.Phi).Edges[i], path: p.path}
+}
+
 // prefixOf reports whether p has the root of q, and selects the same as the
 // first selections of q do, as many as p has.
 func (p Place) prefixOf(q Place) bool {

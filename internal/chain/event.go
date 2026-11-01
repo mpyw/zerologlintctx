@@ -197,6 +197,11 @@ type eventIndex struct {
 	//
 	//declscope:private
 	carried map[ssa.Value]eventCarried
+	// picked holds the events each load through a Phi of pointers can be, on
+	// each edge of the Phi (see eventIndex.pickedSources).
+	//
+	//declscope:private
+	picked map[eventPicked]*eventSources
 	// ctxCalls holds the Ctx calls of each function asked about.
 	//
 	//declscope:private
@@ -238,6 +243,7 @@ func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eve
 		steps:     make(map[ssa.Value]eventStep),
 		sources:   make(map[ssa.Value]*eventSources),
 		carried:   make(map[ssa.Value]eventCarried),
+		picked:    make(map[eventPicked]*eventSources),
 		ctxCalls:  make(map[*ssa.Function]*eventCtxCalls),
 		active:    make(map[*ssa.Parameter]bool),
 		loops:     make(map[ssa.Instruction]bool),
@@ -327,13 +333,47 @@ type eventQuery struct {
 	values map[ssa.Value]bool
 	// reads are the places it is read from on the way.
 	reads map[ssaflow.PlaceKey]bool
+	// picks are the loads of values through a Phi of pointers.
+	picks []eventPick
 }
 
 // eventCarried is what a value a path carries is read through, as
-// eventQuery.values and eventQuery.reads are for the receiver.
+// eventQuery.values and eventQuery.reads are for the receiver, and the loads
+// of it through a Phi of pointers.
 type eventCarried struct {
 	values map[ssa.Value]bool
 	reads  map[ssaflow.PlaceKey]bool
+	picks  []eventPick
+}
+
+// eventPick is a load of an event through a Phi of pointers, such as h.e for
+// h := &holder{e}; if cond { h = q }, which reads another place on each edge.
+type eventPick struct {
+	load *ssa.UnOp
+	phi  *ssa.Phi
+	at   ssaflow.Place
+	// unknown is the key of the event the function cannot tell at at (see
+	// eventIndex.resolvedStep).
+	unknown ssaflow.PlaceKey
+}
+
+// eventPicked is a load of eventPick, and the edge of its Phi a path takes.
+type eventPicked struct {
+	load *ssa.UnOp
+	edge int
+}
+
+// eventPath is the state of a path of a walk back from a terminator: the
+// value it carries in place of the receiver (see eventQuery.carriedInto), or
+// nil for the receiver, and the event it carries. That is the event the walk
+// is for, but for one the function cannot tell, read through a Phi of
+// pointers: before the Phi, it is the one at the place the edge the path
+// takes reads (see eventQuery.sourcePicked).
+type eventPath struct {
+	carried ssa.Value
+	src     eventSource
+	// picked reports that src is one picked so.
+	picked bool
 }
 
 // queryOf finds the events that c, the terminator at, can run on.
@@ -351,6 +391,7 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 		reads:  make(map[ssaflow.PlaceKey]bool),
 	}
 	q.sources = ix.expand(q.recv, q.values, q.reads)
+	q.picks = ix.picksIn(q.values)
 	return q
 }
 
@@ -446,6 +487,9 @@ func (q *eventQuery) counts(cc *eventCtxCall, src eventSource) bool {
 	if !cc.sources.has(src) {
 		return false
 	}
+	if len(cc.sources.list) == 1 {
+		return true // src alone, which may be one a path picks (see eventPath)
+	}
 	within, ok := q.within[cc]
 	if !ok {
 		within = true
@@ -487,9 +531,9 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	runs := q.runsOf(src)
 	// earlier tells that the walk is before the latest run of src
 	earlier, reachesLatest := false, false
-	visit := func(instr ssa.Instruction, carried ssa.Value) ssaflow.WalkStep {
+	visit := func(instr ssa.Instruction, p eventPath) ssaflow.WalkStep {
 		q.ix.work++
-		switch q.ctxCallOn(instr, src, q.carriedValue(carried), earlier) {
+		switch q.ctxCallOn(instr, p.src, q.carriedValue(p.carried), earlier) {
 		case eventCtxSet:
 			return ssaflow.WalkStop // Ctx runs on this path
 		case eventCtxFresh:
@@ -502,16 +546,17 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 		case instr == def:
 			reachesLatest = true
 			return ssaflow.WalkStop // The latest run, after the one the receiver holds
-		case q.storesOther(instr, src, carried, false):
+		case q.storesOther(instr, p, false):
 			return ssaflow.WalkStop // Another event is stored on this path
 		}
 		return ssaflow.WalkOn
 	}
 	atEntry := func() bool { return def != nil }
-	edge := func(b *ssa.BasicBlock, i int, carried ssa.Value) (ssa.Value, bool) {
-		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, carried, false)
+	edge := func(b *ssa.BasicBlock, i int, p eventPath) (eventPath, bool) {
+		return q.pathInto(b, i, p, false)
 	}
-	if !ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: before}}, visit, atEntry, edge) {
+	start := eventPath{src: src}
+	if !ssaflow.WalkBackIn([]ssaflow.WalkFrom[eventPath]{{Point: before, State: start}}, visit, atEntry, edge) {
 		return false
 	}
 	if !reachesLatest {
@@ -519,7 +564,7 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	}
 	earlier = true
 	from := ssaflow.WalkPointBefore(def, q.ix.positions)
-	return ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: from}}, visit, atEntry, edge)
+	return ssaflow.WalkBackIn([]ssaflow.WalkFrom[eventPath]{{Point: from, State: start}}, visit, atEntry, edge)
 }
 
 // freshCtxLastBefore reports whether a path that leads to before, and carries
@@ -534,24 +579,24 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 //	h.e.Msg("x")            // reported
 func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoint) bool {
 	def := q.defOf(src)
-	visit := func(instr ssa.Instruction, carried ssa.Value) ssaflow.WalkStep {
+	visit := func(instr ssa.Instruction, p eventPath) ssaflow.WalkStep {
 		q.ix.work++
-		switch q.ctxCallOn(instr, src, q.carriedValue(carried), false) {
+		switch q.ctxCallOn(instr, p.src, q.carriedValue(p.carried), false) {
 		case eventCtxFresh:
 			return ssaflow.WalkAbort
 		case eventCtxSet:
 			return ssaflow.WalkStop
 		case eventCtxNone:
 		}
-		if instr == def || q.storesOther(instr, src, carried, true) {
+		if instr == def || q.storesOther(instr, p, true) {
 			return ssaflow.WalkStop // The context of the chain, or of another event
 		}
 		return ssaflow.WalkOn
 	}
-	edge := func(b *ssa.BasicBlock, i int, carried ssa.Value) (ssa.Value, bool) {
-		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, carried, true)
+	edge := func(b *ssa.BasicBlock, i int, p eventPath) (eventPath, bool) {
+		return q.pathInto(b, i, p, true)
 	}
-	return !ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: before}}, visit, nil, edge)
+	return !ssaflow.WalkBackIn([]ssaflow.WalkFrom[eventPath]{{Point: before, State: eventPath{src: src}}}, visit, nil, edge)
 }
 
 // ctxSetAfterDefer reports whether src has context at each return after d, a
@@ -624,17 +669,23 @@ func (q *eventQuery) defOf(src eventSource) ssa.Instruction {
 //	    e = logger.Warn().Ctx(ctx)  // of its own, on the later ones
 //	}
 //
-// carried is the value the path carries, which eventQuery.carriedInto tells,
-// or nil for the receiver. With fresh, a value whose only source is src is
-// not another event (see eventQuery.isOther).
-func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource, carried ssa.Value, fresh bool) bool {
+// src is the event the path p carries, and the value it carries in place of
+// the receiver tells where that is read from. For a path that picked src at
+// a Phi of pointers (see eventQuery.sourcePicked), the place it is at is
+// where it is read from. With fresh, a value whose only source is src is not
+// another event (see eventQuery.isOther).
+func (q *eventQuery) storesOther(instr ssa.Instruction, p eventPath, fresh bool) bool {
 	store, ok := instr.(*ssa.Store)
-	if !ok || !q.values[store.Val] {
+	if !ok {
 		return false
 	}
 	at, _ := ssaflow.PlaceOf(store.Addr)
+	if p.picked {
+		key, _ := q.ix.places.KeyOf(at)
+		return key == p.src.at && q.isOther(store.Val, p.src, fresh)
+	}
 	key := at.Key()
-	return q.reads[key] && q.carriedBy(carried).reads[key] && q.isOther(store.Val, src, fresh)
+	return q.values[store.Val] && q.reads[key] && q.carriedBy(p.carried).reads[key] && q.isOther(store.Val, p.src, fresh)
 }
 
 // carriedInto returns the value that a path carries in place of the
@@ -671,15 +722,69 @@ func (q *eventQuery) carriedValue(carried ssa.Value) ssa.Value {
 // finds once. A nil v is the receiver, read through q.values and q.reads.
 func (q *eventQuery) carriedBy(v ssa.Value) eventCarried {
 	if v == nil {
-		return eventCarried{values: q.values, reads: q.reads}
+		return eventCarried{values: q.values, reads: q.reads, picks: q.picks}
 	}
 	if by, ok := q.ix.carried[v]; ok {
 		return by
 	}
 	by := eventCarried{values: make(map[ssa.Value]bool), reads: make(map[ssaflow.PlaceKey]bool)}
 	q.ix.expand(eventStep{next: []ssa.Value{v}}, by.values, by.reads)
+	by.picks = q.ix.picksIn(by.values)
 	q.ix.carried[v] = by
 	return by
+}
+
+// pathInto returns the path p goes on as from the top of b into its i-th
+// predecessor, and whether it goes on: the edge carries the event of the path
+// (see eventQuery.edgeCarries and eventQuery.sourcePicked). fresh is as for
+// edgeCarries.
+func (q *eventQuery) pathInto(b *ssa.BasicBlock, i int, p eventPath, fresh bool) (eventPath, bool) {
+	if !q.edgeCarries(b, i, p.src, p.carried, fresh) {
+		return p, false
+	}
+	src, ok := q.sourcePicked(b, i, p.src, p.carried)
+	return eventPath{carried: q.carriedInto(b, i, p.carried), src: src, picked: p.picked || src != p.src}, ok
+}
+
+// sourcePicked returns the event that a path carries into the i-th
+// predecessor of b, when it carries src, and carried in place of the
+// receiver, at the top of b. ok is false when the path does not carry src
+// there. A load that carried is read through, through a Phi of pointers of b,
+// reads another place on each edge. A path that takes an edge carries src
+// only when the place the edge reads can hold it:
+//
+//	h := &holder{logger.Info().Ctx(ctx)} // edge t1: t1.e holds this event
+//	if cond {
+//	    q.e.Ctx(ctx)                     // the caller's event at q.e
+//	    h = q                            // edge q
+//	}
+//	h.e.Msg("x")                         // OK
+//
+// The event the function cannot tell at the place the load reads is, on the
+// path, the one at the place the edge reads, so a Ctx call on q.e counts for
+// it there. A load that src is not one of the events of is left out.
+func (q *eventQuery) sourcePicked(b *ssa.BasicBlock, i int, src eventSource, carried ssa.Value) (_ eventSource, ok bool) {
+	picked := src
+	for _, pk := range q.carriedBy(carried).picks {
+		if pk.phi.Block() != b || !q.ix.sourcesOf(pk.load).has(src) {
+			continue
+		}
+		sources, ok := q.ix.pickedSources(pk, i)
+		switch {
+		case !ok:
+			continue // Not known on the edge, which carries src as it is
+		case src.v == nil && src.at == pk.unknown:
+			key, _ := q.ix.places.KeyOf(pk.at.PickedAt(i))
+			at := eventSource{at: key}
+			if !sources.has(at) || picked != src && picked != at {
+				return src, false
+			}
+			picked = at
+		case !sources.has(src):
+			return src, false
+		}
+	}
+	return picked, true
 }
 
 // edgeCarries reports whether a path that reaches the top of b, carrying
@@ -957,6 +1062,42 @@ func (ix *eventIndex) sourcesOf(v ssa.Value) *eventSources {
 	sources := ix.expand(eventStep{next: []ssa.Value{v}}, make(map[ssa.Value]bool), nil)
 	ix.sources[v] = sources
 	return sources
+}
+
+// picksIn returns the loads of values through a Phi of pointers.
+func (ix *eventIndex) picksIn(values map[ssa.Value]bool) []eventPick {
+	var picks []eventPick
+	for v := range values {
+		load, ok := ssaflow.AsLoad(v)
+		if !ok {
+			continue
+		}
+		at, _ := ssaflow.PlaceOf(load.X)
+		if phi, ok := at.PickedBy(); ok {
+			unknown, _ := ix.places.KeyOf(at)
+			picks = append(picks, eventPick{load: load, phi: phi, at: at, unknown: unknown})
+		}
+	}
+	return picks
+}
+
+// pickedSources returns the events that the load of pk can be on a path
+// that takes the i-th edge of its Phi, which it finds once: those at the
+// place the edge reads, on any path to the load. An edge that is nil has
+// none. ok is false when they cannot be told.
+func (ix *eventIndex) pickedSources(pk eventPick, i int) (_ *eventSources, ok bool) {
+	key := eventPicked{load: pk.load, edge: i}
+	if sources, ok := ix.picked[key]; ok {
+		return sources, sources != nil
+	}
+	var sources *eventSources
+	if ssaflow.IsNilConst(pk.phi.Edges[i]) {
+		sources = &eventSources{}
+	} else if found, ok := ix.resolver().ResolveAt(pk.at.PickedAt(i), pk.load); ok {
+		sources = ix.expand(ix.resolvedStep(found, pk.at.PickedAt(i)), make(map[ssa.Value]bool), nil)
+	}
+	ix.picked[key] = sources
+	return sources, sources != nil
 }
 
 // expand returns the events that start can be, adding to values each value
