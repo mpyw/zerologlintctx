@@ -894,13 +894,19 @@ traced. For a Phi of pointers with no store through it, the variables it
 picks are walked instead (see [Stores That Reach a Read](#stores-that-reach-a-read)).
 
 A pointer receiver is such a pointer too, when it is read from memory, as
-`b.p` and `(*pl)` are. `Resolver.ResolvesThrough` takes it, so the call is the
-read, and a store through the same pointer before it is what the call sees:
+`b.p` and `(*pl)` are, or when a call returns it, or it is received from a
+channel or looked up in a map. `Resolver.ResolvesThrough` takes it, so the
+call is the read, and a store through the same pointer before it is what the
+call sees:
 
 ```go
 b := box{l}
 *b.p = zerolog.Ctx(ctx).With().Logger() // t1 = *&t0.p ; *t1 = ...
 b.p.Info().Msg("x")                     // t2 = *&t0.p ; Info(t2): not reported
+
+p := newLoggerPtr()
+*p = base.With().Ctx(ctx).Logger()      // *t0 = ...
+p.Info().Msg("x")                       // Info(t0): not reported
 ```
 
 A closure that reads the pointer from the variables it captures, such as

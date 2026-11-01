@@ -7,6 +7,7 @@
 package ssaflow
 
 import (
+	"go/token"
 	"go/types"
 	"iter"
 	"slices"
@@ -288,9 +289,11 @@ func (r Resolver) yieldArgument(arg ssa.Value, call ssa.CallInstruction, pp stor
 // ResolvesThrough reports whether addr is an address that a read goes
 // through to what is stored there, such as the receiver of Logger.Info, which
 // has a pointer receiver: a local variable, a field or element of an
-// address, a variable a closure captures, a pointer parameter, or a pointer
-// read from memory, which storesReaching follows to where it points (see
-// storePointers):
+// address, a variable a closure captures, a pointer parameter, a pointer a
+// call returns, or that is received from a channel or looked up in a map,
+// whose stores storesReaching walks for (see storesReachingPointer), or a
+// pointer read from memory, which storesReaching follows to where it points
+// (see storePointers):
 //
 //	b := box{l}                // *&t0.p = l
 //	*b.p = ctxLogger           // t1 = *&t0.p ; *t1 = ...
@@ -309,8 +312,13 @@ func (r Resolver) ResolvesThrough(addr ssa.Value) bool {
 	if _, isPtr := addr.Type().Underlying().(*types.Pointer); !isPtr {
 		return false
 	}
-	if _, isParam := addr.(*ssa.Parameter); isParam {
+	switch a := addr.(type) {
+	case *ssa.Parameter, *ssa.Call, *ssa.Lookup, *ssa.Extract:
 		return true
+	case *ssa.UnOp:
+		if a.Op == token.ARROW {
+			return true
+		}
 	}
 	_, isRead := storePointerRead(addr)
 	return isRead

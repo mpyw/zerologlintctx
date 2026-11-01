@@ -1021,6 +1021,95 @@ func replaceLoggerAt(p *zerolog.Logger) { *p = zerolog.Nop() }
 
 func replaceFirstEvent(es []*zerolog.Event) { es[0] = log.Info() }
 
+// ===== A LOGGER POINTER FROM A CALL, A CHANNEL OR A MAP =====
+// A *zerolog.Logger receiver that a call returns, or that is received from a
+// channel or looked up in a map, is not in a variable. A store through it is
+// what the call on it reads (#300).
+
+func newLoggerPtr() *zerolog.Logger { return new(zerolog.Logger) }
+
+func newLoggerPtrOK() (*zerolog.Logger, bool) { return new(zerolog.Logger), true }
+
+func goodLoggerPtrFromCall(ctx context.Context, base zerolog.Logger) {
+	p := newLoggerPtr()
+	*p = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("pointer a call returns") // OK
+}
+
+func goodLoggerPtrFromCallPrint(ctx context.Context, base zerolog.Logger) {
+	p := newLoggerPtr()
+	*p = base.With().Ctx(ctx).Logger()
+	p.Print("pointer a call returns") // OK
+}
+
+func goodLoggerPtrFromTupleCall(ctx context.Context, base zerolog.Logger) {
+	p, _ := newLoggerPtrOK()
+	*p = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("pointer a call returns with another result") // OK
+}
+
+func goodLoggerPtrFromChannel(ctx context.Context, l *zerolog.Logger, base zerolog.Logger) {
+	ch := make(chan *zerolog.Logger, 1)
+	ch <- l
+	p := <-ch
+	*p = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("pointer received from a channel") // OK
+}
+
+func goodLoggerPtrFromMap(ctx context.Context, m map[int]*zerolog.Logger, base zerolog.Logger) {
+	p := m[0]
+	*p = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("pointer looked up in a map") // OK
+}
+
+func badLoggerPtrFromCall(ctx context.Context, base zerolog.Logger) {
+	p := newLoggerPtr()
+	*p = base
+	p.Info().Msg("pointer a call returns, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrFromCallPrint(ctx context.Context, base zerolog.Logger) {
+	p := newLoggerPtr()
+	*p = base
+	p.Print("pointer a call returns, no ctx") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+}
+
+func badLoggerPtrFromCallNoStore(ctx context.Context) {
+	p := newLoggerPtr()
+	p.Info().Msg("nothing stored through it") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrFromCallOther(ctx context.Context, base zerolog.Logger) {
+	p := newLoggerPtr()
+	q := newLoggerPtr()
+	*q = base.With().Ctx(ctx).Logger()
+	p.Info().Msg("stored through another pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrFromChannelReplaced(ctx context.Context, base zerolog.Logger) {
+	ch := make(chan *zerolog.Logger, 2)
+	ch <- new(zerolog.Logger)
+	ch <- new(zerolog.Logger)
+	p := <-ch
+	*p = base.With().Ctx(ctx).Logger()
+	p = <-ch
+	p.Info().Msg("another pointer received") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrFromMap(ctx context.Context, m map[int]*zerolog.Logger, base zerolog.Logger) {
+	p := m[0]
+	*p = base
+	p.Info().Msg("pointer looked up in a map, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodCtxLoggerPtrUpdated(ctx context.Context, cond bool) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		*p = p.With().Str("k", "v").Logger()
+	}
+	p.Info().Msg("updated on one branch, from the logger of ctx") // OK
+}
+
 // ===== SYNC.POOL =====
 
 // LIMITATION (false positive): sync.Pool Get/Put creates opaque value flow.
