@@ -149,6 +149,17 @@ type storePointer struct {
 	// by another goroutine too, so what a load of it read is not known
 	// either: an update of it, which builds on such a load, is left out.
 	global bool
+	// closure, when not nil, is the closure the pointer is read in, for a
+	// walk in the function that makes it: the root of a store there is the
+	// same pointer as matchAcrossClosure tells (see walkPointerOut).
+	closure *storeClosureRun
+}
+
+// storeClosureRun is a run of a closure, a call of mc in the function that
+// makes it.
+type storeClosureRun struct {
+	mc  *ssa.MakeClosure
+	run ssa.Instruction
 }
 
 // storePointerOf returns where root, a pointer that is not in a variable, is
@@ -182,7 +193,8 @@ func storePointerOf(root ssa.Value) *storePointer {
 //	Info(&t8.log)
 //
 // A store of another pointer at from between def and instr does not stop a
-// path: the pointer read is the one def loaded.
+// path: the pointer read is the one def loaded. A path that gets to the entry
+// of a closure goes on from each call of it (see walkPointerOut).
 func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 	def, reached := w.pointer.def, false
 	toDef := func(in ssa.Instruction) WalkStep {
@@ -203,17 +215,65 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 		}
 		return w.stepAt(in)
 	}
-	walkBack([]WalkPoint{WalkPointBefore(def, w.positions)}, pastDef, nil, nil)
+	entered := false
+	atEntry := func() bool {
+		entered = true
+		return true
+	}
+	walkBack([]WalkPoint{WalkPointBefore(def, w.positions)}, pastDef, atEntry, nil)
+	if entered {
+		w.walkPointerOut(def.Parent())
+	}
+}
+
+// walkPointerOut goes on from the entry of fn, a closure that reads the root
+// of the walk from the variables it captures, in the function that makes it.
+// The walk goes back from each call of the closure, and a store there through
+// a pointer read from the same variable, with the same stores reaching the
+// read as reach the call, is a store through the root:
+//
+//	*t0 = h                           // h is a struct parameter
+//	t2 = *&t0.m ; *&t2.log = v        // reaches the read below
+//	func() { h.m.log.Info() }()       // t1 = *&h.m ; Info(&t1.log), and t1 is t2
+//
+// A closure that is not only called where it is made adds nothing.
+func (w *storeWalk) walkPointerOut(fn *ssa.Function) {
+	for _, mc := range storeMakersOf(fn) {
+		runs, ok := closureRunsOf(mc)
+		if !ok {
+			continue
+		}
+		calls, called := runs.callsOnly()
+		if !called {
+			continue
+		}
+		for _, call := range calls {
+			out := &storeWalk{
+				at:        w.at,
+				positions: w.positions,
+				out:       w.out,
+				pointer: &storePointer{
+					same:    make(map[ssa.Value]bool),
+					closure: &storeClosureRun{mc: mc, run: call},
+				},
+			}
+			walkBack([]WalkPoint{WalkPointBefore(call, w.positions)}, out.stepAt, nil, nil)
+		}
+	}
 }
 
 // samePointer reports whether root, the root of a store, is the pointer the
 // walk looks for the stores through.
 func (p *storePointer) samePointer(root, pointer ssa.Value) bool {
 	same, done := p.same[root]
-	if !done {
+	switch {
+	case done:
+	case p.closure != nil:
+		same = matchAcrossClosure(pointer, root, p.closure.mc, p.closure.run)
+	default:
 		same = addressesMatch(root, pointer)
-		p.same[root] = same
 	}
+	p.same[root] = same
 	return same
 }
 
@@ -562,6 +622,8 @@ func (p *storePointers) through(at Place, root ssa.Value) (Place, placeCover) {
 //
 //	t3 = *&t0.p             // read from t0.p
 //	t5 = *t0 ; t6 = t5.p    // read from t0.p too, as t5 is loaded
+//
+//declscope:shared // resolve.go resolves a read through such a pointer
 func storePointerRead(v ssa.Value) (reads []LoadedRead, ok bool) {
 	if load, isLoad := AsLoad(v); isLoad {
 		at, _ := PlaceOf(load.X)

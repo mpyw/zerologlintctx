@@ -276,19 +276,30 @@ func (r Resolver) yieldArgument(arg ssa.Value, call ssa.CallInstruction, pp stor
 // ResolvesThrough reports whether addr is an address that a read goes
 // through to what is stored there, such as the receiver of Logger.Info, which
 // has a pointer receiver: a local variable, a field or element of an
-// address, a variable a closure captures, or a pointer parameter. A pointer
-// that the model takes for a handle, such as a *zerolog.Event, is the value
-// itself, not a variable it is read from.
+// address, a variable a closure captures, a pointer parameter, or a pointer
+// read from memory, which storesReaching follows to where it points (see
+// storePointers):
+//
+//	b := box{l}                // *&t0.p = l
+//	*b.p = ctxLogger           // t1 = *&t0.p ; *t1 = ...
+//	b.p.Info()                 // t2 = *&t0.p ; Info(t2), and t2 is t1
+//
+// A pointer that the model takes for a handle, such as a *zerolog.Event, is
+// the value itself, not a variable it is read from.
 func (r Resolver) ResolvesThrough(addr ssa.Value) bool {
 	if r.Model.IsHandle(addr.Type()) {
 		return false
 	}
-	switch a := addr.(type) {
+	switch addr.(type) {
 	case *ssa.Alloc, *ssa.FieldAddr, *ssa.IndexAddr, *ssa.FreeVar:
 		return true
-	case *ssa.Parameter:
-		_, isPtr := a.Type().Underlying().(*types.Pointer)
-		return isPtr
 	}
-	return false
+	if _, isPtr := addr.Type().Underlying().(*types.Pointer); !isPtr {
+		return false
+	}
+	if _, isParam := addr.(*ssa.Parameter); isParam {
+		return true
+	}
+	_, isRead := storePointerRead(addr)
+	return isRead
 }

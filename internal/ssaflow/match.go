@@ -62,6 +62,37 @@ func addressesMatch(a, b ssa.Value) bool {
 	return ok1 && ok2 && f1.Field == f2.Field && addressesMatch(f1.X, f2.X)
 }
 
+// matchAcrossClosure reports whether inner, a pointer that the closure mc
+// makes reads from the variables it captures, is outer, a pointer in the
+// function that makes mc, when mc runs at run. Selections from an address
+// match as for addressesMatch, and a field of a struct value does not. A
+// captured variable is the one mc binds. A load in the closure must see what
+// is at its address as the closure starts, with no store before it there, and
+// the load in the function that makes mc must see the same stores as reach
+// run:
+//
+//	*t0 = pp ; t1 = *t0 ; t2 = *t1 ; *&t2.log = v   // outer: t2 is **pp
+//	t0 = *pp ; t1 = *t0 ; Info(&t1.log)             // in mc: t1 is **pp too
+//
+//declscope:shared // store.go tells whether a pointer a closure reads is one stored through before it runs
+func matchAcrossClosure(inner, outer ssa.Value, mc *ssa.MakeClosure, run ssa.Instruction) bool {
+	switch in := inner.(type) {
+	case *ssa.FreeVar:
+		idx := slices.Index(in.Parent().FreeVars, in)
+		return in.Parent() == mc.Fn && idx >= 0 && mc.Bindings[idx] == outer
+	case *ssa.UnOp:
+		out, ok := outer.(*ssa.UnOp)
+		if !ok || in.Op != token.MUL || out.Op != token.MUL || !matchAcrossClosure(in.X, out.X, mc, run) {
+			return false
+		}
+		return maps.Equal(matchReachingStores(in), map[ssa.Instruction]bool{nil: true}) &&
+			maps.Equal(matchReachingStores(out), matchStoresBefore(out.X, run))
+	}
+	xa, sa, okA := addrSel(inner)
+	xb, sb, okB := addrSel(outer)
+	return okA && okB && sa.same(sb) && matchAcrossClosure(xa, xb, mc, run)
+}
+
 // matchReachingStores returns the instructions after which the value that load
 // reads is at its address, on some path to load: the stores to the address,
 // or to an aggregate that holds it, and the declaration of the local variable

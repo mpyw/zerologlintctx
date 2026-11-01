@@ -809,6 +809,7 @@ Info(&t8.log)             // reads t8.log, and t8 is t1
 | A store through the same pointer | Records the value, and stops (or goes on for a may store) |
 | Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable |
 | Where the pointer is made, any other instruction, such as a call or a Phi | Stops, and carries nothing |
+| The entry of a closure, past where the pointer is made, when the closure reads it from the variables it captures | Goes on before each call of the closure, when it is only called where it is made (below) |
 | The entry of the function | Carries nothing |
 
 A path that carries nothing gets to where the function does not know what is
@@ -818,6 +819,30 @@ Only the stores of the function itself are traced. When no path carries one,
 the address is taken as not known to the walk, and the pointer itself is
 traced. For a Phi of pointers with no store through it, the variables it
 picks are walked instead (see [Stores That Reach a Read](#stores-that-reach-a-read)).
+
+A pointer receiver is such a pointer too, when it is read from memory, as
+`b.p` and `(*pl)` are. `Resolver.ResolvesThrough` takes it, so the call is the
+read, and a store through the same pointer before it is what the call sees:
+
+```go
+b := box{l}
+*b.p = zerolog.Ctx(ctx).With().Logger() // t1 = *&t0.p ; *t1 = ...
+b.p.Info().Msg("x")                     // t2 = *&t0.p ; Info(t2): not reported
+```
+
+A closure that reads the pointer from the variables it captures, such as
+`h.m.log` for a captured struct `h`, does not see where the pointer was
+stored. A path that gets to the entry of the closure goes on before each call
+of it, when it is only called where it is made. There, a store through a
+pointer loaded from the variable the closure binds, at the same selections, is
+a store through the same pointer when the same stores reach that load and the
+call (`matchAcrossClosure`). A closure that is run by a `go` or `defer`
+statement, or passed on, adds nothing.
+
+```go
+h.m.log = zerolog.Ctx(ctx).With().Logger() // t2 = *&t0.m ; *&t2.log = ...
+func() { h.m.log.Info().Msg("x") }()       // t1 = *&h.m ; Info(&t1.log): not reported
+```
 
 A store of another pointer where the pointer is loaded from, between the
 load and the read, does not stop a path: the pointer read is the one loaded.
@@ -946,6 +971,7 @@ negative is a missed report.
 | In-place `Ctx` through another reference (#139) | `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to | `inplace` |
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
+| A pointer read in a closure that is not only called | A pointer that a closure reads from a captured variable, such as `h.m` or `*pp`, is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it | `closures` |
 | A captured pointer picked on a branch | A pointer that a closure captures, picked on a branch, is not followed. The walk from where the closure runs does not keep to the paths of the Phi | `closures` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
