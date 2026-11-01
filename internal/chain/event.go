@@ -460,14 +460,14 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 		case instr == def:
 			reachesLatest = true
 			return ssaflow.WalkStop // The latest run, after the one the receiver holds
-		case q.storesOther(instr, src):
+		case q.storesOther(instr, src, false):
 			return ssaflow.WalkStop // Another event is stored on this path
 		}
 		return ssaflow.WalkOn
 	}
 	atEntry := func() bool { return def != nil }
 	edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
-		return s, q.edgeCarries(b, i, src)
+		return s, q.edgeCarries(b, i, src, false)
 	}
 	if !ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, atEntry, edge) {
 		return false
@@ -482,7 +482,14 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 
 // freshCtxLastBefore reports whether a path that leads to before, and carries
 // src, ends with a Ctx call on src given a fresh context: no Ctx call given
-// the context in scope runs after it, and no other event is stored.
+// the context in scope runs after it, and no other event is stored. A value
+// whose only source is src carries src, even with context of its own, as the
+// fresh context replaces that too:
+//
+//	e := logger.Info().Ctx(ctx)
+//	e.Ctx(context.Background())
+//	h := &holder{e}         // e, with the context replaced
+//	h.e.Msg("x")            // reported
 func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoint) bool {
 	def := q.defOf(src)
 	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
@@ -494,13 +501,13 @@ func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoin
 			return ssaflow.WalkStop
 		case eventCtxNone:
 		}
-		if instr == def || q.storesOther(instr, src) {
+		if instr == def || q.storesOther(instr, src, true) {
 			return ssaflow.WalkStop // The context of the chain, or of another event
 		}
 		return ssaflow.WalkOn
 	}
 	edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
-		return s, q.edgeCarries(b, i, src)
+		return s, q.edgeCarries(b, i, src, true)
 	}
 	return !ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, nil, edge)
 }
@@ -574,20 +581,24 @@ func (q *eventQuery) defOf(src eventSource) ssa.Instruction {
 //	    e.Msg("x")
 //	    e = logger.Warn().Ctx(ctx)  // of its own, on the later ones
 //	}
-func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource) bool {
+//
+// With fresh, a value whose only source is src is not another event (see
+// eventQuery.isOther).
+func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource, fresh bool) bool {
 	store, ok := instr.(*ssa.Store)
 	if !ok || !q.values[store.Val] {
 		return false
 	}
 	at, _ := ssaflow.PlaceOf(store.Addr)
-	return q.reads[at.Key()] && q.isOther(store.Val, src)
+	return q.reads[at.Key()] && q.isOther(store.Val, src, fresh)
 }
 
 // edgeCarries reports whether a path that reaches the top of b goes on into
 // its i-th predecessor carrying src: no Phi of b that the receiver is read
 // through takes nil there, or another event than src, or one with context of
-// its own.
-func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource) bool {
+// its own. With fresh, a value whose only source is src carries it (see
+// eventQuery.isOther).
+func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource, fresh bool) bool {
 	for _, instr := range b.Instrs {
 		phi, ok := instr.(*ssa.Phi)
 		if !ok {
@@ -597,7 +608,7 @@ func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource) bool
 		if !q.values[phi] {
 			continue
 		}
-		if edge := phi.Edges[i]; ssaflow.IsNilConst(edge) || q.isOther(edge, src) {
+		if edge := phi.Edges[i]; ssaflow.IsNilConst(edge) || q.isOther(edge, src, fresh) {
 			return false
 		}
 	}
@@ -607,9 +618,16 @@ func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource) bool
 // isOther reports whether v, a value the receiver is read through, is another
 // event than src, or has context of its own. A value that leads back to
 // itself, as an update in a loop does, can be any of them.
-func (q *eventQuery) isOther(v ssa.Value, src eventSource) bool {
+//
+// With fresh, for a walk back to a Ctx call given a fresh context, a value
+// whose only source is src is src, even with context of its own: a fresh
+// Ctx call on src replaces that context too.
+func (q *eventQuery) isOther(v ssa.Value, src eventSource, fresh bool) bool {
 	q.ix.work++
 	sources := q.ix.sourcesOf(v)
+	if fresh && len(sources.list) == 1 && sources.has(src) {
+		return false
+	}
 	return (len(sources.list) > 0 && !sources.has(src)) || q.hasCtx(v)
 }
 

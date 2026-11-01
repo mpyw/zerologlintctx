@@ -505,6 +505,11 @@ if detached {
 e.Msg("x") // reported: Background on one path
 ```
 
+A store of the event after the fresh `Ctx` call, or a Phi that picks it,
+carries the fresh context, though the value stored has context in its own
+chain, as `e` does for `e := logger.Info().Ctx(ctx)`. Only a value that may
+be another event ends the walk there.
+
 A function with no fresh `Ctx` call is not walked for a receiver whose chain
 has context. A fresh `Ctx` call in a func literal called in place is not
 looked at.
