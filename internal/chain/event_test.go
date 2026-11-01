@@ -73,7 +73,7 @@ func eventQueryWork(fn *ssa.Function) (accepted, terminators, work int) {
 		if !ok {
 			continue
 		}
-		c, ok := calleeOf(&call.Call)
+		c, ok := calleeOf(&call.Call, ix.closures)
 		if !ok || c.api.Kind != zerologapi.KindTerminator {
 			continue
 		}

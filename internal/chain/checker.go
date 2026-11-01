@@ -95,7 +95,7 @@ func (c *Checker) CheckFunction(fn *ssa.Function, ctxName string, report func(po
 func (c *Checker) checkCall(call ssa.CallInstruction) {
 	cc := call.Common()
 	pos := cc.Pos()
-	callee, ok := calleeOf(cc)
+	callee, ok := c.tracer.calleeOf(cc)
 	if !ok {
 		return
 	}
@@ -107,7 +107,7 @@ func (c *Checker) checkCall(call ssa.CallInstruction) {
 	case zerologapi.KindDirectLog:
 		// A Print function of zerolog/log logs through the global Logger,
 		// which is not traced
-		if callee.Recv == nil || !c.tracer.loggerHasCtx(callee.Recv, call) {
+		if callee.Recv == nil || !c.tracer.loggerHasCtx(callee.Recv, callee.ReadAt(call)) {
 			c.reportOnce(pos, checkerDirectLogging)
 		}
 	}

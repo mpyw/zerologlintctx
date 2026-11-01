@@ -257,6 +257,83 @@ func (c *Closures) bindingOf(fv *ssa.FreeVar) ssa.Value {
 	return makers[len(makers)-1].Bindings[slices.Index(fn.FreeVars, fv)]
 }
 
+// CalleeOf resolves the callee of a call as CalleeOf does, and also one
+// that a closure loads from a variable it captures, which holds one value
+// only. The callee is that value:
+//
+//	info := l.Info               // *t4 = (*Logger).Info$bound [t0]
+//	func() { info().Msg("x") }() // t0 = *info ; t1 = t0()
+//	msg := (*Event).Msg
+//	func() { msg(e, "x") }()     // msg holds (*Event).Msg$thunk
+//
+// The receiver of a method value is then what it is bound to, in the
+// function that declares the variable, and is read where the closure runs,
+// which Read is. So is the struct passed to a method expression of a promoted
+// method, when the closure loads it from a variable it captures:
+//
+//	h := outer{&inner{e}}
+//	func() { outer.Msg(h, "x") }() // reads h, then h.inner.Event, here
+//
+// The closure runs at its only call, go or defer statement where it is made,
+// or else at any point after the MakeClosure, which stands for them. A method
+// expression takes its receiver from the call, which reads it there.
+func (c *Closures) CalleeOf(cc *ssa.CallCommon) (Callee, bool) {
+	if callee, ok := CalleeOf(cc); ok {
+		if addr, read := c.capturedRead(callee.Recv); callee.Embedded != nil && addr != nil {
+			callee.Recv, callee.Read = addr, read
+		}
+		return callee, true
+	}
+	addr, read := c.capturedRead(cc.Value)
+	if addr == nil {
+		return Callee{}, false
+	}
+	held, ok := c.funcsHeldBy(addr)
+	if !ok || len(held) != 1 {
+		return Callee{}, false
+	}
+	resolved := *cc
+	resolved.Value = held[0]
+	callee, ok := CalleeOf(&resolved)
+	if mc, bound := held[0].(*ssa.MakeClosure); ok && bound {
+		if mc.Parent() != read.Parent() {
+			return Callee{}, false // Bound in another closure than the one read at
+		}
+		callee.Read = read
+	}
+	return callee, ok
+}
+
+// capturedRead returns the local variable that v, a load in a closure of a
+// variable it captures, reads, at any depth of closures, and where the
+// outermost of them runs, which stands for the read: its only call, go or
+// defer statement where it is made, or else the MakeClosure. addr is nil
+// when v is not such a load, or what the variable is bound to is not found.
+func (c *Closures) capturedRead(v ssa.Value) (addr ssa.Value, read ssa.Instruction) {
+	load, ok := AsLoad(v)
+	if !ok {
+		return nil, nil
+	}
+	v = load.X
+	var mc *ssa.MakeClosure
+	for fv, ok := v.(*ssa.FreeVar); ok; fv, ok = v.(*ssa.FreeVar) {
+		fn := fv.Parent()
+		makers := c.makersOf(fn)
+		if len(makers) == 0 {
+			return nil, nil
+		}
+		mc = makers[len(makers)-1] // See makersOf
+		v = mc.Bindings[slices.Index(fn.FreeVars, fv)]
+	}
+	if _, isAlloc := v.(*ssa.Alloc); !isAlloc || mc == nil {
+		return nil, nil
+	}
+	if runs, ok := closureRunsOf(mc); ok && len(runs) == 1 {
+		return v, runs[0]
+	}
+	return v, mc
+}
+
 // writtenUnseen reports whether what is at at, in a local variable, a pointer
 // parameter or a variable a closure captures, may be written where a walk of
 // the control flow of walked does not see it: by a closure that is neither

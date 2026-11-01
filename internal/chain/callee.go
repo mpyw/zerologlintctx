@@ -23,15 +23,32 @@ type callee struct {
 }
 
 // calleeOf resolves the callee of a call, a go statement or a defer
-// statement, as CalleeOf does, and classifies it.
+// statement, as Closures.CalleeOf does, and classifies it.
 //
-//declscope:shared // checker.go resolves every call through it
-func calleeOf(cc *ssa.CallCommon) (callee, bool) {
-	c, ok := ssaflow.CalleeOf(cc)
+//declscope:shared // event.go and tracing.go resolve each call through it
+func calleeOf(cc *ssa.CallCommon, closures *ssaflow.Closures) (callee, bool) {
+	c, ok := closures.CalleeOf(cc)
 	if !ok {
 		return callee{}, false
 	}
 	return callee{Callee: c, api: zerologapi.Classify(c.Func)}, true
+}
+
+// readAtCall returns c with its receiver read at call, which runs it, in
+// the closure that reads it from a variable it captures: the struct of a
+// promoted method as the closure loads it, or else the value a method value
+// is bound to.
+//
+//declscope:shared // tracing.go asks the Ctx calls in place in the closure by it
+func (c callee) readAtCall(call ssa.Instruction) callee {
+	c.Read = nil
+	if c.Embedded == nil {
+		return c
+	}
+	if local, ok := ssaflow.CalleeOf(call.(ssa.CallInstruction).Common()); ok {
+		c.Callee = local
+	}
+	return c
 }
 
 // returnsSameEvent reports whether c is a method of *zerolog.Event that

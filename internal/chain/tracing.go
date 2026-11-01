@@ -168,7 +168,7 @@ func (tr *tracer) traceUncached(v ssa.Value, st traceState) verdict {
 		return tr.traceCommon(v, st)
 	}
 
-	c, declared := calleeOf(&call.Call)
+	c, declared := tr.calleeOf(&call.Call)
 	if !declared {
 		if found, ok := tr.traceFuncLiteralResult(call, 0, st); ok {
 			return found
@@ -191,6 +191,14 @@ func (tr *tracer) traceUncached(v ssa.Value, st traceState) verdict {
 		return tr.traceCalleeReceiver(c, call, next)
 	}
 	return no
+}
+
+// calleeOf resolves the callee of a call as calleeOf does, with the
+// closures of the package.
+//
+//declscope:shared // checker.go resolves every call through it
+func (tr *tracer) calleeOf(cc *ssa.CallCommon) (callee, bool) {
+	return calleeOf(cc, tr.closures)
 }
 
 // givesFreshContext reports whether cc, a call of a Ctx of zerolog, gives it
@@ -435,7 +443,7 @@ func (tr *tracer) traceFuncLiteralResult(call *ssa.Call, idx int, st traceState)
 // It is neutral when result is not a parameter: there is no argument to
 // trace in place of it.
 func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args []ssa.Value, st traceState) verdict {
-	param, ok := eventOrigin(result).(*ssa.Parameter)
+	param, ok := eventOrigin(result, tr.closures).(*ssa.Parameter)
 	if !ok {
 		return neutral
 	}
@@ -451,17 +459,32 @@ func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args
 // after that (see eventIndex.eventCtxSetInPlace). For a method expression of
 // a promoted method, the event is read from the struct it is embedded in.
 //
+// A receiver that a closure reads from a variable it captures (see
+// Closures.CalleeOf) is asked of the Ctx calls in place both in the closure,
+// before at, and where the closure runs. With context in the chain, neither
+// may give a fresh context last. Without it, either may set it.
+//
 //declscope:shared // checker.go asks this of each terminator
 func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
 	inChain := tr.traceCalleeReceiver(c, at, traceEvent) == yes
-	return tr.events.eventCtxSetInPlace(c, at, inChain, func(v ssa.Value) bool {
+	hasCtx := func(v ssa.Value) bool {
 		return tr.traceValue(v, traceEvent) == yes
-	})
+	}
+	if c.Read == nil {
+		return tr.events.eventCtxSetInPlace(c, at, inChain, hasCtx)
+	}
+	inClosure := tr.events.eventCtxSetInPlace(c.readAtCall(at), at, inChain, hasCtx)
+	if inClosure != inChain {
+		return inClosure
+	}
+	return tr.events.eventCtxSetInPlace(c, c.Read, inChain, hasCtx)
 }
 
 // traceCalleeReceiver traces the receiver of c, which call runs, as
-// traceReceiver does, or through the struct it is embedded in.
+// traceReceiver does, or through the struct it is embedded in. A receiver
+// bound where a closure is made is read there (see Callee.ReadAt).
 func (tr *tracer) traceCalleeReceiver(c callee, call ssa.Instruction, st traceState) verdict {
+	call = c.ReadAt(call)
 	if c.Embedded != nil {
 		return tr.traceEmbeddedReceiver(c, call, st)
 	}

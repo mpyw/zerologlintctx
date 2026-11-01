@@ -27,6 +27,10 @@ type Callee struct {
 	//
 	// It is nil for any other call.
 	Embedded []int
+	// Read is where Recv is read, when the call reads its callee, or the
+	// struct of a promoted method, from a variable a closure captures (see
+	// Closures.CalleeOf). It is nil when Recv is read at the call.
+	Read ssa.Instruction
 }
 
 // CalleeOf resolves the callee of a call, a go statement or a defer
@@ -70,6 +74,15 @@ func CalleeOf(cc *ssa.CallCommon) (Callee, bool) {
 	c.Recv = cc.Args[0]
 	c.Embedded = calleeEmbedded(c.Recv.Type(), fn)
 	return c, true
+}
+
+// ReadAt returns the instruction the receiver of c is read at, when call
+// runs c: Read, or call itself.
+func (c Callee) ReadAt(call ssa.Instruction) ssa.Instruction {
+	if c.Read != nil {
+		return c.Read
+	}
+	return call
 }
 
 // CalleeReceiver returns the value a call runs on, as tracing follows it: the
