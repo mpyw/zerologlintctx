@@ -102,6 +102,16 @@ func WalkBackWith[S comparable](
 	atEntry func() bool,
 	edge walkEdge[S],
 ) bool {
+	return WalkBackIn(from, func(instr ssa.Instruction, _ S) WalkStep { return visit(instr) }, atEntry, edge)
+}
+
+// WalkBackIn is WalkBackWith with visit shown the state of the path too.
+func WalkBackIn[S comparable](
+	from []WalkFrom[S],
+	visit func(ssa.Instruction, S) WalkStep,
+	atEntry func() bool,
+	edge walkEdge[S],
+) bool {
 	type visited struct {
 		block *ssa.BasicBlock
 		state S
@@ -115,7 +125,7 @@ func WalkBackWith[S comparable](
 		b := s.Point.block
 		step := WalkOn
 		for i := s.Point.index - 1; i >= 0 && step == WalkOn; i-- {
-			step = visit(b.Instrs[i])
+			step = visit(b.Instrs[i], s.state)
 		}
 		if step == WalkAbort {
 			return false

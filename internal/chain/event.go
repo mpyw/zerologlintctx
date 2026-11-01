@@ -321,21 +321,25 @@ type eventQuery struct {
 	values map[ssa.Value]bool
 	// reads are the places it is read from on the way.
 	reads map[ssaflow.PlaceKey]bool
+	// carried holds the places each value that a path can carry in place of
+	// the receiver is read from on the way (see eventQuery.carriedBy).
+	carried map[ssa.Value]map[ssaflow.PlaceKey]bool
 }
 
 // queryOf finds the events that c, the terminator at, can run on.
 func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Value) bool, calls *eventCtxCalls) *eventQuery {
 	q := &eventQuery{
-		ix:     ix,
-		fn:     at.Parent(),
-		hasCtx: hasCtx,
-		at:     at,
-		recv:   ix.calleeStep(c, at),
-		runs:   make(map[eventSource]*eventRuns),
-		calls:  calls,
-		within: make(map[*eventCtxCall]bool),
-		values: make(map[ssa.Value]bool),
-		reads:  make(map[ssaflow.PlaceKey]bool),
+		ix:      ix,
+		fn:      at.Parent(),
+		hasCtx:  hasCtx,
+		at:      at,
+		recv:    ix.calleeStep(c, at),
+		runs:    make(map[eventSource]*eventRuns),
+		calls:   calls,
+		within:  make(map[*eventCtxCall]bool),
+		values:  make(map[ssa.Value]bool),
+		reads:   make(map[ssaflow.PlaceKey]bool),
+		carried: make(map[ssa.Value]map[ssaflow.PlaceKey]bool),
 	}
 	q.sources = ix.expand(q.recv, q.values, q.reads)
 	return q
@@ -448,7 +452,7 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	runs := q.runsOf(src)
 	// earlier tells that the walk is before the latest run of src
 	earlier, reachesLatest := false, false
-	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
+	visit := func(instr ssa.Instruction, carried ssa.Value) ssaflow.WalkStep {
 		q.ix.work++
 		switch q.ctxCallOn(instr, src, earlier) {
 		case eventCtxSet:
@@ -463,16 +467,16 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 		case instr == def:
 			reachesLatest = true
 			return ssaflow.WalkStop // The latest run, after the one the receiver holds
-		case q.storesOther(instr, src, false):
+		case q.storesOther(instr, src, carried, false):
 			return ssaflow.WalkStop // Another event is stored on this path
 		}
 		return ssaflow.WalkOn
 	}
 	atEntry := func() bool { return def != nil }
-	edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
-		return s, q.edgeCarries(b, i, src, false)
+	edge := func(b *ssa.BasicBlock, i int, carried ssa.Value) (ssa.Value, bool) {
+		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, false)
 	}
-	if !ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, atEntry, edge) {
+	if !ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: before}}, visit, atEntry, edge) {
 		return false
 	}
 	if !reachesLatest {
@@ -480,7 +484,7 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	}
 	earlier = true
 	from := ssaflow.WalkPointBefore(def, q.ix.positions)
-	return ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: from}}, visit, atEntry, edge)
+	return ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: from}}, visit, atEntry, edge)
 }
 
 // freshCtxLastBefore reports whether a path that leads to before, and carries
@@ -495,7 +499,7 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 //	h.e.Msg("x")            // reported
 func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoint) bool {
 	def := q.defOf(src)
-	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
+	visit := func(instr ssa.Instruction, carried ssa.Value) ssaflow.WalkStep {
 		q.ix.work++
 		switch q.ctxCallOn(instr, src, false) {
 		case eventCtxFresh:
@@ -504,15 +508,15 @@ func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoin
 			return ssaflow.WalkStop
 		case eventCtxNone:
 		}
-		if instr == def || q.storesOther(instr, src, true) {
+		if instr == def || q.storesOther(instr, src, carried, true) {
 			return ssaflow.WalkStop // The context of the chain, or of another event
 		}
 		return ssaflow.WalkOn
 	}
-	edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
-		return s, q.edgeCarries(b, i, src, true)
+	edge := func(b *ssa.BasicBlock, i int, carried ssa.Value) (ssa.Value, bool) {
+		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, true)
 	}
-	return !ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, nil, edge)
+	return !ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: before}}, visit, nil, edge)
 }
 
 // ctxSetAfterDefer reports whether src has context at each return after d, a
@@ -574,9 +578,9 @@ func (q *eventQuery) defOf(src eventSource) ssa.Instruction {
 	return nil
 }
 
-// storesOther reports whether instr stores, where the receiver is read from,
-// a value it is read through, which is another event than src, or has
-// context of its own:
+// storesOther reports whether instr stores, where the value a path carries
+// is read from, a value it is read through, which is another event than src,
+// or has context of its own:
 //
 //	e := logger.Info()
 //	e.Ctx(ctx)                      // in place, on the first iteration
@@ -585,15 +589,57 @@ func (q *eventQuery) defOf(src eventSource) ssa.Instruction {
 //	    e = logger.Warn().Ctx(ctx)  // of its own, on the later ones
 //	}
 //
-// With fresh, a value whose only source is src is not another event (see
-// eventQuery.isOther).
-func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource, fresh bool) bool {
+// carried is the value the path carries, which eventQuery.carriedInto tells,
+// or nil for the receiver. With fresh, a value whose only source is src is
+// not another event (see eventQuery.isOther).
+func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource, carried ssa.Value, fresh bool) bool {
 	store, ok := instr.(*ssa.Store)
 	if !ok || !q.values[store.Val] {
 		return false
 	}
 	at, _ := ssaflow.PlaceOf(store.Addr)
-	return q.reads[at.Key()] && q.isOther(store.Val, src, fresh)
+	key := at.Key()
+	return q.reads[key] && q.carriedBy(carried)[key] && q.isOther(store.Val, src, fresh)
+}
+
+// carriedInto returns the value that a path carries in place of the
+// receiver as it goes on from the top of b into its i-th predecessor, when it
+// carries carried at the top of b, or nil for the receiver. A value is taken
+// back through the methods that return the event they run on (see
+// eventOrigin), and a Phi of b takes the path to its edge there. What is read
+// from memory before it is what the edge is read through:
+//
+//	e := (&box{logger.Info()}).v.Ctx(ctx)
+//	if cond {
+//	    e = e2          // e2 on this path, not read from the box
+//	}
+//	e.Msg("x")
+//
+// Any other value is carried on as it is.
+func (q *eventQuery) carriedInto(b *ssa.BasicBlock, i int, carried ssa.Value) ssa.Value {
+	v := carried
+	if v == nil && len(q.recv.next) == 1 && q.recv.read == nil && len(q.recv.more) == 0 {
+		v = q.recv.next[0]
+	}
+	if phi, ok := eventOrigin(v, q.ix.closures).(*ssa.Phi); ok && phi.Block() == b {
+		return phi.Edges[i]
+	}
+	return carried
+}
+
+// carriedBy returns what v, a value a path carries, is read through, which it
+// finds once. A nil v is the receiver, read through q.reads.
+func (q *eventQuery) carriedBy(v ssa.Value) map[ssaflow.PlaceKey]bool {
+	if v == nil {
+		return q.reads
+	}
+	if reads, ok := q.carried[v]; ok {
+		return reads
+	}
+	reads := make(map[ssaflow.PlaceKey]bool)
+	q.ix.expand(eventStep{next: []ssa.Value{v}}, make(map[ssa.Value]bool), reads)
+	q.carried[v] = reads
+	return reads
 }
 
 // edgeCarries reports whether a path that reaches the top of b goes on into
