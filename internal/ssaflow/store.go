@@ -451,9 +451,9 @@ func storeCallsOf(fn *ssa.Function) (calls []ssa.Instruction, ok bool) {
 // declared in, a walk past a copy of what it holds goes on from the call
 // instead, when one is found (see walkPastCopy).
 //
-// A walk that went past a copy already goes on past another one in the same
-// way as it went past the first, when the variable is a struct or array that
-// one store copies there from memory before the call (see walkPastCopyFrom):
+// A walk that went past a copy already goes on past another one, as it went
+// past the first. The variable must be a struct or array that one store
+// copies there from memory before the call (see walkPastCopyFrom):
 //
 //	func() {
 //	    a := h                        // h is a struct parameter
@@ -533,12 +533,12 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 }
 
 // walkPastCopyFrom walks for the stores through the root of a walk that went
-// past a copy already, from call, a call of a closure that reads the root at
-// sels from bound, the variable it binds. It reports whether one store copies
-// a whole aggregate there from memory before call, as storeCopiedTo finds it.
-// The walk then goes back from call to that copy, and on past it, for the
-// paths that get there, as walkPastCopyIn goes past a copy made where the
-// pointer is read.
+// past a copy already. It walks from call, a call of a closure that reads the
+// root at sels from bound, the variable it binds. It reports whether one
+// store copies a whole aggregate there from memory before call, as
+// storeCopiedTo finds it. The walk then goes back from call to that copy. For
+// the paths that get there, it goes on past the copy, as walkPastCopyIn goes
+// past one made where the pointer is read.
 func (w *storeWalk) walkPastCopyFrom(bound ssa.Value, call ssa.Instruction, sels []sel) bool {
 	copied := storeCopiedTo(bound, call, 0)
 	if copied == nil {
