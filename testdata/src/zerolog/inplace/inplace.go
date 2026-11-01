@@ -999,15 +999,130 @@ func badEventMadeUnderFalseConstant(ctx context.Context, log zerolog.Logger) {
 	}
 }
 
-// LIMITATION(#266) (false positive): the check of `for range 1` is not
-// folded. The path that skips the loop is still taken to reach the
-// terminator.
-func limitationEventCtxInPlaceInLoopOfOneRun(ctx context.Context, log zerolog.Logger) {
+// A case of a switch on a constant tag compares two constants. The
+// comparison is folded too (#380).
+
+type inPlaceMode int
+
+const (
+	inPlaceModeOff inPlaceMode = iota
+	inPlaceModeOn
+)
+
+const (
+	inPlaceMode0 = inPlaceModeOn
+	inPlaceName  = "on"
+)
+
+func goodEventCtxInPlaceInSwitchTrueOnConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch true {
+	case inPlaceDebug:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in switch true on a constant") // OK - the case always matches
+}
+
+func badEventCtxInPlaceInSwitchTrueOnFalseConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch true {
+	case inPlaceVerbose:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in switch true on a false constant") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxInPlaceInSwitchFalseOnFalseConstant(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch false {
+	case inPlaceVerbose:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in switch false on a false constant") // OK - the case always matches
+}
+
+func goodEventCtxInPlaceInSwitchOnConstantTag(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch inPlaceMode0 {
+	case inPlaceModeOn:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in a switch on a constant tag") // OK - the case always matches
+}
+
+func goodEventCtxInPlaceInLaterCaseOnConstantTag(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch inPlaceMode0 {
+	case inPlaceModeOff:
+		e.Str("k", "v")
+	case inPlaceModeOn:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in a later case on a constant tag") // OK - the second case always matches
+}
+
+func goodEventCtxInPlaceInListedCaseOnStringTag(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch inPlaceName {
+	case "off", "on":
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in a listed case on a string tag") // OK - the case always matches
+}
+
+func badEventCtxInPlaceInSwitchOnConstantTagNoMatch(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch inPlaceMode0 {
+	case inPlaceModeOff:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in a case that never matches") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInDefaultOnConstantTag(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	switch inPlaceMode0 {
+	case inPlaceModeOn:
+		e.Str("k", "v")
+	default:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in a default that never runs") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInSwitchOnVariableTag(ctx context.Context, log zerolog.Logger, mode inPlaceMode) {
+	e := log.Info()
+	switch mode {
+	case inPlaceModeOn:
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place in a switch on a variable tag") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// The first check of `for range 1` is `0 < 1`, a comparison of two
+// constants. So the path that skips the loop never runs.
+func goodEventCtxInPlaceInLoopOfOneRun(ctx context.Context, log zerolog.Logger) {
 	e := log.Info()
 	for range 1 {
 		e.Ctx(ctx)
 	}
-	e.Msg("ctx in place under for range 1") // want `zerolog call chain missing .Ctx\(ctx\)`
+	e.Msg("ctx in place under for range 1") // OK - the loop always runs once
+}
+
+func badEventCtxInPlaceInLoopOfNoRun(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	for range 0 {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under for range 0") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInLoopOfCount(ctx context.Context, log zerolog.Logger, n int) {
+	e := log.Info()
+	for range n {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx in place under for range n") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== UPDATECONTEXT (changes the Logger in place) =====

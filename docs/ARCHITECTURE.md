@@ -315,10 +315,30 @@ constant, and the block it never runs.
 
 Inside a dead block, every edge is still taken. A walk that starts there,
 or a Phi there, sees what it saw before. A walk that starts in a live block
-reaches only live blocks. Only an `If` on an `*ssa.Const` counts, so a path
-that can run is never dropped. `LiveFlowOf` finds the flow of a function once.
-It keeps it by a weak pointer to the function, so the cache holds no SSA. A `for range 1` checks a counter, not a
-constant. Its loop is not folded (see [Known Limitations](#known-limitations)).
+reaches only live blocks. `LiveFlowOf` finds the flow of a function once.
+It keeps it by a weak pointer to the function, so the cache holds no SSA.
+
+Only an `If` on a constant counts, so a path that can run is never dropped
+(`liveConstCond`). The condition is an `*ssa.Const`, or a comparison of two
+that `go/constant` defines: `==` and `!=` on two bools, two strings or two
+numbers, and the order on two strings or two numbers that are not complex.
+go/ssa makes such a comparison for each case of a `switch` on a constant
+tag, and for the first check of `for range 1`:
+
+```go
+switch mode {  // t0 = 1:mode == 1:mode ; if t0 goto 1 else 3
+case modeOn:   // for const mode = modeOn: always taken
+	e.Ctx(ctx)
+}
+
+for range 1 {  // t0 = 0:int < 1:int ; if t0 goto 1 else 2
+	e.Ctx(ctx) // the loop always runs once
+}
+```
+
+The check of `for range 1` at the end of the loop is on a counter, so the
+loop may still run again. go/types folds `!debug` and `cur == modeOn` into an
+`*ssa.Const` already.
 
 `walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
 the visit of each instruction too, which may change it for the rest of the
@@ -1525,7 +1545,6 @@ negative is a missed report.
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
-| A loop of one run (#266) | The check of `for range 1` is on a counter, not on a constant, so it is not folded. The path that skips a `Ctx` call in the loop still reaches the terminator. A branch on a constant, such as `if true`, is folded (see [Branches on Constants](#branches-on-constants)) | `inplace` |
 
 ### False negatives
 

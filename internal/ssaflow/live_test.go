@@ -2,6 +2,7 @@ package ssaflow
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -187,4 +188,53 @@ func liveCachedKey(t *testing.T) weak.Pointer[ssa.Function] {
 		t.Fatal("no entry for f in the cache")
 	}
 	return key
+}
+
+// TestLiveConstCond checks which comparisons of two constants are folded,
+// and to what.
+func TestLiveConstCond(t *testing.T) {
+	boolT, intT := types.Typ[types.Bool], types.Typ[types.Int]
+	floatT, complexT := types.Typ[types.Float64], types.Typ[types.Complex128]
+	strT := types.Typ[types.String]
+	c := func(v constant.Value, typ types.Type) *ssa.Const { return ssa.NewConst(v, typ) }
+	one, two := c(constant.MakeInt64(1), intT), c(constant.MakeInt64(2), intT)
+	half := c(constant.MakeFloat64(0.5), floatT)
+	yes, no := c(constant.MakeBool(true), boolT), c(constant.MakeBool(false), boolT)
+	a, b := c(constant.MakeString("a"), strT), c(constant.MakeString("b"), strT)
+	i := c(constant.MakeImag(constant.MakeInt64(1)), complexT)
+	nilPtr := c(nil, types.NewPointer(intT))
+
+	tests := []struct {
+		name   string
+		cond   ssa.Value
+		want   bool
+		wantOK bool
+	}{
+		{"true", yes, true, true},
+		{"not bool", one, false, false},
+		{"nil", nilPtr, false, false},
+		{"1 == 1", &ssa.BinOp{Op: token.EQL, X: one, Y: one}, true, true},
+		{"1 != 1", &ssa.BinOp{Op: token.NEQ, X: one, Y: one}, false, true},
+		{"1 < 2", &ssa.BinOp{Op: token.LSS, X: one, Y: two}, true, true},
+		{"2 <= 1", &ssa.BinOp{Op: token.LEQ, X: two, Y: one}, false, true},
+		{"2 > 0.5", &ssa.BinOp{Op: token.GTR, X: two, Y: half}, true, true},
+		{"0.5 >= 1", &ssa.BinOp{Op: token.GEQ, X: half, Y: one}, false, true},
+		{"true == false", &ssa.BinOp{Op: token.EQL, X: yes, Y: no}, false, true},
+		{`"a" < "b"`, &ssa.BinOp{Op: token.LSS, X: a, Y: b}, true, true},
+		{`"a" == "a"`, &ssa.BinOp{Op: token.EQL, X: a, Y: a}, true, true},
+		{"1i == 1", &ssa.BinOp{Op: token.EQL, X: i, Y: one}, false, true},
+		{"1i < 1", &ssa.BinOp{Op: token.LSS, X: i, Y: one}, false, false},
+		{"true < false", &ssa.BinOp{Op: token.LSS, X: yes, Y: no}, false, false},
+		{`"a" == 1`, &ssa.BinOp{Op: token.EQL, X: a, Y: one}, false, false},
+		{"1 + 2", &ssa.BinOp{Op: token.ADD, X: one, Y: two}, false, false},
+		{"nil == nil", &ssa.BinOp{Op: token.EQL, X: nilPtr, Y: nilPtr}, false, false},
+		{"x == 1", &ssa.BinOp{Op: token.EQL, X: &ssa.Parameter{}, Y: one}, false, false},
+		{"!true", &ssa.UnOp{Op: token.NOT, X: yes}, false, false},
+	}
+	for _, tt := range tests {
+		got, ok := liveConstCond(tt.cond)
+		if got != tt.want || ok != tt.wantOK {
+			t.Errorf("liveConstCond(%s) = %v, %v, want %v, %v", tt.name, got, ok, tt.want, tt.wantOK)
+		}
+	}
 }

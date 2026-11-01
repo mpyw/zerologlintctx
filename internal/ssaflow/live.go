@@ -7,13 +7,19 @@
 //
 // Every walk of the control flow, and every look at the edges of a Phi, in
 // this package and in internal/chain, takes only the edges LiveFlow tells
-// can run. Only an If on an *ssa.Const counts, so a path that can run is
-// never dropped.
+// can run. Only an If on an *ssa.Const counts, or on a comparison of two, as
+// a case of a switch on a constant tag is:
+//
+//	t0 = 1:mode == 1:mode                // switch cur { case modeOn: }
+//	if t0 goto 1 else 3                  // the edge to 3 is never taken
+//
+// So a path that can run is never dropped.
 
 package ssaflow
 
 import (
 	"go/constant"
+	"go/token"
 	"iter"
 	"runtime"
 	"sync"
@@ -101,20 +107,65 @@ func hasLiveConstBranch(fn *ssa.Function) bool {
 }
 
 // liveConstSucc returns the index in b.Succs of the successor that b takes,
-// when b ends with an If on a constant. ok is false for any other block.
+// when b ends with an If on a constant (liveConstCond). ok is false for any other block.
 func liveConstSucc(b *ssa.BasicBlock) (_ int, ok bool) {
 	branch, isIf := b.Instrs[len(b.Instrs)-1].(*ssa.If)
 	if !isIf {
 		return 0, false
 	}
-	c, isConst := branch.Cond.(*ssa.Const)
-	if !isConst || c.Value == nil || c.Value.Kind() != constant.Bool {
+	cond, ok := liveConstCond(branch.Cond)
+	if !ok {
 		return 0, false
 	}
-	if constant.BoolVal(c.Value) {
+	if cond {
 		return 0, true
 	}
 	return 1, true
+}
+
+// liveConstCond returns the value of cond when it is a constant: an
+// *ssa.Const, or a comparison of two, as go/ssa makes for a case of a
+// switch on a constant tag. ok is false for any other value, and for a
+// comparison go/constant does not define for the operands.
+func liveConstCond(cond ssa.Value) (_ bool, ok bool) {
+	switch cond := cond.(type) {
+	case *ssa.Const:
+		if cond.Value == nil || cond.Value.Kind() != constant.Bool {
+			return false, false
+		}
+		return constant.BoolVal(cond.Value), true
+	case *ssa.BinOp:
+		x, xConst := cond.X.(*ssa.Const)
+		y, yConst := cond.Y.(*ssa.Const)
+		if !xConst || !yConst || x.Value == nil || y.Value == nil {
+			return false, false
+		}
+		if !liveComparable(cond.Op, x.Value.Kind(), y.Value.Kind()) {
+			return false, false
+		}
+		return constant.Compare(x.Value, cond.Op, y.Value), true
+	}
+	return false, false
+}
+
+// liveComparable reports whether go/constant compares two constants of the
+// kinds x and y with op. == and != take two bools, two strings, or two
+// numbers. The order takes two strings, or two numbers that are not complex.
+func liveComparable(op token.Token, x, y constant.Kind) bool {
+	switch op {
+	case token.EQL, token.NEQ:
+		return x == y && (x == constant.Bool || x == constant.String) ||
+			liveNumeric(x) && liveNumeric(y)
+	case token.LSS, token.LEQ, token.GTR, token.GEQ:
+		return x == constant.String && y == constant.String ||
+			liveNumeric(x) && x != constant.Complex && liveNumeric(y) && y != constant.Complex
+	}
+	return false
+}
+
+// liveNumeric reports whether a constant of kind k is a number.
+func liveNumeric(k constant.Kind) bool {
+	return k == constant.Int || k == constant.Float || k == constant.Complex
 }
 
 // Succs returns the successors of b that control can go to from b. Each is
