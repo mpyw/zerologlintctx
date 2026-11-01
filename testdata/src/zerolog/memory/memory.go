@@ -1330,6 +1330,33 @@ func badGlobalFieldUpdated(ctx context.Context) {
 	globalLoggerHolder.log.Info().Msg("global field") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// An update through a copy in a composite literal, or in a local variable, is
+// an update too (#303).
+func badGlobalFieldUpdatedThroughCompositeLiteral(ctx context.Context) {
+	globalLoggerHolder.log = (&fieldLoggerHolder{globalLoggerHolder.log}).log.With().Ctx(ctx).Logger()
+	globalLoggerHolder.log.Info().Msg("global field, copied in a composite literal") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badGlobalFieldUpdatedThroughLocalCopy(ctx context.Context) {
+	h := fieldLoggerHolder{globalLoggerHolder.log}
+	globalLoggerHolder.log = h.log.With().Ctx(ctx).Logger()
+	globalLoggerHolder.log.Info().Msg("global field, copied in a local struct") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodGlobalFieldReplacedThroughCompositeLiteral(ctx context.Context) {
+	globalLoggerHolder.log = (&fieldLoggerHolder{zerolog.Ctx(ctx).With().Logger()}).log
+	globalLoggerHolder.log.Info().Msg("global field, replaced from a composite literal") // OK
+}
+
+func goodGlobalFieldReplacedThroughLocalCopy(ctx context.Context, cond bool) {
+	h := fieldLoggerHolder{zerolog.Ctx(ctx).With().Logger()}
+	if cond {
+		h = fieldLoggerHolder{zerolog.Ctx(ctx).With().Str("k", "v").Logger()}
+	}
+	globalLoggerHolder.log = h.log.With().Logger()
+	globalLoggerHolder.log.Info().Msg("global field, replaced from a local struct") // OK
+}
+
 // A closure that stores to a variable it captures, and then reads it, reads
 // what it stored, as a load of a captured event does.
 func goodClosureStoresCapturedLogger(ctx context.Context, l zerolog.Logger) {

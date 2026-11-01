@@ -1226,17 +1226,33 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) WalkStep {
 
 // updates reports whether store is an update of the address of the walk: the
 // value it stores derives from a load of the address, as
-// l = l.With().Logger() does.
+// l = l.With().Logger() does. A load from a local variable, such as the
+// temporary of a composite literal, derives from what the stores that reach
+// it left there:
+//
+//	G.log = (&BL{G.log}).v.With().Ctx(ctx).Logger() // BL.v is a copy of G.log
 func (w *storeWalk) updates(store *ssa.Store) bool {
-	isLoadOfAddr := func(v ssa.Value) bool {
+	seen := make(map[ssa.Value]bool)
+	var isLoadOfAddr func(v ssa.Value) bool
+	isLoadOfAddr = func(v ssa.Value) bool {
 		load, isLoad := AsLoad(v)
 		if !isLoad {
 			return false
 		}
 		n, cover := w.storeCover(load.X)
-		return n == len(w.at.path) && cover == coverMust
+		if n == len(w.at.path) && cover == coverMust {
+			return true
+		}
+		at, tracked := PlaceOf(load.X)
+		if !tracked {
+			return false
+		}
+		stored, _ := storesReachingAt(at, load, w.positions)
+		return slices.ContainsFunc(stored.values, func(val ssa.Value) bool {
+			return derivesFrom(val, isLoadOfAddr, unOpOperand, seen)
+		})
 	}
-	return derivesFrom(store.Val, isLoadOfAddr, unOpOperand, make(map[ssa.Value]bool))
+	return derivesFrom(store.Val, isLoadOfAddr, unOpOperand, seen)
 }
 
 // storeCover tells how much of the address of the walk a store to addr
