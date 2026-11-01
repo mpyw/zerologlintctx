@@ -3452,6 +3452,69 @@ func badLoggerPtrsSwappedInLoop(ctx context.Context, l *zerolog.Logger, base zer
 	h.a.Info().Msg("pointers copied back and forth in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A pointer picked out of more than storePickedMax and put in a field is
+// traced as a value, back to the caller's pointer, which has no known
+// context.
+func badLoggerPtrParamOnManyBranchesInField(ctx context.Context, l *zerolog.Logger, base zerolog.Logger, n int) {
+	p := l
+	switch n {
+	case 1:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 2:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 3:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 4:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 5:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 6:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 7:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 8:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 9:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 10:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 11:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 12:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 13:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 14:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 15:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 16:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	case 17:
+		q := base.With().Ctx(ctx).Logger()
+		p = &q
+	}
+	var h loggerPtrBox
+	h.p = p
+	h.p.Info().Msg("pointer parameter picked out of many, in a field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A pointer read from memory and picked by a Phi is walked for along the
 // paths on which the Phi picks it: the stores through the same pointer, read
 // from the same place (#299).
