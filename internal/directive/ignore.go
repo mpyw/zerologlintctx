@@ -20,9 +20,13 @@
 //
 // # Usage Examples
 //
-// Same-line ignore. It reaches its own line only:
+// Same-line ignore. It reaches its own line, and a call chain that starts
+// there, but not the line below:
 //
 //	log.Info().Msg("no ctx needed") //zerologlintctx:ignore
+//
+//	log.Info(). //zerologlintctx:ignore
+//	    Msg("no ctx needed")
 //
 // Previous-line ignore:
 //
@@ -129,7 +133,7 @@ func Scan(fset *token.FileSet, file *ast.File) (*Ignores, []Problem) {
 // ignoreEntry tracks an ignore directive and whether it was used.
 type ignoreEntry struct {
 	pos      token.Pos // Position of the ignore comment
-	trailing bool      // Whether it follows code on its line, and so reaches that line only
+	trailing bool      // Whether it follows code on its line, and so does not reach the line below
 	used     bool      // Whether this ignore was actually used to suppress a warning
 }
 
@@ -206,7 +210,7 @@ func isAddressed(text string) bool {
 //	Line N:    log.Info().               ← the call expression starts here
 //	Line N+1:      Msg("test")           ← pos, the "(" of Msg
 //
-//	Line N:    log.Info().Msg("test") //zerologlintctx:ignore  ← reaches line N only
+//	Line N:    log.Info().Msg("test") //zerologlintctx:ignore  ← reaches line N, not N+1
 func (ig *Ignores) ShouldIgnore(pos token.Pos) bool {
 	lines := []int{ig.fset.PositionFor(pos, false).Line}
 	if start, ok := ig.callStarts[pos]; ok {

@@ -231,6 +231,7 @@ func TestClassify(t *testing.T) {
 		{zl, "Logger", "Print", zerologapi.Method{Kind: zerologapi.KindDirectLog, Recv: lg}},
 		{zl, "Logger", "Printf", zerologapi.Method{Kind: zerologapi.KindDirectLog, Recv: lg}},
 		{zl, "Logger", "Println", zerologapi.Method{Kind: zerologapi.KindDirectLog, Recv: lg}},
+		{zl, "Logger", "Write", zerologapi.Method{Kind: zerologapi.KindDirectLog, Recv: lg}},
 		{log, "", "Print", zerologapi.Method{Kind: zerologapi.KindDirectLog}},
 		{log, "", "Printf", zerologapi.Method{Kind: zerologapi.KindDirectLog}},
 
@@ -244,7 +245,6 @@ func TestClassify(t *testing.T) {
 		{zl, "Event", "Enabled", zerologapi.Method{Recv: ev}},
 		{zl, "Event", "GetCtx", zerologapi.Method{Recv: ev}},
 		{zl, "Logger", "GetLevel", zerologapi.Method{Recv: lg}},
-		{zl, "Logger", "Write", zerologapi.Method{Recv: lg}},
 		{zl, "Logger", "WithContext", zerologapi.Method{Recv: lg}},
 		{zl, "Array", "Str", zerologapi.Method{}},
 		{zl, "", "New", zerologapi.Method{Result: lg}},

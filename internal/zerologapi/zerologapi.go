@@ -49,7 +49,7 @@ const (
 	// nothing, such as Msg and Send.
 	KindTerminator
 	// KindDirectLog logs without an Event chain: Logger.Print, Printf,
-	// Println, and the Print functions of zerolog/log.
+	// Println and Write, and the Print functions of zerolog/log.
 	KindDirectLog
 	// KindInPlaceUpdate changes the Logger it runs on in place:
 	// Logger.UpdateContext.
@@ -142,6 +142,12 @@ var exceptions = map[exception]Method{
 	{TypeLogger, "Output"}: {
 		Kind: KindChain, Recv: TypeLogger, Result: TypeLogger, Keeps: SourceStored,
 	},
+	// func (l Logger) Write(p []byte) (n int, err error), log.go:
+	// l.Log() ... Msg, so the event takes the context of l, as for Print. Its
+	// two results hide it from the Print case of Classify.
+	// LIMITATION: a use through io.Writer, such as fmt.Fprint(l, ...), is not
+	// seen.
+	{TypeLogger, "Write"}: {Kind: KindDirectLog, Recv: TypeLogger},
 	// func (l *Logger) UpdateContext(update func(c Context) Context), log.go:
 	// keeps the fields update writes to l. The context Context.Ctx sets in
 	// them is dropped, so l keeps the context it had.

@@ -7,7 +7,7 @@ Guidance for contributors and coding agents working in this repository.
 **zerologlintctx** is a Go linter that enforces context propagation in [zerolog](https://pkg.go.dev/github.com/rs/zerolog) logging chains. It detects:
 
 1. Event chains missing `.Ctx(ctx)` when context is available
-2. Direct logging calls (`Print`, `Printf`, `Println`) on a logger that does not carry the context
+2. Direct logging calls (`Print`, `Printf`, `Println`, `Write`) on a logger that does not carry the context
 
 See [Architecture](./docs/ARCHITECTURE.md) for internal design details.
 
@@ -91,7 +91,7 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 ├── ctxname/     # Which context is in scope: several, named _, shadowed, pointer, type parameter
 ├── deferred/    # Deferred terminators and deferred closures
 ├── directive/   # Ignore directives and directive problems
-├── directlog/   # Print, Printf, Println on a logger
+├── directlog/   # Print, Printf, Println, Write on a logger
 ├── freshctx/    # context.Background() or TODO() in place of the context in scope
 ├── go127/       # Go 1.27 syntax (promoted field keys, generic methods)
 ├── iife/        # IIFE, func literals called through a variable, helpers

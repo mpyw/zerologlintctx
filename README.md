@@ -193,7 +193,7 @@ func handler(ctx context.Context, log zerolog.Logger, w io.Writer) {
 
 ### Direct Logging Methods
 
-Detects direct logging calls (`Print`, `Printf`, `Println`) on a logger that does not carry the context. These calls take no `.Ctx(ctx)`, so the event gets only the logger's own context:
+Detects direct logging calls (`Print`, `Printf`, `Println`, `Write`) on a logger that does not carry the context. These calls take no `.Ctx(ctx)`, so the event gets only the logger's own context:
 
 ```go
 func handler(ctx context.Context, log zerolog.Logger) {
@@ -206,6 +206,8 @@ func handler(ctx context.Context, log zerolog.Logger) {
     l.Print("hello")
 }
 ```
+
+`Write` is the method that makes a `Logger` an `io.Writer`. A call of it is checked as `Print` is. A use through `io.Writer`, such as `fmt.Fprint(log, "hello")`, is not checked.
 
 The `Print` functions of `github.com/rs/zerolog/log` use the global logger, which is not traced. They are always reported.
 
@@ -228,7 +230,7 @@ Place the comment at the end of the line, or on a line of its own above the code
 
 | Placement | Reaches |
 |-----------|---------|
-| At the end of a line of code | That line only |
+| At the end of a line of code | That line. A call chain that starts on that line is reached even when it spans several lines. The line below is not reached |
 | On a line of its own | The line below. A call chain that starts there is reached even when it spans several lines |
 
 Write a reason after `//`. A reason after ` - ` also works, for compatibility.
