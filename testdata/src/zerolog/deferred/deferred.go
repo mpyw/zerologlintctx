@@ -268,6 +268,40 @@ func badDeferredClosureCtxOnLaterIteration(ctx context.Context, logger zerolog.L
 	}
 }
 
+// A store after the defer statement counts only up to the declaration on the
+// next iteration: the stores after it are to another variable (#233).
+
+func goodDeferredClosureInLoopAssignedTwice(ctx context.Context, logger zerolog.Logger, items []int) {
+	for _, it := range items {
+		l := logger
+		l = logger.With().Ctx(ctx).Int("it", it).Logger()
+		defer func() {
+			l.Info().Msg("deferred closure in a loop, assigned twice") // OK - each l has ctx when the closure runs
+		}()
+	}
+}
+
+func goodDeferredClosureInLoopStructField(ctx context.Context, logger zerolog.Logger, items []int) {
+	type holder struct{ l zerolog.Logger }
+	for range items {
+		h := holder{l: logger}
+		h.l = logger.With().Ctx(ctx).Logger()
+		defer func() {
+			h.l.Info().Msg("deferred closure in a loop, field assigned twice") // OK - each h.l has ctx when the closure runs
+		}()
+	}
+}
+
+func badDeferredClosureInLoopChangedAfter(ctx context.Context, logger zerolog.Logger, items []int) {
+	for range items {
+		l := logger.With().Ctx(ctx).Logger()
+		defer func() {
+			l.Info().Msg("deferred closure in a loop, changed after the defer") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+		l = logger
+	}
+}
+
 // On a path that skips a defer statement, nothing is deferred, and what is
 // stored there does not count.
 

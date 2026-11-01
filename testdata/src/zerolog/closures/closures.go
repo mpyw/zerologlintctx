@@ -487,3 +487,59 @@ func goodGoroutineWithDerivedLoggerCtx(ctx context.Context, logger zerolog.Logge
 		derived.Info().Msg("goroutine derived with ctx") // OK - ctx set via With().Ctx(ctx)
 	}()
 }
+
+// ===== GOROUTINE CAPTURING A VARIABLE DECLARED IN A LOOP =====
+
+// A variable declared in a loop is another one on each iteration. A store
+// after the go statement counts only up to the declaration on the next
+// iteration: the stores after it are to another variable (#233).
+
+func goodGoroutineInLoopAssignedOnEveryBranch(ctx context.Context, logger zerolog.Logger, items []int) {
+	for _, it := range items {
+		l := logger
+		if it > 0 {
+			l = logger.With().Ctx(ctx).Int("it", it).Logger()
+		} else {
+			l = zerolog.Ctx(ctx).With().Logger()
+		}
+		go func() {
+			l.Info().Msg("goroutine in a loop, every branch sets ctx") // OK - each l has ctx when the goroutine starts
+		}()
+	}
+}
+
+func goodGoroutineInLoopZeroThenCtx(ctx context.Context, logger zerolog.Logger, items []int) {
+	for range items {
+		var l zerolog.Logger
+		l = logger.With().Ctx(ctx).Logger()
+		go func() {
+			l.Info().Msg("goroutine in a loop, zero value then ctx") // OK - each l has ctx
+		}()
+	}
+}
+
+func badGoroutineInLoopOneBranchWithoutCtx(ctx context.Context, logger zerolog.Logger, items []int) {
+	for _, it := range items {
+		l := logger
+		if it > 0 {
+			l = logger.With().Ctx(ctx).Int("it", it).Logger()
+		} else {
+			l = logger.With().Int("it", it).Logger()
+		}
+		go func() {
+			l.Info().Msg("goroutine in a loop, one branch lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}
+}
+
+func badGoroutineInInnerLoopChangedOnLaterIteration(ctx context.Context, logger zerolog.Logger, n, m int) {
+	for range n {
+		l := logger.With().Ctx(ctx).Logger()
+		for range m {
+			go func() {
+				l.Info().Msg("same l, changed on a later inner iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+			}()
+			l = logger
+		}
+	}
+}

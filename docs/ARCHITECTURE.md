@@ -237,6 +237,7 @@ function.
 |------|-----------|-----------------|---------|
 | `storeWalk.walkBefore`: stores that reach a read | Back | A store to the address, or its declaration | Through a Phi of pointers, the edges that hold the variable picked |
 | `storeWalk.walkDeferred`: stores that reach the returns after a `defer` | Back | The same, or the `defer` | The blocks on a path through the `defer` (`walkThrough`) |
+| `storeWalk.addStoresAfter`: stores after an escape of a variable declared in a loop | Forward | Its declaration on the next iteration | All |
 | `traceCtxCalledOnEveryPath`: an `Event.Ctx` call before a point | Back | A `Ctx` call, or another event in its place | All |
 | `traceCtxSetAtReturns`: an `Event.Ctx` call after a deferred terminator | Forward | A `Ctx` call | All |
 
@@ -434,7 +435,9 @@ closure that is only called runs at each call, and the stores that reach the
 calls count. A Phi passes the address on only from the edges that are the
 address, so the walk starts at the ends of those predecessors. On another
 edge the Phi points elsewhere, and that edge may not even run the declaration
-of a variable declared in a branch or a loop.
+of a variable declared in a branch or a loop. For a variable declared in a
+loop, the stores after an escape count only up to its declaration on the next
+iteration, since the stores after that are to another variable.
 
 #### Elements at a Variable Index
 
