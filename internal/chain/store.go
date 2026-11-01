@@ -695,20 +695,50 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 
 // addStoresAfter adds the values stored to the address by the stores that
 // can run after instr.
+//
+// For a variable declared in a loop, a path that goes round the loop again
+// meets the declaration first, and the stores after it are to the variable of
+// the next iteration. Those paths stop there:
+//
+//	for _, it := range items {
+//	    l := base                          // a store to another l, after go
+//	    l = base.With().Ctx(ctx).Logger()  // so is this, on the next iteration
+//	    go func() { l.Info().Msg("x") }()
+//	}
 func (w *storeWalk) addStoresAfter(instr ssa.Instruction) {
-	after := w.positions.after(instr)
-	for other := range instrsIn(instr.Parent()) {
-		store, ok := other.(*ssa.Store)
-		if !ok || !after(store) {
-			continue
-		}
-		if n, cover := w.storeCover(store.Addr); cover != coverNone {
-			if n == len(w.at.path) {
-				w.out.values = append(w.out.values, store.Val)
-			} else {
-				w.out.unknown = true
+	if !w.declaredInLoop() {
+		after := w.positions.after(instr)
+		for other := range instrsIn(instr.Parent()) {
+			if store, ok := other.(*ssa.Store); ok && after(store) {
+				w.addStoreAfter(store)
 			}
 		}
+		return
+	}
+	walkFwd(walkPointAfter(instr, w.positions), func(other ssa.Instruction) walkStep {
+		switch in := other.(type) {
+		case *ssa.Alloc:
+			if in == w.at.root {
+				return walkStop
+			}
+		case *ssa.Store:
+			w.addStoreAfter(in)
+		}
+		return walkOn
+	})
+}
+
+// addStoreAfter adds what store writes to the address, when it may write it,
+// for addStoresAfter.
+func (w *storeWalk) addStoreAfter(store *ssa.Store) {
+	n, cover := w.storeCover(store.Addr)
+	if cover == coverNone {
+		return
+	}
+	if n == len(w.at.path) {
+		w.out.values = append(w.out.values, store.Val)
+	} else {
+		w.out.unknown = true
 	}
 }
 
