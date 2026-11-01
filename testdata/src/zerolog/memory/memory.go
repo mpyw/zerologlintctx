@@ -2040,6 +2040,133 @@ func badPointerFromStructParamCopiedThenCopyFieldReplaced(ctx context.Context, h
 	h.p.Info().Msg("copied, then the field of the copy replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// The same, read in a func literal called in place. The closure reads h.p as
+// the call runs it, which is the pointer b.p holds too (#378).
+func goodPointerFromStructParamCopiedThenStoredThroughCopyReadInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	b := h
+	*b.p = l.With().Ctx(ctx).Logger()
+	func() {
+		h.p.Info().Msg("copied, then stored through the copy, read in a closure") // OK
+	}()
+}
+
+func badPointerFromStructParamCopiedThenStoredThroughCopyReadInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	*h.p = l.With().Ctx(ctx).Logger()
+	b := h
+	*b.p = l
+	func() {
+		h.p.Info().Msg("copied, then stored through the copy without ctx, read in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodPointerFromStructParamCopiedTwiceThenStoredThroughCopyReadInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	a := h
+	b := a
+	*b.p = l.With().Ctx(ctx).Logger()
+	func() {
+		h.p.Info().Msg("copied twice, then stored through the copy, read in a closure") // OK
+	}()
+}
+
+func goodPointerFromStructParamCopiedThenStoredThroughCopyReadInNestedClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	b := h
+	*b.p = l.With().Ctx(ctx).Logger()
+	func() {
+		func() {
+			h.p.Info().Msg("copied, then stored through the copy, read in a nested closure") // OK
+		}()
+	}()
+}
+
+func badPointerFromStructParamCopiedThenStoredThroughCopyReadInNestedClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	*h.p = l.With().Ctx(ctx).Logger()
+	b := h
+	*b.p = l
+	func() {
+		func() {
+			h.p.Info().Msg("copied, then stored through the copy without ctx, read in a nested closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func goodPointerFromStructParamCopiedInClosureThenStoredThroughCopyReadDeeper(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	func() {
+		b := h
+		*b.p = l.With().Ctx(ctx).Logger()
+		func() {
+			h.p.Info().Msg("copied in a closure, then stored through the copy, read deeper") // OK
+		}()
+	}()
+}
+
+func badPointerFromStructParamCopiedInClosureThenStoredThroughCopyReadDeeper(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	func() {
+		*h.p = l.With().Ctx(ctx).Logger()
+		b := h
+		*b.p = l
+		func() {
+			h.p.Info().Msg("copied in a closure, then stored through the copy without ctx, read deeper") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func goodPointerFromStructParamStoredThroughCopyOrSourceReadInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, cond bool) {
+	b := h
+	if cond {
+		*b.p = l.With().Ctx(ctx).Logger()
+	} else {
+		*h.p = l.With().Ctx(ctx).Logger()
+	}
+	func() {
+		h.p.Info().Msg("stored through the copy or the source, read in a closure") // OK
+	}()
+}
+
+func badPointerFromStructParamStoredThroughCopyOnBranchReadInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, cond bool) {
+	b := h
+	if cond {
+		*b.p = l.With().Ctx(ctx).Logger()
+	}
+	func() {
+		h.p.Info().Msg("stored through the copy on a branch, read in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badPointerFromStructParamCopiedThenFieldReplacedReadInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other *zerolog.Logger) {
+	b := h
+	h.p = other
+	*b.p = l.With().Ctx(ctx).Logger()
+	func() {
+		h.p.Info().Msg("the field of the source replaced, read in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badPointerFromStructParamCopiedThenCopyFieldReplacedReadInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other *zerolog.Logger) {
+	b := h
+	b.p = other
+	*b.p = l.With().Ctx(ctx).Logger()
+	func() {
+		h.p.Info().Msg("the field of the copy replaced, read in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodPointerFromPointedStructCopiedThenStoredThroughCopyReadInClosure(ctx context.Context, h *loggerPtrBox, l zerolog.Logger) {
+	b := *h
+	*b.p = l.With().Ctx(ctx).Logger()
+	func() {
+		h.p.Info().Msg("copied through a pointer, then stored through the copy, read in a closure") // OK
+	}()
+}
+
+func badPointerFromPointedStructCopiedThenStoredThroughCopyReadInClosure(ctx context.Context, h *loggerPtrBox, l zerolog.Logger) {
+	*h.p = l.With().Ctx(ctx).Logger()
+	b := *h
+	*b.p = l
+	func() {
+		h.p.Info().Msg("copied through a pointer, then stored through the copy without ctx, read in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
 func badPointerFromStructParamStoredThroughOnBranchThenCopied(ctx context.Context, h loggerPtrBox, l zerolog.Logger, cond, other bool) {
 	if cond {
 		*h.p = l.With().Ctx(ctx).Logger()

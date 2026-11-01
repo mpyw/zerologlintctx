@@ -1287,6 +1287,18 @@ a store through the same pointer when the same stores reach that load and the
 call (`matchAcrossClosure`). A closure that is run by a `go` or `defer`
 statement, or passed on, adds nothing.
 
+A store through a copy of that variable, made in the function, is one too.
+The load the store goes through is followed back past the copies that put
+the pointer there, as for two loads in one function (`matchOriginAcross`).
+It must get to the same selections from the variable the closure binds, with
+the same stores reaching it as reach the call (#378):
+
+```go
+b := h                            // h is a struct parameter
+*b.p = l.With().Ctx(ctx).Logger() // through b.p, which is h.p at the call
+func() { h.p.Info().Msg("x") }()  // not reported
+```
+
 A path that gets to the entry of the function that makes the closure, when it
 is a closure too that captures the variable in turn, goes on out of it in the
 same way, out to the function the variable is declared in. A closure in
