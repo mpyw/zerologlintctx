@@ -2987,6 +2987,44 @@ func badPointerPickedUnderFalseConstant(ctx context.Context, logger zerolog.Logg
 	p.Info().Msg("pointer picked under a false constant") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+type phiMode int
+
+const (
+	phiModeOff phiMode = iota
+	phiModeOn
+)
+
+const phiMode0 = phiModeOn
+
+func goodLoggerReassignedInSwitchOnConstantTag(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	switch phiMode0 {
+	case phiModeOn:
+		l = logger.With().Ctx(ctx).Logger()
+	default:
+	}
+	l.Info().Msg("reassigned in a switch on a constant tag") // OK - the empty default never runs
+}
+
+func badLoggerReassignedInSwitchOnConstantTagNoMatch(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	switch phiMode0 {
+	case phiModeOff:
+		l = logger.With().Ctx(ctx).Logger()
+	default:
+	}
+	l.Info().Msg("reassigned in a case that never matches") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodReassignedInSwitchTrueOnConstant(ctx context.Context, logger zerolog.Logger) {
+	e := logger.Info()
+	switch true {
+	case phiDebug:
+		e = e.Ctx(ctx)
+	}
+	e.Msg("reassigned in switch true on a constant") // OK - the case always matches
+}
+
 func badReassignedUnderCondition(ctx context.Context, logger zerolog.Logger, cond bool) {
 	e := logger.Info()
 	if cond {

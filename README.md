@@ -331,6 +331,37 @@ e.Msg("hello")
 <td>
 
 ```go
+const mode = modeOn
+
+e := log.Info()
+switch mode {
+case modeOn:
+	e = e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The tag and the case are constants, so the case always matches</td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+for range 1 {
+	e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> The first check of the loop compares two constants, so the loop always runs once</td>
+</tr>
+<tr>
+<td>
+
+```go
 e := log.Info().Ctx(ctx)
 func() {
 	e.Msg("hello")
@@ -757,20 +788,6 @@ func setCtx(
 
 </td>
 <td>⚠️ <b>Reported (limitation).</b> A store by a function that is passed the address is not seen. The read sees <code>l</code> as it was before the call</td>
-</tr>
-<tr>
-<td>
-
-```go
-e := log.Info()
-for range 1 {
-	e.Ctx(ctx)
-}
-e.Msg("hello")
-```
-
-</td>
-<td>⚠️ <b>Reported (limitation).</b> The loop check of <code>for range 1</code> is not folded. The path that skips the loop is still taken to reach <code>Msg</code></td>
 </tr>
 <tr>
 <td>
