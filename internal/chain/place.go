@@ -100,6 +100,30 @@ func (p place) with(rest ...sel) place {
 	return place{root: p.root, path: append(slices.Clone(p.path), rest...)}
 }
 
+// withFields returns p with the fields selected further, one after another,
+// in a path of its own.
+func (p place) withFields(fields []int) place {
+	at := p.with()
+	for _, index := range fields {
+		at.path = append(at.path, sel{field: index})
+	}
+	return at
+}
+
+// trailingFields returns the fields that the last selections of p select,
+// as many as are fields and not elements, outermost first, and start, the
+// number of selections before them.
+func (p place) trailingFields() (start int, fields []int) {
+	start = len(p.path)
+	for start > 0 && p.path[start-1].operand == nil {
+		start--
+	}
+	for _, s := range p.path[start:] {
+		fields = append(fields, s.field)
+	}
+	return start, fields
+}
+
 // prefix returns the place that the first n selections of p select.
 func (p place) prefix(n int) place {
 	return place{root: p.root, path: p.path[:n]}

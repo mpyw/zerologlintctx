@@ -446,21 +446,13 @@ func storesReachingAt(
 	return r, true
 }
 
-// storeLoadsOf returns, for addr, a local variable, a pointer parameter or a
+// storeLoadsAt returns, for at, a local variable, a pointer parameter or a
 // captured variable, or a field or constant element of one, the loads of the
 // same address in the function, and the instructions after which another
 // value is there: the stores to it, or to an aggregate that holds it, and the
 // declaration of a local variable. ok is false for any other address.
 //
 //declscope:shared // tracing.go finds the Ctx calls on an event in memory
-func storeLoadsOf(addr ssa.Value) (loads []*ssa.UnOp, overwrites map[ssa.Instruction]bool, ok bool) {
-	at, _ := placeOf(addr)
-	return storeLoadsAt(at)
-}
-
-// storeLoadsAt returns what storeLoadsOf does for the address at.
-//
-//declscope:shared // tracing.go finds the Ctx calls on an embedded event
 func storeLoadsAt(at place) (loads []*ssa.UnOp, overwrites map[ssa.Instruction]bool, ok bool) {
 	if !isTrackedRoot(at.root) {
 		return nil, nil, false

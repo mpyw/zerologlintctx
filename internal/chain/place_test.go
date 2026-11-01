@@ -152,6 +152,22 @@ func TestPlaceWith(t *testing.T) {
 	}
 }
 
+func TestPlaceFields(t *testing.T) {
+	fn := placeFunc(t)
+	addrs := placeStores(fn)
+	inB, _ := placeOf(addrs[0])  // o.in.b
+	arr1, _ := placeOf(addrs[2]) // o.arr[1].a
+	if !samePlace(inB.prefix(0).withFields([]int{1, 1}), inB) {
+		t.Error("o with .in.b is not o.in.b")
+	}
+	if start, fields := inB.trailingFields(); start != 0 || len(fields) != 2 || fields[0] != 1 || fields[1] != 1 {
+		t.Errorf("trailing fields of o.in.b: %d, %v", start, fields)
+	}
+	if start, fields := arr1.trailingFields(); start != 2 || len(fields) != 1 || fields[0] != 0 {
+		t.Errorf("trailing fields of o.arr[1].a: %d, %v", start, fields)
+	}
+}
+
 func TestValueSelAndLoad(t *testing.T) {
 	fn := placeFunc(t)
 	var fields, indexes int

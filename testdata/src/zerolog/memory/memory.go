@@ -358,6 +358,12 @@ func limitationNestedEmbeddedPointerCtxInPlaceMethodExpression(ctx context.Conte
 	embeddedHolderPointerOfHolder.Msg(h, "method expression through a pointer after Ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func limitationNestedEmbeddedPointerCtxInPlacePromoted(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
+	h.Ctx(ctx)
+	h.Msg("promoted through a pointer after Ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func goodEmbeddedStructCtxInPlaceInClosureMethodExpression(ctx context.Context, logger zerolog.Logger) {
 	h := embeddedHolder{logger.Info()}
 	func() {

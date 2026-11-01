@@ -224,6 +224,102 @@ func badEventCtxInPlaceHolderReplacedWithCtxField(ctx context.Context, log zerol
 	h.e.Msg("ctx in place, holder replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A struct value of a local variable is loaded whole at each use, and a
+// promoted method, or the field the event is embedded in, is selected from
+// that load. A Ctx call on the event selected from an earlier load counts,
+// unless another event is stored in between (#234).
+
+type inPlaceEmbedded struct{ *zerolog.Event }
+
+type inPlaceOuter struct{ inPlaceEmbedded }
+
+func goodEventCtxInPlaceEmbeddedPromoted(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(ctx)
+	h.Msg("ctx in place, promoted") // OK - .Ctx() set the context of h.Event
+}
+
+func goodEventCtxInPlaceEmbeddedMethodValue(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(ctx)
+	m := h.Msg
+	m("ctx in place, promoted method value") // OK - .Ctx() set the context of h.Event
+}
+
+func goodEventCtxInPlaceEmbeddedFieldThenPromoted(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Event.Ctx(ctx)
+	h.Msg("ctx in place on the field, then promoted") // OK - the same event
+}
+
+func goodEventCtxInPlaceEmbeddedPromotedThenField(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(ctx)
+	h.Event.Msg("ctx in place promoted, then on the field") // OK - the same event
+}
+
+func goodEventCtxInPlaceEmbeddedTwoLevels(ctx context.Context, log zerolog.Logger) {
+	o := inPlaceOuter{inPlaceEmbedded{log.Info()}}
+	o.Ctx(ctx)
+	o.Msg("ctx in place, promoted through two levels") // OK - .Ctx() set the context of o.Event
+}
+
+func goodEventCtxInPlaceEmbeddedInnerThenOuter(ctx context.Context, log zerolog.Logger) {
+	o := inPlaceOuter{inPlaceEmbedded{log.Info()}}
+	o.inPlaceEmbedded.Ctx(ctx)
+	o.Msg("ctx in place on the inner struct, then on the outer") // OK - the same event
+}
+
+func goodEventCtxInPlaceEmbeddedReplacedWithCtx(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(ctx)
+	h = inPlaceEmbedded{log.Warn().Ctx(ctx)}
+	h.Msg("ctx in place, replaced with ctx") // OK - the new event has context of its own
+}
+
+func badEventCtxInPlaceEmbeddedOtherHolder(ctx context.Context, log zerolog.Logger) {
+	a := inPlaceEmbedded{log.Info()}
+	b := inPlaceEmbedded{log.Warn()}
+	a.Ctx(ctx)
+	b.Msg("ctx in place, other holder") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceEmbeddedReplaced(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(ctx)
+	h = inPlaceEmbedded{log.Warn()}
+	h.Msg("ctx in place, holder replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceEmbeddedFieldReplaced(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(ctx)
+	h.Event = log.Warn()
+	h.Msg("ctx in place, field replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceEmbeddedMethodValueReplaced(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(ctx)
+	h = inPlaceEmbedded{log.Warn()}
+	m := h.Msg
+	m("ctx in place, holder replaced, method value") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceEmbeddedFreshCtx(ctx context.Context, log zerolog.Logger) {
+	h := inPlaceEmbedded{log.Info()}
+	h.Ctx(context.Background())
+	h.Msg("fresh ctx in place, promoted") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceEmbeddedOnOneBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	h := inPlaceEmbedded{log.Info()}
+	if cond {
+		h.Ctx(ctx)
+	}
+	h.Msg("ctx in place on one branch, promoted") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // LIMITATION(#139) (false positive): An in-place Ctx call is not seen by a
 // terminator in a closure, in a func literal the event is passed to, or on
 // another variable the event was copied to (#139). The event reaches it
