@@ -709,6 +709,27 @@ e.Msg("hello")
 <td>
 
 ```go
+l := log
+setCtx(ctx, &l, log)
+l.Info().Msg("hello")
+
+// elsewhere
+func setCtx(
+	ctx context.Context,
+	p *zerolog.Logger,
+	log zerolog.Logger,
+) {
+	*p = log.With().Ctx(ctx).Logger()
+}
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> A store by a function that is passed the address is not seen. The read sees <code>l</code> as it was before the call</td>
+</tr>
+<tr>
+<td>
+
+```go
 e := log.Info()
 if true {
 	e.Ctx(ctx)

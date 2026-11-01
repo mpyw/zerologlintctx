@@ -1123,6 +1123,25 @@ func() {
 }()
 ```
 
+After the copy, the pointer is in both structs. A load of it from either one
+is followed back past the copies that put it there, to where it was read in
+the end (`matchOriginAt`). Two loads are the same pointer when they get to
+the same field of the same variable, with the same stores reaching it
+(`matchSameOrigin`). So a store through one struct, after the copy, is a
+store through the pointer read from the other. A store of another pointer in
+the field, after the copy, makes the stores differ:
+
+```go
+b := h                                // h is a struct parameter
+*h.p = l.With().Ctx(ctx).Logger()     // through h.p, which is b.p
+b.p.Info().Msg("x")                   // not reported
+
+b := h
+h.p = other                           // h.p is another pointer from here on
+*h.p = l.With().Ctx(ctx).Logger()
+b.p.Info().Msg("x")                   // the caller's Logger: reported
+```
+
 For the receiver of a call, such as `p.Info()` for `p := newLoggerPtr()`, a
 path that gets back to where the pointer is made carries what tracing the
 pointer itself finds, as the source `Resolved.Pointer` (`storeReaching.made`):
@@ -1407,6 +1426,7 @@ negative is a missed report.
 | Slice literals and map elements | An element of a slice literal, or a value looked up in a map, is not traced to what was put there. An event or a Logger with `.Ctx(ctx)` is still reported. A store at an index, such as `es[0] = e`, is followed | `memory` |
 | Elements at an index computed in a loop | A store at the same index, on the same iteration, is not taken to write the element. A store without `.Ctx(ctx)` on an earlier iteration may still be what the read sees. So may the caller's value in a slice parameter | `memory` |
 | Stores by a closure | A store by a closure to a variable it captures, or through a pointer it captures, is not seen by a read after the closure is called. The read sees the value from before the call. This also misses reports (see False negatives) | `closures` |
+| Stores by a function (#115) | A store by a function that is passed an address, such as `setCtx(ctx, &l, base)` that stores a Logger with `.Ctx(ctx)` there, is not seen. The read sees the value from before the call. This is the mirror of "Writes through another reference" (see False negatives) | `memory` |
 | In-place `Ctx` through another reference (#139) | `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to | `inplace` |
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |

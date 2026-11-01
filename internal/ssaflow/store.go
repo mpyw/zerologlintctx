@@ -284,6 +284,14 @@ type storeCopySource struct {
 	sels  []sel
 }
 
+// origin returns where the pointer c took is read from in the end: at c.sels
+// in what c.load loads, past the copies that put it there (see
+// matchOriginAt).
+func (c *storeCopySource) origin() matchOrigin {
+	root, sels := matchSelsOf(c.load.X)
+	return matchOriginAt(matchOrigin{root: root, sels: append(sels, c.sels...), at: c.load})
+}
+
 // storeCopyOf returns where instr, which puts another value at the address
 // sels from addr, takes the pointer there from, when it is a store of a whole
 // aggregate that holds that address, loaded from memory. ok is false for any
@@ -731,11 +739,12 @@ func (p *storePointer) samePointer(root, pointer ssa.Value) bool {
 	switch {
 	case done:
 	case p.source != nil:
-		same = matchLoadedSels(p.source.load, p.source.sels, root, p.closure)
+		same = matchLoadedSels(p.source.load, p.source.sels, root, p.closure) ||
+			len(p.closure) == 0 && matchOriginOfIs(p.source.origin(), root)
 	case len(p.closure) > 0:
 		same = matchAcrossClosure(pointer, root, p.closure)
 	default:
-		same = addressesMatch(root, pointer)
+		same = addressesMatch(root, pointer) || matchSameOrigin(root, pointer)
 	}
 	p.same[root] = same
 	return same

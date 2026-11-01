@@ -186,6 +186,120 @@ func matchLoadedSels(from *ssa.UnOp, sels []sel, outer ssa.Value, runs []matchCl
 		maps.Equal(matchStoresBefore(out.X, out), matchStoresBefore(out.X, runs[len(runs)-1].run))
 }
 
+// matchSameOrigin reports whether a and b, two loads of a pointer in one
+// function, read the same pointer: each is followed back past the copies of
+// a whole aggregate that put the pointer where it is loaded (see
+// matchOriginOf), to the same selections from the same address, and the
+// same stores reach that address there:
+//
+//	t2 = *t0 ; *t1 = t2               // b := h, for h in t0 and b in t1
+//	t4 = *&t0.p ; *t4 = v             // a: h.p, after the copy
+//	t9 = *&t1.p ; Info(t9)            // b: b.p, which is t2.p, so h.p too
+//
+// Two loads of the same address are matched as addressesMatch matches them,
+// with no copy to follow.
+//
+//declscope:shared // store.go tells whether a store is through the pointer of a walk
+func matchSameOrigin(a, b ssa.Value) bool {
+	oa, ok := matchOriginOf(a)
+	return ok && matchOriginOfIs(oa, b)
+}
+
+// matchOriginOfIs reports whether v, a load of a pointer, reads it from o in
+// the end (see matchOriginOf): the same selections from the same address, in
+// the same function, with the same stores reaching both.
+//
+//declscope:shared // store.go matches a store through the pointer a copy holds
+func matchOriginOfIs(o matchOrigin, v ssa.Value) bool {
+	ov, ok := matchOriginOf(v)
+	return ok && o.at.Parent() == ov.at.Parent() &&
+		addressesMatch(o.root, ov.root) && slices.EqualFunc(o.sels, ov.sels, sel.same) &&
+		maps.Equal(matchStoresBeforeSels(o.root, o.sels, o.at), matchStoresBeforeSels(o.root, o.sels, ov.at))
+}
+
+// matchOrigin is where a pointer is read from: the address at sels from
+// root, as it is when at runs.
+//
+//declscope:shared // store.go builds the origin of the pointer a copy holds
+type matchOrigin struct {
+	root ssa.Value
+	sels []sel
+	at   ssa.Instruction
+}
+
+// matchOriginOf returns where v, a load of a pointer, reads it from in the
+// end, as matchOriginAt does from where v loads. ok is false when v is not a
+// load.
+func matchOriginOf(v ssa.Value) (_ matchOrigin, ok bool) {
+	load, isLoad := AsLoad(v)
+	if !isLoad {
+		return matchOrigin{}, false
+	}
+	root, sels := matchSelsOf(load.X)
+	return matchOriginAt(matchOrigin{root: root, sels: sels, at: load}), true
+}
+
+// matchOriginAt follows o back past the copies of a whole aggregate that put
+// what is there. When one store reaches o, and it copies a whole aggregate
+// that holds the address, loaded from memory, what is at o is at the same
+// selections in what that load loaded, as it loaded it:
+//
+//	t2 = *t0 ; *t1 = t2               // the one store that reaches t1.p
+//	t9 = *&t1.p                       // o: t1.p at t9, then t0.p at t2
+//
+// It stops at any other store, at more than one, or when a store may write
+// the address, or not, as one at a variable index may. Each copy followed
+// runs before the load it is found from on every path, so the walk never
+// comes back to a load, even in a loop.
+//
+//declscope:shared // store.go takes the origin of the pointer a copy holds
+func matchOriginAt(o matchOrigin) matchOrigin {
+	for {
+		stores := matchStoresBeforeSels(o.root, o.sels, o.at)
+		if len(stores) != 1 {
+			return o
+		}
+		var store *ssa.Store
+		for instr := range stores {
+			store, _ = instr.(*ssa.Store)
+		}
+		if store == nil {
+			return o // The entry of the function, or the declaration
+		}
+		load, isLoad := AsLoad(store.Val)
+		to, toSels := matchSelsOf(store.Addr)
+		cover := Place{root: o.root, path: toSels}.covers(Place{root: o.root, path: o.sels}, matchSameIndex)
+		if !isLoad || len(toSels) == len(o.sels) || !addressesMatch(to, o.root) || cover != coverMust {
+			return o // Not a copy of an aggregate that holds the address
+		}
+		root, sels := matchSelsOf(load.X)
+		o = matchOrigin{root: root, sels: append(sels, o.sels[len(toSels):]...), at: load}
+	}
+}
+
+// matchSameIndex takes two elements for the same element when their indexes
+// are the same value.
+func matchSameIndex(a, b ssa.Value) bool { return a == b }
+
+// matchStoresBeforeSels returns what matchStoresBefore does for an address
+// at sels from root, which need not be a value of the function: the stores
+// that may write it, or an aggregate that holds it, and the declaration of
+// the local variable it is in.
+func matchStoresBeforeSels(root ssa.Value, sels []sel, at ssa.Instruction) map[ssa.Instruction]bool {
+	return matchStoresBeforeBy(at, func(instr ssa.Instruction) bool {
+		if alloc, isAlloc := root.(*ssa.Alloc); isAlloc && instr == alloc {
+			return true // The declaration of the variable
+		}
+		store, isStore := instr.(*ssa.Store)
+		if !isStore {
+			return false
+		}
+		to, toSels := matchSelsOf(store.Addr)
+		cover := Place{root: root, path: toSels}.covers(Place{root: root, path: sels}, matchSameIndex)
+		return cover != coverNone && addressesMatch(to, root)
+	})
+}
+
 // matchSelsOf returns the address that v, an address, selects from through
 // fields and elements, and those selections, outermost first: v itself and
 // none when it is neither.
@@ -231,6 +345,13 @@ func matchReachingStores(load *ssa.UnOp) map[ssa.Instruction]bool {
 //
 //declscope:shared // store.go finds the copy of a captured variable that reaches a call of the closure
 func matchStoresBefore(addr ssa.Value, at ssa.Instruction) map[ssa.Instruction]bool {
+	return matchStoresBeforeBy(at, func(instr ssa.Instruction) bool { return matchOverwrites(instr, addr) })
+}
+
+// matchStoresBeforeBy returns the instructions that overwrites accepts, at
+// which the paths back from at first stop, with nil for a path that leads
+// back to the entry of the function or to its recover block.
+func matchStoresBeforeBy(at ssa.Instruction, overwrites func(ssa.Instruction) bool) map[ssa.Instruction]bool {
 	found := make(map[ssa.Instruction]bool)
 	b := at.Block()
 	type step struct {
@@ -244,7 +365,7 @@ func matchStoresBefore(addr ssa.Value, at ssa.Instruction) map[ssa.Instruction]b
 		queue = queue[:len(queue)-1]
 		stopped := false
 		for i := s.from; i >= 0 && !stopped; i-- {
-			if instr := s.block.Instrs[i]; matchOverwrites(instr, addr) {
+			if instr := s.block.Instrs[i]; overwrites(instr) {
 				found[instr] = true
 				stopped = true
 			}
