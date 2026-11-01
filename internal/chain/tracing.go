@@ -462,14 +462,12 @@ func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, call
 	return neutral
 }
 
-// traceBoundArgument traces the argument that call passes for param, when it
-// is a parameter of fn, the func literal call runs. It is no otherwise.
+// traceBoundArgument traces the argument that call passes for param, a
+// parameter of fn, the func literal call runs. A func literal has no
+// receiver, and its free variables are not among its parameters, so call
+// passes one argument for each parameter, in order.
 func (tr *tracer) traceBoundArgument(param *ssa.Parameter, fn *ssa.Function, call *ssa.Call, st traceState) verdict {
-	args := call.Call.Args
-	if idx := slices.Index(fn.Params, param); idx >= 0 && idx < len(args) {
-		return tr.traceValue(args[idx], st)
-	}
-	return no
+	return tr.traceValue(call.Call.Args[slices.Index(fn.Params, param)], st)
 }
 
 // traceBoundRead traces v, a load in fn, the func literal call runs, as
