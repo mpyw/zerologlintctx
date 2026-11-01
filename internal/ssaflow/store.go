@@ -496,7 +496,9 @@ func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r store
 // innermost first, out to the function of at.
 //
 // A pointer copied from another one read from memory points to what that one
-// does, as it is read where the copy is made:
+// does, as it is read where the copy is made. When that one cannot be
+// followed, as for one read from a pointer parameter, the stores through the
+// same pointer are walked for, as storesReachingPointer does:
 //
 //	a := holder{&inner{l: base.With().Ctx(ctx).Logger()}}
 //	h := holder{a.p}                  // t5 = *&a.p ; *&h.p = t5
@@ -511,16 +513,19 @@ func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via [
 		tat, tracked := PlaceOf(t.v)
 		tat = tat.with(at.path...)
 		var tr storeReaching
+		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p, outer: tvia}
 		if !tracked {
 			if tr, ok = p.reachingThroughVia(tat, read, tvia); ok {
 				r.merge(tr)
 				continue
 			}
+			if len(tvia) == 0 && t.picked != nil {
+				return storeReaching{}, false // walkPointerBefore does not keep to the paths of a Phi
+			}
 			if len(tvia) == 0 {
-				return storeReaching{}, false
+				w.pointer = storePointerOf(t.v)
 			}
 		}
-		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p, outer: tvia}
 		w.walkToRead(read)
 		if !tracked && tr.isEmpty() {
 			// What a callee stored there is not seen, as for storesReachingPointer

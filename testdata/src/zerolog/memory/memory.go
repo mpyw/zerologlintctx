@@ -657,6 +657,38 @@ func badReturnedPointerOnOneBranchInLoop(ctx context.Context, logger zerolog.Log
 	}
 }
 
+func goodPickedReturnedPointerOnOneBranchInLoop(ctx context.Context, n int, cond, other bool) {
+	for range n {
+		q := newReloadedMonitor()
+		if other {
+			q = newReloadedMonitor()
+		}
+		var p *reloadedMonitor
+		if cond {
+			p = q
+		}
+		p.log = zerolog.Ctx(ctx).With().Logger()
+		p.log.Info().Msg("returned pointer picked on a branch, declared in a loop") // OK - the store in the same iteration has ctx
+		go func() { _ = p }()
+	}
+}
+
+func badPickedReturnedPointerOnOneBranchInLoop(ctx context.Context, logger zerolog.Logger, n int, cond, other bool) {
+	for range n {
+		q := newReloadedMonitor()
+		if other {
+			q = newReloadedMonitor()
+		}
+		var p *reloadedMonitor
+		if cond {
+			p = q
+		}
+		p.log = logger
+		p.log.Info().Msg("returned pointer picked on a branch, declared in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+		go func() { _ = p }()
+	}
+}
+
 // The stores through a pointer that a call returns are those that reach the
 // read, from where the call returns it. A store after the read, or one that
 // a later store replaces, is not what the read sees.
@@ -1541,6 +1573,50 @@ func badLoggerPtrInStructParamReplaced(ctx context.Context, b *loggerPtrBox, oth
 	*b.p = zerolog.Ctx(ctx).With().Logger()
 	b.p = other
 	b.p.Info().Msg("another pointer stored in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A pointer copied out of a parameter into a local struct is the same
+// pointer, and a store through the original is what a read through the copy
+// sees (#282).
+
+func goodLoggerPtrCopiedFromStructParam(ctx context.Context, b *loggerPtrBox) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	h := loggerPtrBox{b.p}
+	h.p.Info().Msg("pointer copied from a struct parameter") // OK
+}
+
+func goodLoggerPtrCopiedFromPtrPtrParam(ctx context.Context, pl **zerolog.Logger) {
+	**pl = zerolog.Ctx(ctx).With().Logger()
+	h := loggerPtrBox{*pl}
+	h.p.Info().Msg("pointer copied from a pointer to a pointer") // OK
+}
+
+func badLoggerPtrCopiedFromStructParam(ctx context.Context, b *loggerPtrBox, base zerolog.Logger) {
+	*b.p = base
+	h := loggerPtrBox{b.p}
+	h.p.Info().Msg("pointer copied from a struct parameter, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrCopiedFromStructParamReplaced(ctx context.Context, b *loggerPtrBox, other *zerolog.Logger) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	b.p = other
+	h := loggerPtrBox{b.p}
+	h.p.Info().Msg("another pointer copied") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrCopiedFromStructParamNoStore(ctx context.Context, b *loggerPtrBox) {
+	h := loggerPtrBox{b.p}
+	h.p.Info().Msg("nothing stored through it") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrCopiedFromStructParamOnBranch(ctx context.Context, b, c *loggerPtrBox, cond bool) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		p = c.p
+	}
+	h := loggerPtrBox{p}
+	h.p.Info().Msg("either pointer copied") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // ===== A POINTER PICKED ON A BRANCH, TO A VARIABLE CHANGED ELSEWHERE =====
