@@ -681,6 +681,19 @@ e.Msg("hello")
 <td>
 
 ```go
+ch := make(chan zerolog.Logger, 1)
+ch <- log.With().Ctx(ctx).Logger()
+l := <-ch
+l.Info().Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> The same for a Logger received from a channel</td>
+</tr>
+<tr>
+<td>
+
+```go
 var e *zerolog.Event
 f := func() {
 	e = log.Info().Ctx(ctx)
@@ -705,6 +718,20 @@ e.Msg("hello")
 
 </td>
 <td>⚠️ <b>Reported (limitation).</b> A branch on a constant condition is not folded. The path that skips <code>e.Ctx(ctx)</code> is still taken to reach <code>Msg</code></td>
+</tr>
+<tr>
+<td>
+
+```go
+e := log.Info()
+for range 1 {
+	e.Ctx(ctx)
+}
+e.Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> The same for the check of <code>for range 1</code>. The path that skips the loop is still taken</td>
 </tr>
 </tbody>
 </table>

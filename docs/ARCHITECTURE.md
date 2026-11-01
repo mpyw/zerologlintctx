@@ -1139,20 +1139,20 @@ negative is a missed report.
 | Limitation | What happens | Fixture |
 |------------|--------------|---------|
 | Helper function returns | An event or Logger a declared function returns is not traced into it. An IIFE and its arguments are | `iife` |
-| Channels | An event received from a channel is not traced to what was sent | `memory` |
+| Channels | An event, a Logger or a `*Logger` received from a channel is not traced to what was sent. A store through a `*Logger` after it is received is still seen | `memory` |
 | `sync.Pool` | An event from `Pool.Get` is not traced to the `New` function | `memory` |
-| Slice and map elements | An event read back from a slice or a map is not traced. One stored with `.Ctx(ctx)` is still reported | `memory` |
+| Slice literals and map elements | An element of a slice literal, or a value looked up in a map, is not traced to what was put there. An event or a Logger with `.Ctx(ctx)` is still reported. A store at an index, such as `es[0] = e`, is followed | `memory` |
 | Elements at an index computed in a loop | A store at the same index, on the same iteration, is not taken to write the element. A store without `.Ctx(ctx)` on an earlier iteration may still be what the read sees. So may the caller's value in a slice parameter | `memory` |
 | Stores by a closure | A store by a closure to a variable it captures is not seen by a read after the closure is called | `closures` |
 | In-place `Ctx` through another reference (#139) | `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to | `inplace` |
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
-| A pointer read in a closure that is not only called | A pointer that a closure reads from a captured variable, such as `h.m` or `*pp`, is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures` |
+| A pointer read in a closure that is not only called | A closure may read a pointer from a captured variable, such as `h.m` or `*pp`. The pointer is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures` |
 | A captured pointer picked on a branch | A pointer that a closure captures, picked on a branch, is not followed. The walk from where the closure runs does not keep to the paths of the Phi | `closures` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
-| Constant conditions (#266) | A branch on a constant, such as `if true` or `if debug` for `const debug = true`, is not folded. The path that skips a `Ctx` call in the branch still reaches the terminator | `inplace` |
+| Constant conditions (#266) | A branch on a constant is not folded, such as `if true`, `if debug` for `const debug = true`, or the check of `for range 1`. The path that skips a `Ctx` call in the branch or the loop still reaches the terminator | `inplace` |
 
 ### False negatives
 
@@ -1167,9 +1167,10 @@ negative is a missed report.
 | Panics | A deferred call is checked at the returns after its `defer` statement. It is not checked at the points where a panic could run it | `deferred` |
 | Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. The value stored before it is taken as the one read | `memory` |
 | Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
+| Fresh in-place `Ctx` through another reference | `e.Ctx(context.Background())` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to. The event keeps the context it had. This is the mirror of #139 | `freshctx` |
 | Fresh contexts on another run | A fresh `Ctx` call on an event made in a loop counts only for a value that holds the latest run. It is not seen for the event kept from the last iteration | `freshctx` |
 | A pointer in a field | A pointer read from a field of a struct, such as `*h.p`, is not followed to a fresh context it points to. One read from a variable is | `freshctx` |
-| An address given more than once | A fresh context in a variable whose address is given to a func literal more than once, such as `f(&bg)` on two branches, is not taken as fresh. Given once, it is | `freshctx` |
+| An address given more than once | A variable may hold a fresh context and have its address given to a func literal more than once, such as `f(&bg)` on two branches. Then the context is not taken as fresh. Given once, it is | `freshctx` |
 
 ## Testing
 

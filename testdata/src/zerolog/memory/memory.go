@@ -43,14 +43,27 @@ func badEventFromMap(ctx context.Context, logger zerolog.Logger) {
 	events["info"].Msg("from map") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// LIMITATION (false positive): An element of a slice literal is not traced
+// to the value in the literal. A store at an index, such as es[0] = e, is.
 func limitationEventFromSliceWithCtx(ctx context.Context, logger zerolog.Logger) {
-	// LIMITATION: SSA doesn't track events through slice/array access
 	events := []*zerolog.Event{logger.Info().Ctx(ctx)}
 	events[0].Msg("from slice with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func goodEventStoredInSliceWithCtx(ctx context.Context, logger zerolog.Logger) {
+	events := make([]*zerolog.Event, 1)
+	events[0] = logger.Info().Ctx(ctx)
+	events[0].Msg("stored in a slice with ctx") // OK - the store at events[0] has ctx
+}
+
+func limitationLoggerFromSliceWithCtx(ctx context.Context, logger zerolog.Logger) {
+	loggers := []zerolog.Logger{logger.With().Ctx(ctx).Logger()}
+	loggers[0].Info().Msg("Logger from slice with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): A value looked up in a map is not traced to
+// what was stored there.
 func limitationEventFromMapWithCtx(ctx context.Context, logger zerolog.Logger) {
-	// LIMITATION: SSA doesn't track events through map lookups
 	events := map[string]*zerolog.Event{"info": logger.Info().Ctx(ctx)}
 	events["info"].Msg("from map with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
@@ -86,6 +99,22 @@ func limitationChannelWithCtx(ctx context.Context, logger zerolog.Logger) {
 	ch <- logger.Info().Ctx(ctx)
 	e := <-ch
 	e.Msg("from channel with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION (false positive): The same for a Logger, and for a *Logger.
+func limitationChannelLoggerWithCtx(ctx context.Context, logger zerolog.Logger) {
+	ch := make(chan zerolog.Logger, 1)
+	ch <- logger.With().Ctx(ctx).Logger()
+	l := <-ch
+	l.Info().Msg("Logger from channel with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationChannelLoggerPtrWithCtx(ctx context.Context, logger zerolog.Logger) {
+	ch := make(chan *zerolog.Logger, 1)
+	l := logger.With().Ctx(ctx).Logger()
+	ch <- &l
+	p := <-ch
+	p.Info().Msg("*Logger from channel with ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func badSelectStatementChannel(ctx context.Context, logger zerolog.Logger) {
