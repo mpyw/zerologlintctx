@@ -424,13 +424,13 @@ func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
 	if got, done := p.pointed[v]; done {
 		return got.targets, got.ok
 	}
-	at, load, isRead := storePointerRead(v)
+	reads, isRead := storePointerRead(v)
 	if !isRead {
 		return nil, false
 	}
 	p.pointed[v] = storePointed{} // Reaching v again while it is followed fails
 	var got storePointed
-	if stored, ok := p.reaching(at, load); ok {
+	if stored, ok := p.reachingReads(reads); ok {
 		got.targets, got.ok = storeTargetsReaching(stored, nil, p.positions)
 	}
 	p.pointed[v] = got
@@ -502,6 +502,20 @@ func storeMakersOf(fn *ssa.Function) []*ssa.MakeClosure {
 	return makers
 }
 
+// reachingReads finds the values that can be at each of reads, as reaching
+// does for one, together.
+func (p *storePointers) reachingReads(reads []LoadedRead) (storeReaching, bool) {
+	var r storeReaching
+	for _, rd := range reads {
+		stored, ok := p.reaching(rd.At, rd.Load)
+		if !ok {
+			return storeReaching{}, false
+		}
+		r.merge(stored)
+	}
+	return r, true
+}
+
 // reaching finds the values that can be at at when read runs, for at in a
 // variable, or in what a pointer read from memory points to.
 func (p *storePointers) reaching(at Place, read ssa.Instruction) (storeReaching, bool) {
@@ -520,7 +534,7 @@ func (p *storePointers) reaching(at Place, read ssa.Instruction) (storeReaching,
 // point to, or maybe all of it otherwise. It is coverNone when the pointer
 // cannot point to root, or cannot be followed.
 func (p *storePointers) through(at Place, root ssa.Value) (Place, placeCover) {
-	if _, _, isRead := storePointerRead(at.root); !isRead {
+	if _, isRead := storePointerRead(at.root); !isRead {
 		return at, coverNone
 	}
 	targets, ok := p.targetsOf(at.root)
@@ -542,27 +556,18 @@ func (p *storePointers) through(at Place, root ssa.Value) (Place, placeCover) {
 
 // storePointerRead returns where the pointer v is read from, when it is read
 // from memory: the address a load reads, with the fields and elements of a
-// struct or array value selected from what it loads, and the load.
+// struct or array value selected from what it loads, and the load. A pointer
+// selected from a Phi of such values is read from each load an edge leads to
+// (see LoadedSelection).
 //
 //	t3 = *&t0.p             // read from t0.p
 //	t5 = *t0 ; t6 = t5.p    // read from t0.p too, as t5 is loaded
-func storePointerRead(v ssa.Value) (at Place, load *ssa.UnOp, ok bool) {
-	var selections []sel
-	for {
-		from, s, isSel := valueSel(v)
-		if !isSel {
-			break
-		}
-		selections = append(selections, s)
-		v = from
+func storePointerRead(v ssa.Value) (reads []LoadedRead, ok bool) {
+	if load, isLoad := AsLoad(v); isLoad {
+		at, _ := PlaceOf(load.X)
+		return []LoadedRead{{At: at, Load: load}}, true
 	}
-	load, ok = AsLoad(v)
-	if !ok {
-		return Place{}, nil, false
-	}
-	slices.Reverse(selections)
-	base, _ := PlaceOf(load.X)
-	return base.with(selections...), load, true
+	return LoadedSelection(v)
 }
 
 // storeTargetsOf returns what a pointer can point to when it can be any of

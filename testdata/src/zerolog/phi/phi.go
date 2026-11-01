@@ -1629,3 +1629,148 @@ outer:
 		}
 	}
 }
+
+// ===== A FIELD SELECTED FROM STRUCT VALUES PICKED ON A BRANCH =====
+
+type phiLoggerWrapper struct{ *zerolog.Logger }
+
+type phiEventWrapper struct{ *zerolog.Event }
+
+type phiEventEmbedded struct{ *zerolog.Event }
+
+type phiEventPtrWrapper struct{ *phiEventEmbedded }
+
+type phiArrayHolder struct{ ls [1]*zerolog.Logger }
+
+func goodPhiLoggerWrapper(ctx context.Context, base zerolog.Logger, cond bool) {
+	a := base.With().Ctx(ctx).Logger()
+	b := zerolog.Ctx(ctx).With().Str("k", "v").Logger()
+	w := phiLoggerWrapper{&a}
+	if cond {
+		w = phiLoggerWrapper{&b}
+	}
+	w.Info().Msg("wrapper picked on a branch") // OK - both have ctx
+}
+
+func goodPhiLoggerWrapperSwitch(ctx context.Context, base zerolog.Logger, n int) {
+	a := base.With().Ctx(ctx).Logger()
+	b := zerolog.Ctx(ctx).With().Logger()
+	var w phiLoggerWrapper
+	switch n {
+	case 0:
+		w = phiLoggerWrapper{&a}
+	default:
+		w = phiLoggerWrapper{&b}
+	}
+	w.Info().Msg("wrapper picked in a switch") // OK
+}
+
+func goodPhiLoggerWrapperLoop(ctx context.Context, base zerolog.Logger, n int) {
+	a := base.With().Ctx(ctx).Logger()
+	w := phiLoggerWrapper{&a}
+	for range n {
+		w = phiLoggerWrapper{&a}
+	}
+	w.Info().Msg("wrapper updated in a loop") // OK
+}
+
+func goodPhiArrayElement(ctx context.Context, base zerolog.Logger, cond bool) {
+	a := base.With().Ctx(ctx).Logger()
+	b := zerolog.Ctx(ctx).With().Logger()
+	h := phiArrayHolder{[1]*zerolog.Logger{&a}}
+	if cond {
+		h = phiArrayHolder{[1]*zerolog.Logger{&b}}
+	}
+	h.ls[0].Info().Msg("element picked on a branch") // OK
+}
+
+func goodPhiEventWrapper(ctx context.Context, logger zerolog.Logger, cond bool) {
+	w := phiEventWrapper{logger.Info().Ctx(ctx)}
+	if cond {
+		w = phiEventWrapper{logger.Warn().Ctx(ctx)}
+	}
+	w.Msg("event wrapper picked on a branch") // OK
+}
+
+func goodPhiEventWrapperInPlace(ctx context.Context, logger zerolog.Logger, cond bool) {
+	w := phiEventWrapper{logger.Info()}
+	if cond {
+		w = phiEventWrapper{logger.Warn()}
+	}
+	w.Ctx(ctx)
+	w.Msg("event wrapper, Ctx in place") // OK
+}
+
+func goodPhiEventPtrWrapper(ctx context.Context, logger zerolog.Logger, cond bool) {
+	w := phiEventPtrWrapper{&phiEventEmbedded{logger.Info().Ctx(ctx)}}
+	if cond {
+		w = phiEventPtrWrapper{&phiEventEmbedded{logger.Warn().Ctx(ctx)}}
+	}
+	w.Msg("embedded pointer picked on a branch") // OK
+}
+
+func goodPhiEventPtrWrapperInPlace(ctx context.Context, logger zerolog.Logger, cond bool) {
+	a := &phiEventEmbedded{logger.Info()}
+	b := &phiEventEmbedded{logger.Warn()}
+	w := phiEventPtrWrapper{a}
+	if cond {
+		w = phiEventPtrWrapper{b}
+	}
+	w.Ctx(ctx)
+	w.Msg("embedded pointer, Ctx in place") // OK
+}
+
+func badPhiLoggerWrapperOneBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	a := base.With().Ctx(ctx).Logger()
+	w := phiLoggerWrapper{&a}
+	if cond {
+		w = phiLoggerWrapper{&base}
+	}
+	w.Info().Msg("one wrapper lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPhiArrayElementOneBranch(ctx context.Context, base zerolog.Logger, cond bool) {
+	a := base.With().Ctx(ctx).Logger()
+	h := phiArrayHolder{[1]*zerolog.Logger{&a}}
+	if cond {
+		h = phiArrayHolder{[1]*zerolog.Logger{&base}}
+	}
+	h.ls[0].Info().Msg("one element lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPhiEventWrapperOneBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	w := phiEventWrapper{logger.Info().Ctx(ctx)}
+	if cond {
+		w = phiEventWrapper{logger.Warn()}
+	}
+	w.Msg("one event wrapper lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPhiEventWrapperInPlaceOneBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	w := phiEventWrapper{logger.Info()}
+	if cond {
+		w = phiEventWrapper{logger.Warn()}
+	} else {
+		w.Ctx(ctx)
+	}
+	w.Msg("Ctx in place on one branch only") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPhiEventPtrWrapperOneBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	w := phiEventPtrWrapper{&phiEventEmbedded{logger.Info().Ctx(ctx)}}
+	if cond {
+		w = phiEventPtrWrapper{&phiEventEmbedded{logger.Warn()}}
+	}
+	w.Msg("one embedded pointer lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPhiEventPtrWrapperInPlaceOther(ctx context.Context, logger zerolog.Logger, cond bool) {
+	a := &phiEventEmbedded{logger.Info()}
+	b := &phiEventEmbedded{logger.Warn()}
+	w := phiEventPtrWrapper{a}
+	if cond {
+		w = phiEventPtrWrapper{b}
+	}
+	a.Ctx(ctx)
+	w.Msg("Ctx in place on one of the events only") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

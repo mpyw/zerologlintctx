@@ -88,6 +88,9 @@ type eventStep struct {
 	// readVariable reports that read is an element at an index that is not
 	// a constant.
 	readVariable bool
+	// more are the other steps the value is too, each a read of its own, for
+	// a value selected from a Phi of struct or array values.
+	more []eventStep
 }
 
 // eventCtxCall is a call of Event.Ctx given a context that is not fresh, and
@@ -511,21 +514,24 @@ func (ix *eventIndex) expand(start eventStep, values map[ssa.Value]bool, reads m
 		}
 	}
 	var visit func(v ssa.Value)
+	var walk func(step eventStep)
 	visit = func(v ssa.Value) {
 		if values[v] {
 			return
 		}
 		values[v] = true
-		step := ix.stepOf(v)
+		walk(ix.stepOf(v))
+	}
+	walk = func(step eventStep) {
 		add(step)
 		for _, next := range step.next {
 			visit(next)
 		}
+		for _, m := range step.more {
+			walk(m)
+		}
 	}
-	add(start)
-	for _, next := range start.next {
-		visit(next)
-	}
+	walk(start)
 	return sources
 }
 
@@ -588,13 +594,37 @@ func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 			}
 		}
 	case *ssa.Field, *ssa.Index:
-		if at, load, ok := ssaflow.LoadedSelection(v); ok {
-			if sources, ok := ix.resolver().ResolveAt(at, load); ok {
-				return ix.resolvedStep(sources, at)
-			}
+		if step, ok := ix.selectedStep(v); ok {
+			return step
 		}
 	}
 	return eventStep{sources: []eventSource{{v: v}}}
+}
+
+// selectedStep is the step back from v, a field of a struct value or an
+// element of an array value, to what each read of it from memory can see
+// (see ssaflow.LoadedSelection). A value selected from a Phi of such values
+// is a read for each load an edge leads to, and the first read is the step
+// itself, the rest its more. ok is false when a read cannot be resolved.
+func (ix *eventIndex) selectedStep(v ssa.Value) (eventStep, bool) {
+	reads, ok := ssaflow.LoadedSelection(v)
+	if !ok {
+		return eventStep{}, false
+	}
+	var steps []eventStep
+	for _, rd := range reads {
+		sources, ok := ix.resolver().ResolveAt(rd.At, rd.Load)
+		if !ok {
+			return eventStep{}, false
+		}
+		steps = append(steps, ix.resolvedStep(sources, rd.At))
+	}
+	if len(steps) == 0 {
+		return eventStep{}, true // Only zero values, which hold no event
+	}
+	step := steps[0]
+	step.more = steps[1:]
+	return step, true
 }
 
 // resolvedStep is the step back to sources, what a read of the place at can
@@ -923,6 +953,9 @@ func (g *eventRunGraph) step(x *eventRunVertex, step eventStep, at ssa.Instructi
 		} else {
 			g.stored(next, use, *step.read, step.readVariable, x)
 		}
+	}
+	for _, m := range step.more {
+		g.step(x, m, at)
 	}
 }
 

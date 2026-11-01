@@ -238,6 +238,8 @@ func addrSel(v ssa.Value) (from ssa.Value, s sel, ok bool) {
 // valueSel returns the selection v makes, a field of a struct value or an
 // element of an array value, and the value it selects from. ok is false for
 // any other value.
+//
+//declscope:private
 func valueSel(v ssa.Value) (from ssa.Value, s sel, ok bool) {
 	switch v := v.(type) {
 	case *ssa.Field:
@@ -259,6 +261,13 @@ func elemSel(index ssa.Value) sel {
 	return s
 }
 
+// LoadedRead is a read of a struct or array value loaded whole from an
+// address: the place selected from that address, and the load.
+type LoadedRead struct {
+	At   Place
+	Load *ssa.UnOp
+}
+
 // LoadedSelection returns where v, a field of a struct value or an element of
 // an array value, selected from one loaded whole from an address, is read
 // from: the same selections from that address, and the load. ok is false when
@@ -266,23 +275,74 @@ func elemSel(index ssa.Value) sel {
 //
 //	t8 = *t4                // the whole struct, loaded
 //	t9 = t8.Logger          // v, read from t4.Logger
-func LoadedSelection(v ssa.Value) (at Place, load *ssa.UnOp, ok bool) {
-	var selections []sel
+//
+// A value selected from a Phi of such values is read from each edge, at the
+// same selections, so there is one read for each load an edge leads to. An
+// edge that is a constant, the zero value, has nothing to read, and one that
+// leads back to the Phi adds nothing new:
+//
+//	t17 = phi [0: t12, 1: t16]  // t12 = *t10 ; t16 = *t14
+//	t18 = t17.Logger            // read from t10.Logger and t14.Logger
+//
+// ok is false when an edge is neither a load, a selection from one, nor
+// such a Phi.
+func LoadedSelection(v ssa.Value) (reads []LoadedRead, ok bool) {
+	from, path := selectionsOf(v)
+	if len(path) == 0 {
+		return nil, false
+	}
+	if !appendLoadedReads(&reads, from, path, make(map[*ssa.Phi]bool)) {
+		return nil, false
+	}
+	return reads, true
+}
+
+// selectionsOf returns the value v selects fields and elements from, by
+// value, and the selections, first to last.
+//
+//declscope:private
+func selectionsOf(v ssa.Value) (from ssa.Value, path []sel) {
 	for {
-		from, s, isSel := valueSel(v)
+		x, s, isSel := valueSel(v)
 		if !isSel {
 			break
 		}
-		selections = append(selections, s)
-		v = from
+		path = append(path, s)
+		v = x
 	}
-	load, ok = AsLoad(v)
-	if !ok || len(selections) == 0 {
-		return Place{}, nil, false
+	slices.Reverse(path)
+	return v, path
+}
+
+// appendLoadedReads appends to reads where path, selections from the value
+// v, is read from, as LoadedSelection does, and reports whether it could
+// tell.
+//
+//declscope:private
+func appendLoadedReads(reads *[]LoadedRead, v ssa.Value, path []sel, seen map[*ssa.Phi]bool) bool {
+	if load, isLoad := AsLoad(v); isLoad {
+		base, _ := PlaceOf(load.X)
+		*reads = append(*reads, LoadedRead{At: base.with(path...), Load: load})
+		return true
 	}
-	slices.Reverse(selections)
-	base, _ := PlaceOf(load.X)
-	return base.with(selections...), load, true
+	phi, isPhi := v.(*ssa.Phi)
+	if !isPhi {
+		return false
+	}
+	if seen[phi] {
+		return true
+	}
+	seen[phi] = true
+	for _, edge := range phi.Edges {
+		if _, isConst := edge.(*ssa.Const); isConst {
+			continue // The zero value has nothing to read
+		}
+		from, more := selectionsOf(edge)
+		if !appendLoadedReads(reads, from, append(more, path...), seen) {
+			return false
+		}
+	}
+	return true
 }
 
 // AsLoad returns v as a load, `*x`, and reports whether it is one.
