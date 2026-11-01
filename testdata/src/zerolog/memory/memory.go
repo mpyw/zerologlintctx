@@ -1560,6 +1560,41 @@ func goodEitherPointerParamUpdated(ctx context.Context, l1, l2 *zerolog.Logger, 
 	p.Info().Msg("either pointer") // OK
 }
 
+// A go statement reads the receiver later, so the Phi is not walked, and each
+// pointer parameter takes every store that reaches any read of it.
+func goodEitherPointerParamUpdatedInGo(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	*l2 = zerolog.Ctx(ctx).With().Logger()
+	l1.Info().Msg("after update") // OK
+	copied := *l2
+	copied.Info().Msg("copied after update") // OK
+	p := l1
+	if cond {
+		p = l2
+	}
+	go p.Print("either pointer, in a go statement") // OK
+}
+
+func badEitherFieldReplacedInGo(ctx context.Context, l zerolog.Logger, cond bool) {
+	s := twoLoggerHolder{a: l.With().Ctx(ctx).Logger(), b: l.With().Ctx(ctx).Logger()}
+	p := &s.a
+	if cond {
+		p = &s.b
+	}
+	s = twoLoggerHolder{a: l, b: l}
+	go p.Print("either field, replaced after") // want `zerolog direct logging bypasses context`
+}
+
+func badEitherPointerParamUpdatedInGo(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	l1.Info().Msg("after update") // OK
+	p := l1
+	if cond {
+		p = l2
+	}
+	go p.Print("either pointer, in a go statement") // want `zerolog direct logging bypasses context`
+}
+
 func badFieldPointerCapturedThenReplaced(ctx context.Context, l zerolog.Logger) {
 	s := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
 	p := &s.log
