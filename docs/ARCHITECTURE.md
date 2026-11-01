@@ -967,6 +967,7 @@ Info(&t8.log)             // reads t8.log, and t8 is t1
 | Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable. A store there of a parameter, as SSA makes for a struct parameter, carries the caller's value |
 | Where the pointer is made, any other instruction, such as a call or a Phi | Stops, and carries what tracing the pointer itself finds, for an address that is the pointer itself. Otherwise carries nothing |
 | The entry of a closure, past where the pointer is made, when the closure reads it from the variables it captures | Goes on before each call of the closure, when it is only called where it is made (below) |
+| The entry of a func literal, for a global | Goes on before each call of the func literal, when it is only called where it is made (below) |
 | The entry of the function, past where the pointer is loaded from a parameter, a field of one, or what one points to | Carries the caller's value, which is not known |
 | The entry of the function, otherwise | Carries nothing |
 
@@ -1065,6 +1066,17 @@ globalHolder.log = globalHolder.log.With().Ctx(ctx).Logger() // left out
 globalHolder.log.Info().Msg("x")                             // reported
 
 globalHolder.log = (&holder{globalHolder.log}).log.With().Ctx(ctx).Logger() // left out too
+```
+
+A func literal reads a global as the function that calls it left it. A path
+that gets to the entry of the func literal goes on before each call of it,
+when it is only called where it is made, and on out of the function that
+calls it in the same way (`walkGlobalOut`). A func literal that is run by a
+`go` or `defer` statement, or passed on, adds nothing:
+
+```go
+globalHolder.log = zerolog.Ctx(ctx).With().Logger() // reaches the read
+func() { globalHolder.log.Info().Msg("x") }()       // not reported
 ```
 
 #### Address Matching
@@ -1175,7 +1187,7 @@ negative is a missed report.
 | In-place `Ctx` through another reference (#139) | `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to | `inplace` |
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
-| A pointer read in a closure that is not only called | A closure may read a pointer from a captured variable, such as `h.m` or `*pp`. The pointer is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures` |
+| A pointer read in a closure that is not only called | A closure may read a pointer from a captured variable, such as `h.m` or `*pp`, or the field of a global. The pointer is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures`, `memory` |
 | A captured pointer picked on a branch | A pointer that a closure captures, picked on a branch, is not followed. The walk from where the closure runs does not keep to the paths of the Phi | `closures` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |

@@ -193,7 +193,8 @@ func storePointerOf(root ssa.Value) *storePointer {
 //
 // A store of another pointer at from between def and instr does not stop a
 // path: the pointer read is the one def loaded. A path that gets to the entry
-// of a closure goes on from each call of it (see walkPointerOut). One that
+// of a closure goes on from each call of it (see walkPointerOut), and so does
+// one for a global, which no def makes (see walkGlobalOut). One that
 // gets to the entry of the function, when from is in what a parameter holds,
 // or to a store of a parameter at from, carries the caller's value:
 //
@@ -208,7 +209,18 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 		}
 		return w.stepAt(in)
 	}
-	w.walkPickedBack(instr, toDef, nil)
+	var atEntry func() bool
+	entered := false
+	if w.pointer.global {
+		atEntry = func() bool {
+			entered = true
+			return true
+		}
+	}
+	w.walkPickedBack(instr, toDef, atEntry)
+	if entered {
+		w.walkGlobalOut(instr.Parent())
+	}
 	from := w.pointer.from
 	if reached && from == nil && len(w.at.path) == 0 {
 		w.out.addMade(w.at.root)
@@ -225,8 +237,8 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 		}
 		return w.stepAt(in)
 	}
-	entered := false
-	atEntry := func() bool {
+	entered = false
+	atEntry = func() bool {
 		entered = true
 		if storeIsCallerParam(storeReadFrom(from)) {
 			w.out.unknown = true // The pointer is read from what the caller passed
@@ -237,6 +249,68 @@ func (w *storeWalk) walkPointerBefore(instr ssa.Instruction) {
 	if fv, isFreeVar := storeReadFrom(from).(*ssa.FreeVar); entered && isFreeVar {
 		w.walkPointerOut(def.Parent(), fv, nil)
 	}
+}
+
+// walkGlobalOut goes on from the entry of fn, for a walk whose root is a
+// global, from each call of fn when it is a func literal that is only called
+// where it is made (see storeCallsOf). A store before the call is what the
+// func literal reads there:
+//
+//	g.log = zerolog.Ctx(ctx).With().Logger() // reaches the read
+//	func() { g.log.Info().Msg("x") }()
+//
+// A path that gets to the entry of that function goes on out of it in the
+// same way. One that gets to the entry of a declared function, or of a func
+// literal that is not only called, carries nothing.
+func (w *storeWalk) walkGlobalOut(fn *ssa.Function) {
+	calls, ok := storeCallsOf(fn)
+	if !ok {
+		return
+	}
+	from := make([]WalkPoint, 0, len(calls))
+	for _, call := range calls {
+		from = append(from, WalkPointBefore(call, w.positions))
+	}
+	entered := false
+	atEntry := func() bool {
+		entered = true
+		return true
+	}
+	walkBack(from, w.stepAt, atEntry, nil)
+	if entered {
+		w.walkGlobalOut(fn.Parent())
+	}
+}
+
+// storeCallsOf returns the calls of fn, a func literal, when it is only
+// called where it is made: each use of it is a call of it, or makes a closure
+// of it that is only called (see closureRuns.callsOnly). A func literal that
+// captures nothing is called as the function itself. ok is false when fn is
+// a declared function, or it has another use, such as a go or defer
+// statement, or one that passes it on.
+func storeCallsOf(fn *ssa.Function) (calls []ssa.Instruction, ok bool) {
+	if fn.Parent() == nil {
+		return nil, false
+	}
+	for _, ref := range *fn.Referrers() {
+		switch r := ref.(type) {
+		case *ssa.MakeClosure:
+			runs, ok := closureRunsOf(r)
+			runCalls, called := runs.callsOnly()
+			if !ok || !called {
+				return nil, false
+			}
+			calls = append(calls, runCalls...)
+		case *ssa.Call:
+			if r.Call.Value != fn || slices.Contains(r.Call.Args, ssa.Value(fn)) {
+				return nil, false
+			}
+			calls = append(calls, r)
+		default:
+			return nil, false
+		}
+	}
+	return calls, true
 }
 
 // walkPointerOut goes on from the entry of fn, a closure that reads the root

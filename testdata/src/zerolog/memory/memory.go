@@ -1481,6 +1481,74 @@ func goodGlobalFieldReplacedThroughLocalCopy(ctx context.Context, cond bool) {
 	globalLoggerHolder.log.Info().Msg("global field, replaced from a local struct") // OK
 }
 
+// A func literal called in place reads the field of a global as the stores
+// before each call of it left it (#321).
+func goodGlobalFieldReadInIIFE(ctx context.Context) {
+	globalLoggerHolder.log = zerolog.Ctx(ctx).With().Logger()
+	func() { globalLoggerHolder.log.Info().Msg("global field, in an IIFE") }() // OK
+}
+
+func goodGlobalFieldReadInNestedIIFE(ctx context.Context, l zerolog.Logger, cond bool) {
+	globalLoggerHolder.log = (&fieldLoggerHolder{l.With().Ctx(ctx).Logger()}).log
+	func() {
+		func() {
+			if cond {
+				globalLoggerHolder.log.Info().Msg("global field, in a nested closure") // OK
+			}
+		}()
+	}()
+}
+
+func goodGlobalFieldReadInFuncLiteralCalledTwice(ctx context.Context, l zerolog.Logger) {
+	f := func() { globalLoggerHolder.log.Info().Msg("global field, called twice") } // OK
+	globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+	f()
+	f()
+}
+
+func badGlobalFieldReadInIIFE(ctx context.Context, l zerolog.Logger) {
+	globalLoggerHolder.log = l
+	func() { globalLoggerHolder.log.Info().Msg("global field, in an IIFE") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badGlobalFieldReadInIIFEStoredOnBranch(ctx context.Context, l zerolog.Logger, cond bool) {
+	globalLoggerHolder.log = l
+	if cond {
+		globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+	}
+	func() { globalLoggerHolder.log.Info().Msg("global field, stored on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badGlobalFieldReadInIIFEStoredAfter(ctx context.Context, l zerolog.Logger) {
+	func() { globalLoggerHolder.log.Info().Msg("global field, stored after the IIFE") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+}
+
+func runGlobalLoggerFunc(f func()) { f() }
+
+func limitationGlobalFieldReadInGoroutine(ctx context.Context) {
+	globalLoggerHolder.log = zerolog.Ctx(ctx).With().Logger()
+	// LIMITATION: the field of a global is followed out of a func literal that
+	// is only called where it is made, not one run by a go or defer statement
+	go func() { globalLoggerHolder.log.Info().Msg("global field, goroutine") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationGlobalFieldReadInDeferredClosure(ctx context.Context, cond bool) {
+	globalLoggerHolder.log = zerolog.Ctx(ctx).With().Logger()
+	// LIMITATION: nor a closure that is deferred
+	defer func() {
+		if cond {
+			globalLoggerHolder.log.Info().Msg("global field, deferred closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+	}()
+}
+
+func limitationGlobalFieldReadInFuncLiteralPassed(ctx context.Context) {
+	globalLoggerHolder.log = zerolog.Ctx(ctx).With().Logger()
+	// LIMITATION: nor one passed to a function
+	runGlobalLoggerFunc(func() { globalLoggerHolder.log.Info().Msg("global field, passed") }) // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A closure that stores to a variable it captures, and then reads it, reads
 // what it stored, as a load of a captured event does.
 func goodClosureStoresCapturedLogger(ctx context.Context, l zerolog.Logger) {
