@@ -4278,12 +4278,6 @@ func goodLoadedPointerStoredThroughField(ctx context.Context, m *loggerPtrField,
 	l.Info().Msg("a pointer read from a field, stored through a box") // OK - h.p is l
 }
 
-func goodFieldPointerStoredThroughField(ctx context.Context, m *loggerPtrField, log zerolog.Logger) {
-	h := loggerPtrBox{p: m.f}
-	*h.p = log.With().Ctx(ctx).Logger()
-	m.f.Info().Msg("the field read again") // OK - both reads of m.f are the same pointer
-}
-
 func badFieldPointerStoredThroughField(ctx context.Context, m *loggerPtrField, log zerolog.Logger) {
 	*m.f = log.With().Ctx(ctx).Logger()
 	h := loggerPtrBox{p: m.f}
@@ -4390,23 +4384,6 @@ func goodReceivedPointerStoredThroughCopiedField(ctx context.Context, ch chan *z
 	l.Info().Msg("stored through a field copied from a field") // OK
 }
 
-func goodReceivedPointerStoredThroughFieldThenUpdated(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger, n int) {
-	l := <-ch
-	h := loggerPtrBox{p: l}
-	*h.p = log.With().Ctx(ctx).Logger()
-	for range n {
-		*h.p = h.p.With().Str("k", "v").Logger()
-	}
-	l.Info().Msg("updated through the box in a loop") // OK
-}
-
-func goodReceivedPointerStoredThroughFieldDeferred(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger) {
-	l := <-ch
-	h := loggerPtrBox{p: l}
-	defer l.Print("deferred, stored after") // OK - the store runs before the deferred call
-	*h.p = log.With().Ctx(ctx).Logger()
-}
-
 func goodReturnedPointerStoredThroughField(ctx context.Context, get func() *zerolog.Logger, log zerolog.Logger) {
 	l := get()
 	h := loggerPtrBox{p: l}
@@ -4421,17 +4398,146 @@ func badOtherReturnedPointerStoredThroughField(ctx context.Context, get func() *
 	l.Info().Msg("another call may return another pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
-func goodGlobalPointerStoredThroughField(ctx context.Context, log zerolog.Logger) {
-	h := loggerPtrBox{p: boxedGlobalLoggerPtr}
-	*h.p = log.With().Ctx(ctx).Logger()
-	boxedGlobalLoggerPtr.Info().Msg("a global pointer, stored through a box") // OK
-}
-
 func badGlobalPointerReplacedAfterStoredInField(ctx context.Context, log zerolog.Logger) {
 	h := loggerPtrBox{p: boxedGlobalLoggerPtr}
 	boxedGlobalLoggerPtr = boxedOtherGlobalLoggerPtr
 	*h.p = log.With().Ctx(ctx).Logger()
 	boxedGlobalLoggerPtr.Info().Msg("the global holds another pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodFieldPointerStoredThroughFieldValueFirst(ctx context.Context, m *loggerPtrField, log zerolog.Logger) {
+	withCtx := log.With().Ctx(ctx).Logger()
+	h := loggerPtrBox{p: m.f}
+	*h.p = withCtx
+	m.f.Info().Msg("the field read again") // OK - both reads of m.f are the same pointer
+}
+
+func goodGlobalPointerStoredThroughFieldValueFirst(ctx context.Context, log zerolog.Logger) {
+	withCtx := log.With().Ctx(ctx).Logger()
+	h := loggerPtrBox{p: boxedGlobalLoggerPtr}
+	*h.p = withCtx
+	boxedGlobalLoggerPtr.Info().Msg("a global pointer, stored through a box") // OK
+}
+
+// Something between the box and the store may put another pointer in the
+// field, or where the pointer is read from: a call, a store through another
+// pointer, a closure, or a go or defer statement. The store through the
+// field is then not followed, as before #390.
+
+func resetLoggerPtrField(*loggerPtrField) {}
+
+func setBoxedGlobalLoggerPtr() {}
+
+func mutateLoggerPtrBox(*loggerPtrBox) {}
+
+func badGlobalPointerSetByCallAfterStoredInField(ctx context.Context, log zerolog.Logger) {
+	*boxedGlobalLoggerPtr = log
+	h := loggerPtrBox{p: boxedGlobalLoggerPtr}
+	setBoxedGlobalLoggerPtr()
+	*h.p = log.With().Ctx(ctx).Logger()
+	boxedGlobalLoggerPtr.Info().Msg("a call may set the global") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFieldPointerResetByCallAfterStoredInField(ctx context.Context, m *loggerPtrField, log zerolog.Logger) {
+	*m.f = log
+	h := loggerPtrBox{p: m.f}
+	resetLoggerPtrField(m)
+	*h.p = log.With().Ctx(ctx).Logger()
+	m.f.Info().Msg("a call may reset m.f") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFieldPointerReplacedThroughAliasAfterStoredInField(ctx context.Context, m, n *loggerPtrField, o *zerolog.Logger, log zerolog.Logger) {
+	*m.f = log
+	*o = log
+	h := loggerPtrBox{p: m.f}
+	n.f = o
+	*h.p = log.With().Ctx(ctx).Logger()
+	m.f.Info().Msg("n may be m") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badReceivedPointerInFieldOfAliasedParams(ctx context.Context, hb, hc *loggerPtrBox, o *zerolog.Logger, ch chan *zerolog.Logger, log zerolog.Logger) {
+	l := <-ch
+	*l = log
+	hb.p = l
+	hc.p = o
+	*hb.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("hc may be hb") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badReceivedPointerInFieldMutatedByCall(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger) {
+	l := <-ch
+	*l = log
+	hb := &loggerPtrBox{p: l}
+	mutateLoggerPtrBox(hb)
+	*hb.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("a call may change hb.p") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badReceivedPointerInFieldMutatedByCallAfterRead(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger) {
+	l := <-ch
+	*l = log
+	hb := &loggerPtrBox{p: l}
+	a := hb.p
+	mutateLoggerPtrBox(hb)
+	_ = a
+	*hb.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("a call may change hb.p after it is read") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badReceivedPointerInFieldReplacedByClosure(ctx context.Context, ch chan *zerolog.Logger, o *zerolog.Logger, log zerolog.Logger) {
+	l := <-ch
+	*l = log
+	h := loggerPtrBox{p: l}
+	func() { h.p = o }()
+	*h.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("the closure changes h.p") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badReceivedPointerPickedIntoField(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger, cond bool) {
+	l := <-ch
+	*l = log
+	p := l
+	if cond {
+		p = <-ch
+	}
+	h := loggerPtrBox{p: p}
+	*h.p = log.With().Ctx(ctx).Logger()
+	l.Info().Msg("h.p may hold another pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// LIMITATION(#390) (false positive): A store through a pointer put in a
+// field is not followed when something between may write memory. That is a
+// call or a go or defer statement, also the one that makes the value stored.
+// For another read of the same pointer from memory, it also counts up to that
+// read.
+
+func limitationFieldPointerStoredThroughField(ctx context.Context, m *loggerPtrField, log zerolog.Logger) {
+	h := loggerPtrBox{p: m.f}
+	*h.p = log.With().Ctx(ctx).Logger()
+	m.f.Info().Msg("the field read again, after a call") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationGlobalPointerStoredThroughField(ctx context.Context, log zerolog.Logger) {
+	h := loggerPtrBox{p: boxedGlobalLoggerPtr}
+	*h.p = log.With().Ctx(ctx).Logger()
+	boxedGlobalLoggerPtr.Info().Msg("a global pointer, after a call") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationReceivedPointerStoredThroughFieldThenUpdated(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger, n int) {
+	l := <-ch
+	h := loggerPtrBox{p: l}
+	*h.p = log.With().Ctx(ctx).Logger()
+	for range n {
+		*h.p = h.p.With().Str("k", "v").Logger()
+	}
+	l.Info().Msg("updated through the box in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationReceivedPointerStoredThroughFieldDeferred(ctx context.Context, ch chan *zerolog.Logger, log zerolog.Logger) {
+	l := <-ch
+	h := loggerPtrBox{p: l}
+	defer l.Print("deferred, stored after") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	*h.p = log.With().Ctx(ctx).Logger()
 }
 
 // ===== A POINTER PICKED ON A BRANCH, TO A VARIABLE CHANGED ELSEWHERE =====

@@ -1179,6 +1179,18 @@ func newLogger() *zerolog.Logger {
 <td>
 
 ```go
+h := box{p: m.f}
+*h.p = log.With().Ctx(ctx).Logger()
+m.f.Info().Msg("hello")
+```
+
+</td>
+<td>⚠️ <b>Reported (limitation).</b> The calls that make the Logger run between the two reads of <code>m.f</code>. A call may put another pointer at <code>m.f</code>, so the store through <code>h.p</code> is not followed</td>
+</tr>
+<tr>
+<td>
+
+```go
 e := log.Info()
 for i := 0; i < 1; i++ {
 	e.Ctx(ctx)

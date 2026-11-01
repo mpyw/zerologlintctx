@@ -5,6 +5,7 @@
 package ssaflow
 
 import (
+	"go/types"
 	"slices"
 
 	"golang.org/x/tools/go/ssa"
@@ -120,7 +121,9 @@ func storesReaching(
 //	t8 = *t0 ; Info(&t8.log)  // t8 and t1 are the same pointer
 //
 // So is a store through a pointer read back from a field where root, or such
-// a read of it, was put (see storeWalk.isRoot).
+// a read of it, was put, when nothing between may write memory (see
+// storeWalk.isRoot). When something may, such stores are not followed at
+// all, and the walk is done again without them.
 //
 // The walk goes back from read, and stops each path at the first store, as
 // for a variable, up to where the pointer is made (see
@@ -150,8 +153,14 @@ func storesReachingPointer(at Place, read ssa.Instruction, positions Positions) 
 		out:       &r,
 		pointer:   storePointerOf(at.root),
 		pointers:  newStorePointers(positions),
+		quiet:     &storeQuiet{},
 	}
 	w.walkToRead(read)
+	if w.quiet.unsure {
+		r = storeReaching{}
+		w = &storeWalk{at: at, positions: positions, out: &r, pointer: storePointerOf(at.root)}
+		w.walkToRead(read)
+	}
 	if r.isEmpty() {
 		return r, false
 	}
@@ -1661,8 +1670,8 @@ func (p *storePointers) through(at Place, root ssa.Value) (Place, placeCover) {
 }
 
 // throughTo returns what through does, where the pointer points to root when
-// it points to a value that is reports as root. Two reads of the same pointer
-// that is not in a variable are such values (see storeWalk.isRoot).
+// it points to a value that is reports as root, such as another read of the
+// same pointer that is not in a variable (see storeWalk.isRoot).
 func (p *storePointers) throughTo(at Place, root ssa.Value, is func(ssa.Value) bool) (Place, placeCover) {
 	return p.throughSeen(at, root, is, make(map[ssa.Value]bool))
 }
@@ -2119,6 +2128,11 @@ type storeWalk struct {
 	// pointer, when not nil, is where root is made, when it is a pointer
 	// that is not in a variable (see storesReachingPointer).
 	pointer *storePointer
+	// quiet, when not nil, keeps a store through a pointer read from
+	// memory, which pointers follows, to a store through root when nothing
+	// between may write memory (see storeWalk.isRoot). The walk of
+	// storesReachingPointer, and each copied walk it starts, has it.
+	quiet *storeQuiet
 	// outer, when not empty, are the closures the walk starts in, innermost
 	// first, out to the function root is in. A path that leads back to the
 	// entry of the first goes on from where it runs (see walkOut).
@@ -2369,21 +2383,170 @@ func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
 	case at.root == w.at.root:
 	case w.pointer != nil && w.pointer.samePointer(at.root, w.at.root):
 		at.root = w.at.root
+	case w.pointers != nil && w.quiet != nil:
+		read := at.root
+		at, limit = w.pointers.throughTo(at, w.at.root, func(v ssa.Value) bool { return w.isRoot(v, read) })
 	case w.pointers != nil:
-		at, limit = w.pointers.throughTo(at, w.at.root, w.isRoot)
+		at, limit = w.pointers.through(at, w.at.root)
 	}
 	return len(at.path), min(at.covers(w.at, w.indexOnce), limit)
 }
 
-// isRoot reports whether v is the root of the walk: root itself, or, for a
-// pointer that is not in a variable, the same pointer as samePointer tells.
-// So a pointer put in a field is root when it is another read of root:
+// isRoot reports whether v, what read, a pointer read from memory, can be,
+// is the root of a walk with quiet: root itself, or, for a pointer that is
+// not in a variable, the same pointer as samePointer tells. So a pointer put
+// in a field is root when it is another read of root:
 //
 //	h := box{p: m.f}        // t3 = *&m.f ; *&h.p = t3
 //	*h.p = v                // t5 = *&h.p ; *t5 = v, and t5 is t3
 //	m.f.Info()              // t7 = *&m.f, and t3 is t7
-func (w *storeWalk) isRoot(v ssa.Value) bool {
-	return v == w.at.root || w.pointer != nil && w.pointer.samePointer(v, w.at.root)
+//
+// The field must still hold v where read reads it: nothing between where v
+// is put in a field and read may write it (see storeQuietBetween), and v
+// cannot be made again before read, as in a loop. For another read of root,
+// nothing between v and where root is read may write where root is read
+// from either. A call there may put another pointer in the field, or at
+// m.f, as a store through another pointer may:
+//
+//	h := box{p: m.f}
+//	reset(m)                // may put another pointer at m.f
+//	*h.p = v                // may be a store through another pointer
+//
+// When v is root, or the same pointer, but not so, the store may be through
+// root, or not, and quiet is unsure: the walk is done again without
+// following the pointers (see storesReachingPointer).
+func (w *storeWalk) isRoot(v, read ssa.Value) bool {
+	same := v == w.at.root
+	if !same && (w.pointer == nil || !w.pointer.samePointer(v, w.at.root)) {
+		return false
+	}
+	from, isInstr := v.(ssa.Instruction)
+	to, readIsInstr := read.(ssa.Instruction)
+	quiet := isInstr && readIsInstr && !storeRunsAgainBefore(from, to, w.positions) &&
+		!slices.ContainsFunc(storePutsOf(from), func(put ssa.Instruction) bool {
+			return !storeQuietBetween(put, to, v.Type(), w.positions)
+		}) &&
+		(same || w.pointer.def != nil && storeQuietBetween(from, w.pointer.def, v.Type(), w.positions))
+	if !quiet {
+		w.quiet.unsure = true
+	}
+	return quiet
+}
+
+// storePutsOf returns where v, a pointer made by an instruction, may be put
+// in a field: each store of v. It is v itself when there is none, as when
+// a field is given v in another way.
+func storePutsOf(v ssa.Instruction) []ssa.Instruction {
+	var puts []ssa.Instruction
+	for _, ref := range *v.(ssa.Value).Referrers() {
+		if store, isStore := ref.(*ssa.Store); isStore && store.Val == v.(ssa.Value) {
+			puts = append(puts, store)
+		}
+	}
+	if len(puts) == 0 {
+		return []ssa.Instruction{v}
+	}
+	return puts
+}
+
+// storeRunsAgainBefore reports whether from may run again before to, as in
+// a loop, so that the pointer from made may be one of an earlier run.
+func storeRunsAgainBefore(from, to ssa.Instruction, positions Positions) bool {
+	return from.Parent() != to.Parent() ||
+		positions.following(from)[from.Block()] && storePreceding(to.Block())[from.Block()]
+}
+
+// storeQuiet is what a walk with quiet found: unsure reports that a store
+// may be through root, or not (see storeWalk.isRoot).
+type storeQuiet struct {
+	unsure bool
+}
+
+// storeQuietBetween reports whether nothing on a path from from to to may
+// write a pointer of type ptr where it is not a local variable: no call, go
+// or defer statement, and no store of a value that may hold such a pointer,
+// but one to a local variable, whose stores the walks see. from and to are
+// in one function.
+func storeQuietBetween(from, to ssa.Instruction, ptr types.Type, positions Positions) bool {
+	if from.Parent() != to.Parent() {
+		return false
+	}
+	after := positions.following(from)
+	before := storePreceding(to.Block())
+	for _, b := range from.Parent().Blocks {
+		lo, hi := 0, len(b.Instrs)
+		if !after[b] {
+			if b != from.Block() {
+				continue
+			}
+			lo = positions.of(from) + 1
+		}
+		if !before[b] {
+			if b != to.Block() {
+				continue
+			}
+			hi = positions.of(to)
+		}
+		for _, instr := range b.Instrs[lo:max(lo, hi)] {
+			if storeMayWrite(instr, ptr) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// storePreceding returns the blocks that can run before b: its
+// predecessors, theirs, and so on. b is among them only in a loop.
+func storePreceding(b *ssa.BasicBlock) map[*ssa.BasicBlock]bool {
+	preceding := make(map[*ssa.BasicBlock]bool)
+	queue := slices.Clone(b.Preds)
+	for len(queue) > 0 {
+		block := queue[0]
+		queue = queue[1:]
+		if preceding[block] {
+			continue
+		}
+		preceding[block] = true
+		queue = append(queue, block.Preds...)
+	}
+	return preceding
+}
+
+// storeMayWrite reports whether instr may write a pointer of type ptr where
+// it is not a local variable (see storeQuietBetween).
+func storeMayWrite(instr ssa.Instruction, ptr types.Type) bool {
+	switch in := instr.(type) {
+	case ssa.CallInstruction, *ssa.RunDefers:
+		return true
+	case *ssa.Store:
+		at, _ := PlaceOf(in.Addr)
+		_, isAlloc := at.root.(*ssa.Alloc)
+		return !isAlloc && storeTypeHolds(in.Val.Type(), ptr)
+	}
+	return false
+}
+
+// storeTypeHolds reports whether a value of type t may hold a pointer of
+// type ptr, not through another pointer: t is ptr, a struct or an array
+// that holds one, or unsafe.Pointer, which may be any pointer.
+func storeTypeHolds(t, ptr types.Type) bool {
+	if types.Identical(t.Underlying(), ptr.Underlying()) {
+		return true
+	}
+	switch t := t.Underlying().(type) {
+	case *types.Struct:
+		for f := range t.Fields() {
+			if storeTypeHolds(f.Type(), ptr) {
+				return true
+			}
+		}
+	case *types.Array:
+		return storeTypeHolds(t.Elem(), ptr)
+	case *types.Basic:
+		return t.Kind() == types.UnsafePointer
+	}
+	return false
 }
 
 // storeIndexAlways takes an index to have one value, so that an element at
@@ -2537,6 +2700,7 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 		out:       w.out,
 		copies:    w.copies,
 		pointers:  w.pointers,
+		quiet:     w.quiet,
 	}
 	if !tracked {
 		if w.pointer == nil {

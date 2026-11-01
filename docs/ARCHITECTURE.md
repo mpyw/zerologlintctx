@@ -1197,9 +1197,27 @@ the same pointer. The store stops the path when the field can hold only
 that one, and is a may store otherwise:
 
 ```go
+v := base.With().Ctx(ctx).Logger()
 h := box{p: m.f}                      // t3 = *&m.f ; *&h.p = t3
-*h.p = base.With().Ctx(ctx).Logger()  // t5 = *&h.p ; *t5 = ..., and t5 is t3
+*h.p = v                              // t5 = *&h.p ; *t5 = v, and t5 is t3
 m.f.Info().Msg("x")                   // t7 = *&m.f, and t7 is t3: not reported
+```
+
+Something between may put another pointer in the field, or at `m.f`, where
+the walk cannot see it (`storeWalk.isRoot`). A call may, and so may a `go`
+or `defer` statement. So may a store of such a pointer, other than to a local
+variable. Each must not be on a path from where the pointer is put in the
+field to where the field is read (`storeQuietBetween`). For another load of
+the pointer, they must not be on a path from the first load to the second
+either. Nor may the pointer be made again first, as in a loop. Otherwise the
+walk is done again without following such fields, as before (see
+[Known Limitations](#known-limitations)):
+
+```go
+h := box{p: m.f}
+reset(m)                              // may put another pointer at m.f
+*h.p = base.With().Ctx(ctx).Logger()  // not followed
+m.f.Info().Msg("x")                   // reported
 ```
 
 | Where a path gets | What it does |
@@ -1605,6 +1623,7 @@ negative is a missed report.
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
+| A pointer put in a field, with a call after it (#390) | A store through a pointer read back from a field may not be followed. That is so when a call, a `go` or `defer` statement, or a store through another pointer may run first. It counts from where the pointer is put in the field to where the field is read. For a second load of the pointer from memory, such as `m.f` read again, it also counts from the first load to the second. That includes the calls that make the value stored | `memory` |
 | A loop with a counter of one run (#391) | `for i := 0; i < 1; i++` always runs once, but its check is on a Phi of the counter, which is not folded. An in-place `e.Ctx(ctx)` in it is taken to be skipped. `for range 1` is folded (see [Branches on Constants](#branches-on-constants)) | `inplace` |
 
 ### False negatives

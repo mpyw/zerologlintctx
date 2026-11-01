@@ -332,3 +332,29 @@ func storeValueOf(instr ssa.Instruction) ssa.Value {
 	v, _ := instr.(ssa.Value)
 	return v
 }
+
+// TestStoreTypeHolds checks which values may hold a pointer, not through
+// another pointer: the pointer, a struct or array of one, and
+// unsafe.Pointer, but not a pointer to it or another type.
+func TestStoreTypeHolds(t *testing.T) {
+	ptr := types.NewPointer(types.Typ[types.Int])
+	box := types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "p", ptr, false)}, nil)
+	tests := []struct {
+		name string
+		t    types.Type
+		want bool
+	}{
+		{"the pointer", ptr, true},
+		{"a struct of one", box, true},
+		{"an array of structs of one", types.NewArray(box, 2), true},
+		{"unsafe.Pointer", types.Typ[types.UnsafePointer], true},
+		{"a pointer to a struct of one", types.NewPointer(box), false},
+		{"another basic type", types.Typ[types.Int], false},
+		{"a struct of another type", types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "n", types.Typ[types.Int], false)}, nil), false},
+	}
+	for _, tt := range tests {
+		if got := storeTypeHolds(tt.t, ptr); got != tt.want {
+			t.Errorf("storeTypeHolds(%s) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
