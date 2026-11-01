@@ -1742,6 +1742,114 @@ func badPointerFromStructParamCopiedOutsideAndInClosure(ctx context.Context, h l
 	}()
 }
 
+// A copy of a copy, each made in a func literal: the pointer is followed
+// past both copies, out to the caller's struct (#368).
+func badPointerFromStructParamCopiedInClosureAndInNestedClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		a := h
+		func() {
+			b := a
+			q := b.p
+			if other {
+				*q = l.With().Ctx(ctx).Logger()
+			}
+			q.Info().Msg("from the caller's struct, copied in two closures") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func badPointerFromStructParamCopiedInThreeClosures(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		a := h
+		func() {
+			b := a
+			func() {
+				c := b
+				q := c.p
+				if other {
+					*q = l.With().Ctx(ctx).Logger()
+				}
+				q.Info().Msg("from the caller's struct, copied in three closures") // want `zerolog call chain missing .Ctx\(ctx\)`
+			}()
+		}()
+	}()
+}
+
+// The innermost func literal reads the pointer from the struct it captures,
+// with no copy of its own.
+func badPointerFromStructParamCopiedInTwoClosuresReadInThird(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		b := h
+		func() {
+			a := b
+			func() {
+				q := a.p
+				if other {
+					*q = l.With().Ctx(ctx).Logger()
+				}
+				q.Info().Msg("copied in two closures, read in a third") // want `zerolog call chain missing .Ctx\(ctx\)`
+			}()
+		}()
+	}()
+}
+
+func badPointerFromStructParamStoredThroughThenCopiedInTwoClosures(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		*h.p = l
+		a := h
+		func() {
+			b := a
+			q := b.p
+			if other {
+				*q = l.With().Ctx(ctx).Logger()
+			}
+			q.Info().Msg("stored through without ctx, then copied in two closures") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func goodPointerFromStructParamStoredThroughThenCopiedInTwoClosures(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		*h.p = l.With().Ctx(ctx).Logger()
+		a := h
+		func() {
+			b := a
+			q := b.p
+			if other {
+				*q = l.With().Ctx(ctx).Logger()
+			}
+			q.Info().Msg("stored through, then copied in two closures") // OK
+		}()
+	}()
+}
+
+func goodPointerFromStructParamCopiedInClosureStoredThroughCopy(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		a := h
+		*a.p = l.With().Ctx(ctx).Logger()
+		func() {
+			b := a
+			q := b.p
+			if other {
+				*q = l.With().Ctx(ctx).Logger()
+			}
+			q.Info().Msg("copied, stored through the copy, copied again") // OK
+		}()
+	}()
+}
+
+func goodPointerFromStructParamCopiedInTwoClosuresStored(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	func() {
+		a := h
+		func() {
+			b := a
+			q := b.p
+			*q = l.With().Ctx(ctx).Logger()
+			q.Info().Msg("copied in two closures, stored on every path") // OK
+		}()
+	}()
+}
+
 func badPointerFromStructParamCopiedTwiceInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
 	func() {
 		a := h
