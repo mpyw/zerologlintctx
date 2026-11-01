@@ -268,7 +268,7 @@ func (w *storeWalk) walkPointerBefore(starts []WalkFrom[storePath]) {
 		w.walkPastCopyIn(c)
 	}
 	if fv, isFreeVar := storeReadFrom(from).(*ssa.FreeVar); entered && isFreeVar {
-		w.walkPointerOut(def.Parent(), fv, nil, storeLoadsIn(from))
+		w.walkPointerOut(def.Parent(), fv, nil, storeLoadsIn(from), storeSelsFrom(from))
 	}
 }
 
@@ -370,7 +370,7 @@ func (w *storeWalk) walkPastCopyIn(c storeCopySource) {
 		w.walkPastCopyIn(next)
 	}
 	if fv, isFreeVar := storeReadFrom(c.load.X).(*ssa.FreeVar); entered && isFreeVar {
-		past.walkPointerOut(c.store.Parent(), fv, nil, storeLoadsIn(c.load.X))
+		past.walkPointerOut(c.store.Parent(), fv, nil, storeLoadsIn(c.load.X), append(storeSelsFrom(c.load.X), c.sels...))
 	}
 }
 
@@ -458,11 +458,26 @@ func storeCallsOf(fn *ssa.Function) (calls []ssa.Instruction, ok bool) {
 // **pp = l does, leaves the pointer as it is. In the function the variable is
 // declared in, a walk past a copy of what it holds goes on from the call
 // instead, when one is found (see walkPastCopy).
+//
+// A walk that went past a copy already goes on past another one, as it went
+// past the first. The variable must be a struct or array that one store
+// copies there from memory before the call (see walkPastCopyFrom):
+//
+//	func() {
+//	    a := h                        // h is a struct parameter
+//	    func() {
+//	        b := a                    // the walk goes past this copy first
+//	        q := b.p
+//	        q.Info()                  // q is a.p, then h.p
+//	    }()
+//	}()
+//
 // runs are the runs of the closures that the walk went out of to get to fn,
 // innermost first, and loads is how many loads the pointer takes from fv (see
-// storeLoadsIn). A closure that is not only called where it is made adds
-// nothing. A walk that went past a copy already looks for no other one.
-func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []matchClosureRun, loads int) {
+// storeLoadsIn). When loads is 0, sels are the selections from fv to where
+// the pointer is read. A closure that is not only called where it is made
+// adds nothing.
+func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []matchClosureRun, loads int, sels []sel) {
 	idx := slices.Index(fn.FreeVars, fv)
 	source := w.pointer.source
 	pastCopy := source != nil || slices.ContainsFunc(runs, func(r matchClosureRun) bool { return r.copied != nil })
@@ -492,6 +507,9 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 				out.walkPastCopy(call, w.pointer.from)
 				continue
 			}
+			if pastCopy && !boundFree && loads == 0 && out.walkPastCopyFrom(mc.Bindings[idx], call, sels) {
+				continue
+			}
 			atEntry := func() bool {
 				switch {
 				case !boundFree:
@@ -504,7 +522,7 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 				case storesThrough(bound, loads):
 					w.out.unknown = true
 				default:
-					w.walkPointerOut(mc.Parent(), bound, outRuns, loads)
+					w.walkPointerOut(mc.Parent(), bound, outRuns, loads, sels)
 				}
 				return true
 			}
@@ -520,6 +538,37 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 			walkBack([]WalkPoint{WalkPointBefore(call, w.positions)}, visit, atEntry, nil)
 		}
 	}
+}
+
+// walkPastCopyFrom walks for the stores through the root of a walk that went
+// past a copy already. It walks from call, a call of a closure that reads the
+// root at sels from bound, the variable it binds. It reports whether one
+// store copies a whole aggregate there from memory before call, as
+// storeCopiedTo finds it. The walk then goes back from call to that copy. For
+// the paths that get there, it goes on past the copy, as walkPastCopyIn goes
+// past one made where the pointer is read.
+func (w *storeWalk) walkPastCopyFrom(bound ssa.Value, call ssa.Instruction, sels []sel) bool {
+	copied := storeCopiedTo(bound, call, 0)
+	if copied == nil {
+		return false
+	}
+	c, isCopy := storeCopyOf(copied, bound, sels)
+	if !isCopy {
+		return false
+	}
+	reached := false
+	toCopy := func(in ssa.Instruction) WalkStep {
+		if in == ssa.Instruction(copied) {
+			reached = true
+			return WalkStop
+		}
+		return w.stepAt(in)
+	}
+	walkBack([]WalkPoint{WalkPointBefore(call, w.positions)}, toCopy, nil, nil)
+	if reached {
+		w.walkPastCopyIn(c)
+	}
+	return true
 }
 
 // storeCopiedTo returns the store that copies what bound, the variable a
@@ -610,7 +659,8 @@ func (w *storeWalk) walkPastCopy(call ssa.Instruction, from ssa.Value) {
 	if fv, isFreeVar := storeReadFrom(copied.Val).(*ssa.FreeVar); entered && isLoad && isFreeVar {
 		// The value copied is read from a variable the closure of call
 		// captures: the same pointer is there as that closure starts
-		w.walkPointerOut(call.Parent(), fv, runs, storeLoadsIn(load.X)+storeLoadsIn(from))
+		w.walkPointerOut(call.Parent(), fv, runs, storeLoadsIn(load.X)+storeLoadsIn(from),
+			append(storeSelsFrom(load.X), storeSelsFrom(from)...))
 	}
 }
 
@@ -628,6 +678,17 @@ func storeOverwritesWithin(store *ssa.Store, addr ssa.Value, sels []sel) bool {
 	}
 	at.root = addr
 	return at.overlaps(Place{root: addr, path: sels})
+}
+
+// storeSelsFrom returns the selections that v, an address, takes from the
+// value storeReadFrom returns for it, when it takes no load on the way, as
+// matchSelsOf does. It returns nil when v takes a load.
+func storeSelsFrom(v ssa.Value) []sel {
+	if storeLoadsIn(v) > 0 {
+		return nil
+	}
+	_, sels := matchSelsOf(v)
+	return sels
 }
 
 // storeSelsOfRoot returns the selections that v, an address, takes from the

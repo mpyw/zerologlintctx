@@ -1246,7 +1246,7 @@ func() { h.p.Info().Msg("x") }()            // the caller's Logger when cond is 
 When the copy is made in a closure, from a variable that closure captures,
 as `b := *other` in a func literal does, a path that gets to the entry of
 that closure goes on out of it in the same way, through the variable the
-value copied is read from (#339). Only one copy is followed on the way out:
+value copied is read from (#339):
 
 ```go
 func() {
@@ -1255,6 +1255,27 @@ func() {
         *b.p = b.p.With().Ctx(ctx).Logger()
     }
     func() { b.p.Info().Msg("x") }() // the caller's Logger when cond is false: reported
+}()
+```
+
+A copy found further out, after the walk went past one, is gone past in
+the same way. It must be the one store of a whole struct or array that
+reaches the call, loaded from memory (`walkPastCopyFrom`). The walk goes
+back from the call to the copy, then on past it as for a copy made where
+the pointer is read. So a chain of copies, one in each closure, leads out
+to the caller's struct (#368):
+
+```go
+func() {
+    a := h                         // h is a struct parameter
+    func() {
+        b := a
+        q := b.p
+        if other {
+            *q = l.With().Ctx(ctx).Logger()
+        }
+        q.Info().Msg("x")          // the caller's Logger when other is false: reported
+    }()
 }()
 ```
 
