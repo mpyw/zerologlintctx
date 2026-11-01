@@ -278,7 +278,7 @@ function.
 | `storeWalk.walkBefore`: stores that reach a read | Back | A store to the address, or its declaration | Through a Phi of pointers, the edges that hold the variable picked |
 | `storeWalk.walkDeferred`: stores that reach the returns after a `defer` | Back | The same, or the `defer` | The blocks on a path through the `defer` (`walkThrough`) |
 | `storeWalk.addStoresAfter`: stores after an escape of a variable declared in a loop | Forward | Its declaration on the next iteration | All |
-| `eventQuery.ctxRunsBefore`: an `Event.Ctx` call before a terminator | Back | A `Ctx` call on the event, or a store of another event where it is read | Through a Phi it is read through, the edges that carry the event |
+| `eventQuery.ctxRunsBefore`: an `Event.Ctx` call before a terminator | Back | A `Ctx` call on the event, or a store of another event where it is read | Through a Phi it is read through, the edges that carry the event. Through a Phi of pointers it is loaded through, the edges whose place can hold it |
 | `eventQuery.ctxRunsAfterDefer`: an `Event.Ctx` call after a deferred terminator | Forward | A `Ctx` call on the event | All |
 
 `WalkReachable` answers a narrower question: whether a path from a point
@@ -290,7 +290,8 @@ the event of the latest run of a call in a loop (see
 `walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
 the visit of each instruction too. A block is walked once in each
 state. `walkBefore` uses it to keep, on each path, the Phi that must still
-point to the variable picked.
+point to the variable picked. `ctxRunsBefore` keeps the value the path
+carries in place of the receiver, and the event it carries (`eventPath`).
 
 ### Closures and Func Literals
 
@@ -485,6 +486,24 @@ for range n {
     e.Msg("x")          // reported: e2 on the later iterations
     e = e2
 }
+```
+
+A load through a Phi of pointers, such as `h.e` after `h := &holder{e}; if
+cond { h = q }`, reads another place on each edge. A path that takes an edge
+carries the event only when the place that edge reads can hold it, as a walk
+of that place alone from the load finds (`eventQuery.sourcePicked`). The
+event the function cannot tell at the place loaded is, on the path, the one
+at the place of the edge, such as the caller's event at `q.e`. A `Ctx` call
+on `q.e` counts for it there, and a store to `q.e` of another event ends the
+path:
+
+```go
+h := &holder{logger.Info().Ctx(ctx)}  // this path carries only this event
+if cond {
+    q.e.Ctx(ctx)                      // the caller's event at q.e
+    h = q
+}
+h.e.Msg("x")                          // OK
 ```
 
 A func literal called where it is made, as an IIFE is, runs at each call,
@@ -1130,7 +1149,6 @@ negative is a missed report.
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
 | A pointer read in a closure that is not only called | A pointer that a closure reads from a captured variable, such as `h.m` or `*pp`, is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures` |
 | A captured pointer picked on a branch | A pointer that a closure captures, picked on a branch, is not followed. The walk from where the closure runs does not keep to the paths of the Phi | `closures` |
-| Pointers picked by a Phi, on the walk back | The walk back from a terminator does not tell which pointer a path takes at a Phi of pointers, such as `h` in `h := &holder{e}; if cond { h = q }`. A path through `&holder{e}` that reaches the entry is taken to carry the caller's event at `q.e`, even when a `Ctx` call runs on it on the other branch. The other way, it is a false negative | `phi` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
@@ -1146,7 +1164,6 @@ negative is a missed report.
 | Events made in a loop | A value can hold the event of the latest run of a call on one path, and of an earlier run on another. A `Ctx` call on it counts for the latest run on both paths | `inplace` |
 | Events stored back | A `Ctx` call on a read that can see several events counts for each of them. It counts even where a path stores one of those events back over another after the call | `inplace` |
 | The caller's event copied over | A `Ctx` call on the caller's event at a place counts at later reads of the place. It counts even when another value of the caller's is copied over it in between | `inplace` |
-| Pointers picked by a Phi, on the walk back | See the false positive of the same name. A path through `q` that meets a store into a struct literal the other event is read from, such as `&holder{(&box{logger.Info()}).v.Ctx(ctx)}`, ends there, as if another event were stored where the receiver is read | `phi` |
 | Panics | A deferred call is checked at the returns after its `defer` statement. It is not checked at the points where a panic could run it | `deferred` |
 | Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. The value stored before it is taken as the one read | `memory` |
 | Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
