@@ -687,6 +687,46 @@ func badEventCtxOnOtherElementMadeInLoop(ctx context.Context, log zerolog.Logger
 	evs[1].Msg("ctx on another element") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func badEventCtxOnOtherElementMadeInLoopReadThroughBox(ctx context.Context, log zerolog.Logger) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		evs[i] = log.Info()
+	}
+	evs[0].Ctx(ctx)
+	(&inPlaceHolder{evs[1]}).e.Msg("ctx on another element, read through a box") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxThroughBoxOnOtherElementMadeInLoop(ctx context.Context, log zerolog.Logger) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		evs[i] = log.Info()
+	}
+	(&inPlaceHolder{evs[0]}).e.Ctx(ctx)
+	evs[1].Msg("ctx through a box on another element") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxOnEachElementMadeInLoopReadThroughBox(ctx context.Context, log zerolog.Logger) {
+	var evs [2]*zerolog.Event
+	for i := range 2 {
+		e := log.Info()
+		e.Ctx(ctx)
+		evs[i] = e
+	}
+	(&inPlaceHolder{evs[1]}).e.Msg("ctx on each element, read through a box") // OK
+}
+
+func goodEventCtxOnPreviousIterationReadThroughBox(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		e.Ctx(ctx)
+		if last != nil {
+			(&inPlaceHolder{last}).e.Msg("ctx on each iteration, read through a box") // OK
+		}
+		last = e
+	}
+}
+
 func badEventCtxOnLatestForPreviousIteration(ctx context.Context, log zerolog.Logger) {
 	var last *zerolog.Event
 	for range 2 {

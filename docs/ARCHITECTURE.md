@@ -676,7 +676,9 @@ for range n {
 When the receiver holds only earlier runs, the walk back does not fail at
 the latest run of the call. It goes on before it, where a `Ctx` call on any
 run counts, and fails at the run before. So a `Ctx` call on each event before
-it is kept for the next iteration counts.
+it is kept for the next iteration counts. Each path goes on before it with the
+value it carries there, not the receiver: for `(&box{evs[1]}).v`, a path that
+passed the store into the box carries `evs[1]`.
 
 A `Ctx` call in a func literal called in place, on an event it reads from a
 variable it captures, is followed from where the func literal is called: a
