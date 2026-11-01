@@ -231,6 +231,51 @@ func badContextCtxBackgroundAfterCtx(ctx context.Context, base zerolog.Logger) {
 	l.Info().Msg("Background after ctx on the logger") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+type freshEventHolder struct{ e *zerolog.Event }
+
+// A store of the event after a fresh Ctx call keeps the fresh context, though
+// the value stored has ctx in its chain (#277).
+
+func badEventCtxBackgroundInPlaceOverCtxStoredAfter(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	e.Ctx(context.Background())
+	h := &freshEventHolder{e}
+	h.e.Msg("Background in place over ctx, stored after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundOnOnePathStoredAfter(ctx context.Context, log zerolog.Logger, detached bool) {
+	e := log.Info().Ctx(ctx)
+	if detached {
+		e.Ctx(context.Background())
+	}
+	(&freshEventHolder{e}).e.Msg("Background on one path, stored after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceOverCtxPickedAfter(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	e.Ctx(context.Background())
+	x := e
+	if cond {
+		x = e.Str("k", "v")
+	}
+	x.Msg("Background in place over ctx, picked on a branch after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxAfterBackgroundStoredWithCtx(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	e.Ctx(context.Background())
+	h := &freshEventHolder{e.Ctx(ctx)}
+	h.e.Msg("ctx after Background, stored") // OK - ctx is the last
+}
+
+func goodEventCtxBackgroundBeforeAnotherEventStored(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	h := &freshEventHolder{e}
+	e.Ctx(context.Background())
+	h.e = log.Warn().Ctx(ctx)
+	h.e.Msg("Background on the event replaced after") // OK - another event
+}
+
 func goodEventCtxAfterBackgroundChained(ctx context.Context, log zerolog.Logger) {
 	log.Info().Ctx(context.Background()).Ctx(ctx).Msg("x") // OK - ctx is the last
 }
