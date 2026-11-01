@@ -119,6 +119,9 @@ func storesReaching(
 //	t1 = *t0 ; *&t1.log = v   // reaches the read
 //	t8 = *t0 ; Info(&t8.log)  // t8 and t1 are the same pointer
 //
+// So is a store through a pointer read back from a field where root, or such
+// a read of it, was put (see storeWalk.isRoot).
+//
 // The walk goes back from read, and stops each path at the first store, as
 // for a variable, up to where the pointer is made (see
 // storeWalk.walkPointerBefore). A path that gets there, for at the pointer
@@ -141,7 +144,13 @@ func storesReachingPointer(at Place, read ssa.Instruction, positions Positions) 
 	if _, isConst := at.root.(*ssa.Const); isConst || read == nil {
 		return r, false
 	}
-	w := &storeWalk{at: at, positions: positions, out: &r, pointer: storePointerOf(at.root)}
+	w := &storeWalk{
+		at:        at,
+		positions: positions,
+		out:       &r,
+		pointer:   storePointerOf(at.root),
+		pointers:  newStorePointers(positions),
+	}
 	w.walkToRead(read)
 	if r.isEmpty() {
 		return r, false
@@ -1648,13 +1657,25 @@ func (p *storePointers) reaching(at Place, read ssa.Instruction) (storeReaching,
 //	b := loggerPtrBox{l}      // t3 = *l ; *&t0.p = t3, and l is the parameter
 //	*b.p = v                  // t6 = *&t0.p ; *t6 = v, and t6 is t3
 func (p *storePointers) through(at Place, root ssa.Value) (Place, placeCover) {
-	return p.throughSeen(at, root, make(map[ssa.Value]bool))
+	return p.throughTo(at, root, func(v ssa.Value) bool { return v == root })
 }
 
-// throughSeen returns what through does, for a pointer that is not in seen,
+// throughTo returns what through does, where the pointer points to root when
+// it points to a value that is reports as root. Two reads of the same pointer
+// that is not in a variable are such values (see storeWalk.isRoot).
+func (p *storePointers) throughTo(at Place, root ssa.Value, is func(ssa.Value) bool) (Place, placeCover) {
+	return p.throughSeen(at, root, is, make(map[ssa.Value]bool))
+}
+
+// throughSeen returns what throughTo does, for a pointer that is not in seen,
 // the pointers already gone through, as one copied back and forth in a loop
 // leads back to.
-func (p *storePointers) throughSeen(at Place, root ssa.Value, seen map[ssa.Value]bool) (Place, placeCover) {
+func (p *storePointers) throughSeen(
+	at Place,
+	root ssa.Value,
+	is func(ssa.Value) bool,
+	seen map[ssa.Value]bool,
+) (Place, placeCover) {
 	if _, isRead := storePointerRead(at.root); !isRead || seen[at.root] {
 		return at, coverNone
 	}
@@ -1670,10 +1691,11 @@ func (p *storePointers) throughSeen(at Place, root ssa.Value, seen map[ssa.Value
 		}
 		tat, _ := PlaceOf(t.v)
 		tat = tat.with(at.path...)
-		if tat.root == root {
+		if is(tat.root) {
+			tat.root = root
 			return tat, cover
 		}
-		if inner, c := p.throughSeen(tat, root, seen); c != coverNone {
+		if inner, c := p.throughSeen(tat, root, is, seen); c != coverNone {
 			return inner, min(c, cover)
 		}
 	}
@@ -2348,9 +2370,20 @@ func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
 	case w.pointer != nil && w.pointer.samePointer(at.root, w.at.root):
 		at.root = w.at.root
 	case w.pointers != nil:
-		at, limit = w.pointers.through(at, w.at.root)
+		at, limit = w.pointers.throughTo(at, w.at.root, w.isRoot)
 	}
 	return len(at.path), min(at.covers(w.at, w.indexOnce), limit)
+}
+
+// isRoot reports whether v is the root of the walk: root itself, or, for a
+// pointer that is not in a variable, the same pointer as samePointer tells.
+// So a pointer put in a field is root when it is another read of root:
+//
+//	h := box{p: m.f}        // t3 = *&m.f ; *&h.p = t3
+//	*h.p = v                // t5 = *&h.p ; *t5 = v, and t5 is t3
+//	m.f.Info()              // t7 = *&m.f, and t3 is t7
+func (w *storeWalk) isRoot(v ssa.Value) bool {
+	return v == w.at.root || w.pointer != nil && w.pointer.samePointer(v, w.at.root)
 }
 
 // storeIndexAlways takes an index to have one value, so that an element at

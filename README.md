@@ -388,6 +388,19 @@ l.Info().Msg("hello")
 <td>
 
 ```go
+l := <-ch
+h := box{p: l}
+*h.p = log.With().Ctx(ctx).Logger()
+l.Info().Msg("hello")
+```
+
+</td>
+<td>✅️ <b>Passes.</b> <code>h.p</code> holds <code>l</code>, so the store through it writes <code>*l</code></td>
+</tr>
+<tr>
+<td>
+
+```go
 defer log.Info().Msg("done")
 go log.Info().Msg("started")
 ```

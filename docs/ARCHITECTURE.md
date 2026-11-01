@@ -1173,6 +1173,20 @@ t8 = *t0                  // where the pointer is made
 Info(&t8.log)             // reads t8.log, and t8 is t1
 ```
 
+A store through a pointer read back from a field where the pointer was put
+is a store through the same pointer too (#390). The walk follows the
+pointers read from memory, as the walk for a variable does (see
+[Pointers Read From Memory](#pointers-read-from-memory)). What the field can
+hold is the pointer, or another load of it that `addressesMatch` takes for
+the same pointer. The store stops the path when the field can hold only
+that one, and is a may store otherwise:
+
+```go
+h := box{p: m.f}                      // t3 = *&m.f ; *&h.p = t3
+*h.p = base.With().Ctx(ctx).Logger()  // t5 = *&h.p ; *t5 = ..., and t5 is t3
+m.f.Info().Msg("x")                   // t7 = *&m.f, and t7 is t3: not reported
+```
+
 | Where a path gets | What it does |
 |-------------------|--------------|
 | A store through the same pointer | Records the value, and stops (or goes on for a may store) |
