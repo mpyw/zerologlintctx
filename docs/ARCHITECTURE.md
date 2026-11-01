@@ -959,11 +959,14 @@ p.log = logger                           // after the read
 
 A global can be changed anywhere, by another goroutine too, so what a load of
 it read is not known either. An update of a global, which builds on such a
-load, is left out, and the path goes on past it:
+load, is left out, and the path goes on past it. So is one that builds on a
+copy of it in a local variable, such as the temporary of a composite literal:
 
 ```go
 globalHolder.log = globalHolder.log.With().Ctx(ctx).Logger() // left out
 globalHolder.log.Info().Msg("x")                             // reported
+
+globalHolder.log = (&holder{globalHolder.log}).log.With().Ctx(ctx).Logger() // left out too
 ```
 
 #### Address Matching
