@@ -3,6 +3,7 @@ package chain
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -149,5 +150,40 @@ func TestEventQueryWorkIsQuadratic(t *testing.T) {
 				t.Errorf("work grew %.1fx for n %dx: %s", ratio, large/small, fmt.Sprint(works))
 			}
 		})
+	}
+}
+
+func TestEventSourcesAddsOnce(t *testing.T) {
+	t.Parallel()
+	a := eventSource{v: ssa.NewConst(constant.MakeInt64(1), types.Typ[types.Int])}
+	b := eventSource{v: ssa.NewConst(constant.MakeInt64(2), types.Typ[types.Int])}
+	var s eventSources
+	for _, src := range []eventSource{a, b, a} {
+		s.add(src)
+	}
+	if len(s.list) != 2 || s.list[0] != a || s.list[1] != b || !s.has(a) || !s.has(b) {
+		t.Errorf("sources %v, want [a b]", s.list)
+	}
+}
+
+func TestEventCtxSetInPlaceOnNil(t *testing.T) {
+	t.Parallel()
+	// A nil event is no event, so the Ctx call of the function is not on it
+	accepted, terminators, _ := eventQueryWork(eventFunc(t, `package p
+
+import (
+	"context"
+
+	"github.com/rs/zerolog"
+)
+
+func f(ctx context.Context, l zerolog.Logger) {
+	l.Info().Ctx(ctx).Msg("y")
+	var e *zerolog.Event
+	e.Msg("x")
+}
+`))
+	if terminators != 2 || accepted != 1 {
+		t.Errorf("%d of %d terminators accepted, want 1 of 2", accepted, terminators)
 	}
 }
