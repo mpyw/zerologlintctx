@@ -300,3 +300,81 @@ func f(h, g *holder, hs [1]*holder) {
 		}
 	}
 }
+
+// TestMatchSameOrigin checks which loads of a pointer read the same pointer
+// in the end. Each is followed past the copies of whole structs and arrays
+// that put it where it is loaded.
+func TestMatchSameOrigin(t *testing.T) {
+	const src = `package p
+
+type box struct{ p *int }
+
+type outer struct{ in box }
+
+func use(*int) {}
+
+func f(h box, o outer, arr [2]box, other *int, i int) {
+	b := h
+	use(h.p)
+	use(b.p)
+	c := b
+	use(c.p)
+	h.p = other
+	use(h.p)
+	d := o.in
+	use(d.p)
+	use(o.in.p)
+	e := arr[0]
+	use(e.p)
+	use(arr[0].p)
+	arr[i] = box{}
+	use(arr[0].p)
+	var q box
+	q.p = other
+	use(q.p)
+	use(other)
+	use(arr[i].p)
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args []ssa.Value
+	for instr := range InstrsIn(pkg.Func("f")) {
+		if call, ok := instr.(*ssa.Call); ok && call.Call.StaticCallee() == pkg.Func("use") {
+			args = append(args, call.Call.Args[0])
+		}
+	}
+	if len(args) != 12 {
+		t.Fatalf("calls of use = %d, want 12", len(args))
+	}
+	for _, tc := range []struct {
+		name string
+		a, b int
+		want bool
+	}{
+		{"arr[i].p, after a store at arr[i], and itself", 11, 11, false},
+		{"h.p and b.p for b := h", 0, 1, true},
+		{"b.p and c.p for c := b", 1, 2, true},
+		{"h.p and c.p, two copies back", 0, 2, true},
+		{"b.p and h.p after h.p is replaced", 1, 3, false},
+		{"h.p before and after it is replaced", 0, 3, false},
+		{"d.p for d := o.in, and o.in.p", 4, 5, true},
+		{"e.p for e := arr[0], and arr[0].p", 6, 7, true},
+		{"arr[0].p before and after a store at arr[i]", 7, 8, false},
+		{"e.p and arr[0].p after a store at arr[i]", 6, 8, false},
+		{"q.p, which holds a pointer stored itself, and h.p", 9, 3, false},
+		{"a pointer that is not loaded", 10, 10, false},
+		{"q.p and itself", 9, 9, true},
+	} {
+		if got := matchSameOrigin(args[tc.a], args[tc.b]); got != tc.want {
+			t.Errorf("%s: matchSameOrigin = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

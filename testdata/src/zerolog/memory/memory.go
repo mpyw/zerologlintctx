@@ -1827,6 +1827,99 @@ func badPointerFromStructParamStoredThroughThenCopied(ctx context.Context, h log
 	q.Info().Msg("stored through before the copy") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// After b := h, b.p and h.p are the same pointer: a store through one of
+// them, after the copy, is what a call on the other reads (#369).
+func goodPointerFromStructParamCopiedThenStoredThroughSource(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	b := h
+	*h.p = l.With().Ctx(ctx).Logger()
+	b.p.Info().Msg("copied, then stored through the source") // OK
+}
+
+func goodPointerFromStructParamCopiedThenStoredThroughCopy(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	b := h
+	*b.p = l.With().Ctx(ctx).Logger()
+	h.p.Info().Msg("copied, then stored through the copy") // OK
+}
+
+func goodPointerFromStructParamCopiedTwiceThenStoredThroughSource(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	a := h
+	b := a
+	*h.p = l.With().Ctx(ctx).Logger()
+	b.p.Info().Msg("copied twice, then stored through the source") // OK
+}
+
+func goodPointerFromPointedStructCopiedThenStoredThroughSource(ctx context.Context, h *loggerPtrBox, l zerolog.Logger) {
+	b := *h
+	*h.p = l.With().Ctx(ctx).Logger()
+	b.p.Info().Msg("copied through a pointer, then stored through the source") // OK
+}
+
+func goodPointerFromStructParamCopiedInClosureThenStoredThroughSource(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	func() {
+		b := h
+		*h.p = l.With().Ctx(ctx).Logger()
+		b.p.Info().Msg("copied in a closure, then stored through the source") // OK
+	}()
+}
+
+// A store through another copy of h, before b := h, is through the pointer
+// that b copies too.
+func goodPointerFromStructParamStoredThroughOtherCopyThenCopiedInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		c := h
+		*c.p = l.With().Ctx(ctx).Logger()
+		b := h
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("stored through another copy before the copy") // OK
+	}()
+}
+
+func badPointerFromStructParamStoredThroughOtherCopyThenCopiedInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		c := h
+		*c.p = l
+		b := h
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("stored through another copy before the copy, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badPointerFromStructParamCopiedThenStoredThroughSource(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	*h.p = l.With().Ctx(ctx).Logger()
+	b := h
+	*h.p = l
+	b.p.Info().Msg("copied, then stored through the source without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFromStructParamCopiedThenStoredThroughCopy(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	*h.p = l.With().Ctx(ctx).Logger()
+	b := h
+	*b.p = l
+	h.p.Info().Msg("copied, then stored through the copy without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// The field of the source is replaced after the copy, so a store through it
+// is through another pointer than the one b holds.
+func badPointerFromStructParamCopiedThenFieldReplaced(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other *zerolog.Logger) {
+	b := h
+	h.p = other
+	*h.p = l.With().Ctx(ctx).Logger()
+	b.p.Info().Msg("copied, then the field of the source replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFromStructParamCopiedThenCopyFieldReplaced(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other *zerolog.Logger) {
+	b := h
+	b.p = other
+	*b.p = l.With().Ctx(ctx).Logger()
+	h.p.Info().Msg("copied, then the field of the copy replaced") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func badPointerFromPointedStructCopied(ctx context.Context, h *loggerPtrBox, l zerolog.Logger, other bool) {
 	b := *h
 	q := b.p
@@ -2011,9 +2104,33 @@ func limitationPointerParamsAlias(ctx context.Context, logger zerolog.Logger, p,
 	p.e.Msg("pointer params may alias") // LIMITATION(#115): should report but doesn't
 }
 
+// LIMITATION(#115) (false positive): the mirror of the cases above. A store
+// with ctx by a function that the address is passed to is not seen either,
+// so the read sees the value from before the call.
+func limitationAddressPassedToCtxSetter(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	setLoggerCtxAt(ctx, &l, logger)
+	l.Info().Msg("address passed to a setter of ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationPointerPassedToCtxSetterAfterDefer(ctx context.Context, logger zerolog.Logger, other bool) {
+	a := logger
+	b := logger
+	p := &a
+	if other {
+		p = &b
+	}
+	defer p.Print("pointer passed to a setter of ctx after the defer") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	setLoggerCtxAt(ctx, p, logger)
+}
+
 func replaceLoggerAt(p *zerolog.Logger) { *p = zerolog.Nop() }
 
 func replaceFirstEvent(es []*zerolog.Event) { es[0] = log.Info() }
+
+func setLoggerCtxAt(ctx context.Context, p *zerolog.Logger, l zerolog.Logger) {
+	*p = l.With().Ctx(ctx).Logger()
+}
 
 // ===== A LOGGER POINTER FROM A CALL, A CHANNEL OR A MAP =====
 // A *zerolog.Logger receiver that a call returns, or that is received from a
