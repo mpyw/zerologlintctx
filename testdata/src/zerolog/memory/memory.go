@@ -1486,3 +1486,79 @@ func badVariableIndexPickedDeferred(ctx context.Context, base zerolog.Logger, i,
 	}
 	defer p.Print("deferred through a pointer picked on a branch") // want `zerolog direct logging bypasses context`
 }
+
+// ===== A LOGGER POINTER READ FROM MEMORY =====
+// The receiver is a *zerolog.Logger loaded from a field or through another
+// pointer. A store through the same pointer is what the call reads.
+
+type loggerPtrBox struct{ p *zerolog.Logger }
+
+func goodLoggerPtrInLocalStruct(ctx context.Context, l *zerolog.Logger) {
+	b := loggerPtrBox{l}
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	b.p.Info().Msg("pointer in a local struct") // OK
+}
+
+func goodLoggerPtrInStructParam(ctx context.Context, b *loggerPtrBox) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	b.p.Info().Msg("pointer in a struct parameter") // OK
+}
+
+func goodLoggerPtrPtrParam(ctx context.Context, pl **zerolog.Logger) {
+	**pl = zerolog.Ctx(ctx).With().Logger()
+	(*pl).Info().Msg("pointer to a pointer") // OK
+}
+
+func goodLoggerPtrPtrParamPrint(ctx context.Context, pl **zerolog.Logger) {
+	**pl = zerolog.Ctx(ctx).With().Logger()
+	(*pl).Print("pointer to a pointer, direct logging") // OK
+}
+
+func badLoggerPtrInLocalStruct(ctx context.Context, l *zerolog.Logger, base zerolog.Logger) {
+	b := loggerPtrBox{l}
+	*b.p = base
+	b.p.Info().Msg("pointer in a local struct, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrPtrParam(ctx context.Context, pl **zerolog.Logger, base zerolog.Logger) {
+	**pl = base
+	(*pl).Info().Msg("pointer to a pointer, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrPtrParamReplaced(ctx context.Context, pl **zerolog.Logger, other *zerolog.Logger) {
+	**pl = zerolog.Ctx(ctx).With().Logger()
+	*pl = other
+	(*pl).Info().Msg("another pointer stored in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrInStructParamReplaced(ctx context.Context, b *loggerPtrBox, other *zerolog.Logger) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	b.p = other
+	b.p.Info().Msg("another pointer stored in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// ===== A POINTER PICKED ON A BRANCH, TO A VARIABLE CHANGED ELSEWHERE =====
+
+var sinkLoggerPtr *zerolog.Logger
+
+func badLoggerPointerPickedToVariableFromCall(ctx context.Context, l zerolog.Logger, cond bool) {
+	a := l.With().Ctx(ctx).Logger()
+	b := newFieldLoggerHolder(l).log
+	p := &a
+	if cond {
+		p = &b
+	}
+	p.Info().Msg("one variable is from a call") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerFieldPointerPickedEscapedThenReplaced(ctx context.Context, l zerolog.Logger, cond bool) {
+	s := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	t := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	p := &s.log
+	if cond {
+		p = &t.log
+	}
+	sinkLoggerPtr = &s.log
+	s = newFieldLoggerHolder(l)
+	p.Info().Msg("the struct is replaced after the field escapes") // want `zerolog call chain missing .Ctx\(ctx\)`
+}

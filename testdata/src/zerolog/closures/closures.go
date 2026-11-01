@@ -682,3 +682,101 @@ func limitationCapturedPtrPickedOnBranch(ctx context.Context, cond bool) {
 	// the paths of the Phi
 	func() { p.log.Info().Msg("captured pointer picked on a branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// ===== A POINTER READ IN A CLOSURE FROM WHAT IT CAPTURES =====
+// The pointer is read from a captured variable at two levels, and a store
+// through the same pointer before the closure runs is what it reads.
+
+type monHolder struct{ m *ptrHolder }
+
+func goodCapturedPtrParamStore(ctx context.Context, l *zerolog.Logger) {
+	*l = zerolog.Ctx(ctx).With().Logger()
+	func() { l.Info().Msg("pointer parameter stored through") }() // OK
+}
+
+func goodCapturedPtrParamStoreInClosure(ctx context.Context, l *zerolog.Logger) {
+	func() {
+		*l = zerolog.Ctx(ctx).With().Logger()
+		l.Info().Msg("pointer parameter stored through in the closure") // OK
+	}()
+}
+
+func goodCapturedNewPtrStore(ctx context.Context) {
+	p := new(zerolog.Logger)
+	*p = zerolog.Ctx(ctx).With().Logger()
+	func() { p.Info().Msg("new pointer stored through") }() // OK
+}
+
+func goodCapturedPtrToCopyStore(ctx context.Context, logger zerolog.Logger) {
+	l := logger
+	p := &l
+	*p = zerolog.Ctx(ctx).With().Logger()
+	func() { p.Info().Msg("pointer to a copy stored through") }() // OK
+}
+
+func goodCapturedStructFieldPtr(ctx context.Context, h monHolder) {
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+	func() { h.m.log.Info().Msg("pointer in a captured struct") }() // OK
+}
+
+func goodCapturedPtrPtrParam(ctx context.Context, pp **ptrHolder) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	func() { (*pp).log.Info().Msg("pointer to a pointer") }() // OK
+}
+
+func badCapturedStructFieldPtr(ctx context.Context, h monHolder, logger zerolog.Logger) {
+	h.m.log = logger
+	func() { h.m.log.Info().Msg("pointer in a captured struct, no ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedStructFieldPtrReplaced(ctx context.Context, h monHolder, other *ptrHolder) {
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+	h.m = other
+	func() { h.m.log.Info().Msg("another pointer stored in between") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedPtrPtrParamReplaced(ctx context.Context, pp **ptrHolder, other *ptrHolder) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	*pp = other
+	func() { (*pp).log.Info().Msg("another pointer stored in between") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedPtrPtrParamReplacedInClosure(ctx context.Context, pp **ptrHolder, other *ptrHolder) {
+	(*pp).log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		*pp = other
+		(*pp).log.Info().Msg("another pointer stored in the closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badCapturedStructFieldPtrStoredAfter(ctx context.Context, h monHolder, logger zerolog.Logger) {
+	f := func() { h.m.log.Info().Msg("stored after the call") } // want `zerolog call chain missing .Ctx\(ctx\)`
+	h.m.log = logger
+	f()
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+}
+
+func runPtrHolderFunc(f func()) { f() }
+
+func limitationCapturedStructFieldPtrGo(ctx context.Context, h monHolder) {
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+	// LIMITATION: the pointer is followed out of a closure that is only
+	// called where it is made, not one run by a go or defer statement
+	go func() { h.m.log.Info().Msg("pointer in a captured struct, goroutine") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationCapturedStructFieldPtrPassed(ctx context.Context, h monHolder) {
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+	// LIMITATION: nor one passed to a function
+	runPtrHolderFunc(func() { h.m.log.Info().Msg("pointer in a captured struct, passed") }) // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func limitationCapturedStructCopiedInClosure(ctx context.Context, h monHolder) {
+	h.m.log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		c := h
+		// LIMITATION: nor is a pointer in a copy of the captured struct made in
+		// the closure
+		c.m.log.Info().Msg("pointer in a copy of a captured struct") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
