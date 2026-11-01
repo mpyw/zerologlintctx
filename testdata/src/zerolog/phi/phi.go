@@ -830,6 +830,67 @@ func goodEventFromStructLiteralPickedWithParamFreshOnOther(ctx context.Context, 
 	e.Msg("both edges have ctx of their own") // OK
 }
 
+// ===== AN EVENT REPLACED IN A LOOP AFTER ITS TERMINATOR =====
+
+// The Phi at the top of the loop merges the event made before it with the one
+// stored at the end of an iteration. A path back around the loop carries that
+// one on, up to where it is made or given, as the caller's event is (#314).
+
+func badLoopReplacedWithParamAfterTerminator(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		e.Msg("the caller's event on the later iterations") // want `zerolog call chain missing .Ctx\(ctx\)`
+		e = e2
+	}
+}
+
+func goodLoopReplacedWithParamCtxBeforeLoop(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	e2.Ctx(ctx)
+	for range n {
+		e.Msg("ctx in place on the caller's event before the loop") // OK
+		e = e2
+	}
+}
+
+func goodLoopReplacedWithParamCtxInLoop(ctx context.Context, logger zerolog.Logger, n int, e2 *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		e.Msg("ctx in place on the caller's event before it is stored") // OK
+		e2.Ctx(ctx)
+		e = e2
+	}
+}
+
+func badLoopReplacedWithParamOnBranch(ctx context.Context, logger zerolog.Logger, n int, cond bool, e2 *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		e.Msg("the caller's event after a branch stores it") // want `zerolog call chain missing .Ctx\(ctx\)`
+		if cond {
+			e = e2
+		}
+	}
+}
+
+func goodLoopReplacedWithParamOnBranchCtx(ctx context.Context, logger zerolog.Logger, n int, cond bool, e2 *zerolog.Event) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		e.Msg("ctx in place on the caller's event on the branch") // OK
+		if cond {
+			e2.Ctx(ctx)
+			e = e2
+		}
+	}
+}
+
+func badLoopReplacedWithEventWithoutCtx(ctx context.Context, logger zerolog.Logger, n int) {
+	e := logger.Info().Ctx(ctx)
+	for range n {
+		e.Msg("an event without ctx on the later iterations") // want `zerolog call chain missing .Ctx\(ctx\)`
+		e = logger.Warn()
+	}
+}
+
 // ===== POINTER TO A VARIABLE DECLARED IN A BRANCH =====
 
 // A Phi of pointers that may point to a variable declared in a branch or a

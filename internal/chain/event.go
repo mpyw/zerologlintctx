@@ -192,6 +192,11 @@ type eventIndex struct {
 	//
 	//declscope:private
 	sources map[ssa.Value]*eventSources
+	// carried holds what each value that a path can carry in place of a
+	// receiver is read through (see eventQuery.carriedBy).
+	//
+	//declscope:private
+	carried map[ssa.Value]eventCarried
 	// ctxCalls holds the Ctx calls of each function asked about.
 	//
 	//declscope:private
@@ -232,6 +237,7 @@ func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eve
 		places:    ssaflow.NewMatchedPlaces(),
 		steps:     make(map[ssa.Value]eventStep),
 		sources:   make(map[ssa.Value]*eventSources),
+		carried:   make(map[ssa.Value]eventCarried),
 		ctxCalls:  make(map[*ssa.Function]*eventCtxCalls),
 		active:    make(map[*ssa.Parameter]bool),
 		loops:     make(map[ssa.Instruction]bool),
@@ -321,25 +327,28 @@ type eventQuery struct {
 	values map[ssa.Value]bool
 	// reads are the places it is read from on the way.
 	reads map[ssaflow.PlaceKey]bool
-	// carried holds the places each value that a path can carry in place of
-	// the receiver is read from on the way (see eventQuery.carriedBy).
-	carried map[ssa.Value]map[ssaflow.PlaceKey]bool
+}
+
+// eventCarried is what a value a path carries is read through, as
+// eventQuery.values and eventQuery.reads are for the receiver.
+type eventCarried struct {
+	values map[ssa.Value]bool
+	reads  map[ssaflow.PlaceKey]bool
 }
 
 // queryOf finds the events that c, the terminator at, can run on.
 func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Value) bool, calls *eventCtxCalls) *eventQuery {
 	q := &eventQuery{
-		ix:      ix,
-		fn:      at.Parent(),
-		hasCtx:  hasCtx,
-		at:      at,
-		recv:    ix.calleeStep(c, at),
-		runs:    make(map[eventSource]*eventRuns),
-		calls:   calls,
-		within:  make(map[*eventCtxCall]bool),
-		values:  make(map[ssa.Value]bool),
-		reads:   make(map[ssaflow.PlaceKey]bool),
-		carried: make(map[ssa.Value]map[ssaflow.PlaceKey]bool),
+		ix:     ix,
+		fn:     at.Parent(),
+		hasCtx: hasCtx,
+		at:     at,
+		recv:   ix.calleeStep(c, at),
+		runs:   make(map[eventSource]*eventRuns),
+		calls:  calls,
+		within: make(map[*eventCtxCall]bool),
+		values: make(map[ssa.Value]bool),
+		reads:  make(map[ssaflow.PlaceKey]bool),
 	}
 	q.sources = ix.expand(q.recv, q.values, q.reads)
 	return q
@@ -474,7 +483,7 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	}
 	atEntry := func() bool { return def != nil }
 	edge := func(b *ssa.BasicBlock, i int, carried ssa.Value) (ssa.Value, bool) {
-		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, false)
+		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, carried, false)
 	}
 	if !ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: before}}, visit, atEntry, edge) {
 		return false
@@ -514,7 +523,7 @@ func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoin
 		return ssaflow.WalkOn
 	}
 	edge := func(b *ssa.BasicBlock, i int, carried ssa.Value) (ssa.Value, bool) {
-		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, true)
+		return q.carriedInto(b, i, carried), q.edgeCarries(b, i, src, carried, true)
 	}
 	return !ssaflow.WalkBackIn([]ssaflow.WalkFrom[ssa.Value]{{Point: before}}, visit, nil, edge)
 }
@@ -599,7 +608,7 @@ func (q *eventQuery) storesOther(instr ssa.Instruction, src eventSource, carried
 	}
 	at, _ := ssaflow.PlaceOf(store.Addr)
 	key := at.Key()
-	return q.reads[key] && q.carriedBy(carried)[key] && q.isOther(store.Val, src, fresh)
+	return q.reads[key] && q.carriedBy(carried).reads[key] && q.isOther(store.Val, src, fresh)
 }
 
 // carriedInto returns the value that a path carries in place of the
@@ -628,33 +637,44 @@ func (q *eventQuery) carriedInto(b *ssa.BasicBlock, i int, carried ssa.Value) ss
 }
 
 // carriedBy returns what v, a value a path carries, is read through, which it
-// finds once. A nil v is the receiver, read through q.reads.
-func (q *eventQuery) carriedBy(v ssa.Value) map[ssaflow.PlaceKey]bool {
+// finds once. A nil v is the receiver, read through q.values and q.reads.
+func (q *eventQuery) carriedBy(v ssa.Value) eventCarried {
 	if v == nil {
-		return q.reads
+		return eventCarried{values: q.values, reads: q.reads}
 	}
-	if reads, ok := q.carried[v]; ok {
-		return reads
+	if by, ok := q.ix.carried[v]; ok {
+		return by
 	}
-	reads := make(map[ssaflow.PlaceKey]bool)
-	q.ix.expand(eventStep{next: []ssa.Value{v}}, make(map[ssa.Value]bool), reads)
-	q.carried[v] = reads
-	return reads
+	by := eventCarried{values: make(map[ssa.Value]bool), reads: make(map[ssaflow.PlaceKey]bool)}
+	q.ix.expand(eventStep{next: []ssa.Value{v}}, by.values, by.reads)
+	q.ix.carried[v] = by
+	return by
 }
 
-// edgeCarries reports whether a path that reaches the top of b goes on into
-// its i-th predecessor carrying src: no Phi of b that the receiver is read
-// through takes nil there, or another event than src, or one with context of
-// its own. With fresh, a value whose only source is src carries it (see
-// eventQuery.isOther).
-func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource, fresh bool) bool {
+// edgeCarries reports whether a path that reaches the top of b, carrying
+// carried there, goes on into its i-th predecessor carrying src: no Phi of b
+// that carried is read through takes nil there, or another event than src, or
+// one with context of its own. With fresh, a value whose only source is src
+// carries it (see eventQuery.isOther).
+//
+// A Phi that the receiver is read through, but carried is not, takes no part.
+// A path that has taken another edge of it before carries that edge's event
+// on, as around a loop:
+//
+//	e := logger.Info().Ctx(ctx)
+//	for range n {
+//	    e.Msg("x")          // reported: e2 on the later iterations
+//	    e = e2
+//	}
+func (q *eventQuery) edgeCarries(b *ssa.BasicBlock, i int, src eventSource, carried ssa.Value, fresh bool) bool {
+	values := q.carriedBy(carried).values
 	for _, instr := range b.Instrs {
 		phi, ok := instr.(*ssa.Phi)
 		if !ok {
 			break
 		}
 		q.ix.work++
-		if !q.values[phi] {
+		if !values[phi] {
 			continue
 		}
 		if edge := phi.Edges[i]; ssaflow.IsNilConst(edge) || q.isOther(edge, src, fresh) {

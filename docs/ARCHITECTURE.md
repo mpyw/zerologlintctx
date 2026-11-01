@@ -458,7 +458,9 @@ another event, or one with context of its own, or it stores such a value
 where the receiver is read from. A path that takes the edge of a Phi the
 receiver is, back through the methods that return the event, carries that
 edge before it, so only a store where the edge is read from ends it
-(`eventQuery.carriedInto`):
+(`eventQuery.carriedInto`). Only the Phis that edge is read through decide
+where it goes on, so a path back around a loop carries the event stored at
+the end of the iteration up to where it is made or given:
 
 ```go
 e := (&box{logger.Info()}).v.Ctx(ctx)
@@ -474,6 +476,14 @@ e.Ctx(ctx)              // in place, on the first iteration
 for range n {
     e.Msg("x")          // OK
     e = logger.Warn().Ctx(ctx) // of its own, on the later ones
+}
+```
+
+```go
+e := logger.Info().Ctx(ctx)
+for range n {
+    e.Msg("x")          // reported: e2 on the later iterations
+    e = e2
 }
 ```
 
