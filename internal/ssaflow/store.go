@@ -457,6 +457,9 @@ type storePointers struct {
 	// value read. One still being followed is there and not ok, so that
 	// reaching it again, through a store that leads back to it, fails.
 	pointed map[ssa.Value]storePointed
+	// following holds the pointers whose targets are being walked for, so
+	// that a pointer copied back and forth, in a loop, is followed once.
+	following map[ssa.Value]bool
 }
 
 // storePointed is what a pointer read from memory can point to. ok is false
@@ -480,7 +483,11 @@ type storeTarget struct {
 
 // newStorePointers returns a storePointers that has followed no pointer yet.
 func newStorePointers(positions Positions) *storePointers {
-	return &storePointers{positions: positions, pointed: make(map[ssa.Value]storePointed)}
+	return &storePointers{
+		positions: positions,
+		pointed:   make(map[ssa.Value]storePointed),
+		following: make(map[ssa.Value]bool),
+	}
 }
 
 // reachingThrough finds the values that can be at at, whose root is a
@@ -508,6 +515,11 @@ func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via [
 	if !ok || len(targets) == 0 {
 		return r, false
 	}
+	if p.following[at.root] {
+		return r, true // Copied back to where it was read from: it adds nothing
+	}
+	p.following[at.root] = true
+	defer delete(p.following, at.root)
 	for _, t := range targets {
 		tvia := append(slices.Clip(via), t.via...)
 		tat, tracked := PlaceOf(t.v)
@@ -687,23 +699,42 @@ func (p *storePointers) reaching(at Place, read ssa.Instruction) (storeReaching,
 // of it a store to at writes: all of it when root is all the pointer can
 // point to, or maybe all of it otherwise. It is coverNone when the pointer
 // cannot point to root, or cannot be followed.
+//
+// What the pointer points to may be another pointer read from memory, which
+// points to root in turn, as a pointer copied from a captured parameter in a
+// func literal does:
+//
+//	b := loggerPtrBox{l}      // t3 = *l ; *&t0.p = t3, and l is the parameter
+//	*b.p = v                  // t6 = *&t0.p ; *t6 = v, and t6 is t3
 func (p *storePointers) through(at Place, root ssa.Value) (Place, placeCover) {
-	if _, isRead := storePointerRead(at.root); !isRead {
+	return p.throughSeen(at, root, make(map[ssa.Value]bool))
+}
+
+// throughSeen returns what through does, for a pointer that is not in seen,
+// the pointers already gone through, as one copied back and forth in a loop
+// leads back to.
+func (p *storePointers) throughSeen(at Place, root ssa.Value, seen map[ssa.Value]bool) (Place, placeCover) {
+	if _, isRead := storePointerRead(at.root); !isRead || seen[at.root] {
 		return at, coverNone
 	}
+	seen[at.root] = true
 	targets, ok := p.targetsOf(at.root)
 	if !ok {
 		return at, coverNone
 	}
 	for _, t := range targets {
-		tat, _ := PlaceOf(t.v)
-		if tat.root != root {
-			continue
-		}
+		cover := coverMay
 		if len(targets) == 1 && t.picked == nil {
-			return tat.with(at.path...), coverMust
+			cover = coverMust
 		}
-		return tat.with(at.path...), coverMay
+		tat, _ := PlaceOf(t.v)
+		tat = tat.with(at.path...)
+		if tat.root == root {
+			return tat, cover
+		}
+		if inner, c := p.throughSeen(tat, root, seen); c != coverNone {
+			return inner, min(c, cover)
+		}
 	}
 	return at, coverNone
 }
