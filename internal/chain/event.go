@@ -27,6 +27,7 @@ package chain
 
 import (
 	"iter"
+	"slices"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -83,19 +84,6 @@ func (s *eventSources) add(src eventSource) {
 // has reports whether src is in the set.
 func (s *eventSources) has(src eventSource) bool {
 	return s.set[src]
-}
-
-// same reports whether s and o are the same set.
-func (s *eventSources) same(o *eventSources) bool {
-	if len(s.list) != len(o.list) {
-		return false
-	}
-	for _, src := range s.list {
-		if !o.has(src) {
-			return false
-		}
-	}
-	return true
 }
 
 // eventStep is what a value of a chain is one step back: other values that
@@ -886,8 +874,8 @@ func (ix *eventIndex) ctxCallOf(call *ssa.Call) (*eventCtxCall, bool) {
 //
 // The Ctx calls on the same events run on every run when every path from the
 // entry of the func literal to a return passes one of them (see
-// eventRunsOnEveryReturn). The events each runs on are what it reads there,
-// as for any Ctx call. A go or defer statement runs the func literal at
+// eventIndex.runsOnEveryReturn). The events each runs on are what it reads
+// there, as for any Ctx call. A go or defer statement runs the func literal at
 // another time, and is not one of the calls.
 func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosure) {
 	fn := mc.Fn.(*ssa.Function) // Always a function, a func literal or a wrapper
@@ -908,7 +896,7 @@ func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosu
 		}
 	}
 	for _, cc := range set {
-		if !eventRunsOnEveryReturn(cc, set, fn) {
+		if !ix.runsOnEveryReturn(cc, set, fn) {
 			continue
 		}
 		for _, site := range sites {
@@ -1002,8 +990,8 @@ func (ix *eventIndex) capturedRecv(recv eventStep, mc *ssa.MakeClosure) (_ ssafl
 	return ssaflow.Place{}, false
 }
 
-// eventRunsOnEveryReturn reports whether cc, or another call of set on the
-// same events, runs on every path from the entry of fn to a return:
+// runsOnEveryReturn reports whether cc, or another call of set on the same
+// events, runs on every path from the entry of fn to a return:
 //
 //	func() {
 //	    if cond {
@@ -1014,10 +1002,10 @@ func (ix *eventIndex) capturedRecv(recv eventStep, mc *ssa.MakeClosure) (_ ssafl
 //	}()
 //
 // The recover block, reached after a panic, is not looked at.
-func eventRunsOnEveryReturn(cc *eventCtxCall, set []*eventCtxCall, fn *ssa.Function) bool {
+func (ix *eventIndex) runsOnEveryReturn(cc *eventCtxCall, set []*eventCtxCall, fn *ssa.Function) bool {
 	passed := make(map[*ssa.BasicBlock]bool)
 	for _, other := range set {
-		if other.sources.same(cc.sources) {
+		if ix.sameAtRuns(other.sources, cc.sources, fn) {
 			passed[other.call.Block()] = true
 		}
 	}
@@ -1037,6 +1025,32 @@ func eventRunsOnEveryReturn(cc *eventCtxCall, set []*eventCtxCall, fn *ssa.Funct
 				seen[succ] = true
 				queue = append(queue, succ)
 			}
+		}
+	}
+	return true
+}
+
+// sameAtRuns reports whether s and o, the events two Ctx calls of fn run on,
+// are the same set. An event the function cannot tell, at a place that two
+// func literals nested in fn read through the same variable of fn, is the
+// same one in both (see ssaflow.MatchedPlaces.SameAtRuns):
+//
+//	func() {
+//	    if cond {
+//	        func() { p.e.Ctx(ctx) }()
+//	    } else {
+//	        func() { p.e.Ctx(ctx) }() // the same event at p.e
+//	    }
+//	}()
+func (ix *eventIndex) sameAtRuns(s, o *eventSources, fn *ssa.Function) bool {
+	if len(s.list) != len(o.list) {
+		return false
+	}
+	for _, src := range s.list {
+		if !o.has(src) && !slices.ContainsFunc(o.list, func(other eventSource) bool {
+			return src.v == nil && other.v == nil && ix.places.SameAtRuns(src.at, other.at, fn)
+		}) {
+			return false
 		}
 	}
 	return true

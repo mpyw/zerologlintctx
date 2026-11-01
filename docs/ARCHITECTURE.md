@@ -539,6 +539,25 @@ func f(ctx context.Context, h *holder) {
 }
 ```
 
+A func literal that reads the place only through the func literals it calls,
+such as one on each branch of an `if`, has no read of its own to take the
+place to. To tell whether those calls run on the same event on every path,
+the two reads are matched with each other instead: the same selections
+through the same loads of the same variable of the func literal, which it
+captures and stores nothing to or through (`MatchedPlaces.SameAtRuns`).
+Each call then counts in turn where the func literal is called:
+
+```go
+func() {
+    if cond {
+        func() { h.e.Ctx(ctx) }()
+    } else {
+        func() { h.e.Ctx(ctx) }() // the same event at h.e
+    }
+}()
+h.e.Msg("x")                      // OK
+```
+
 The index keeps the sources of each value it was asked about, as a set, and
 the `Ctx` calls of each function, with those of the func literals it calls
 in place, at each call. A function with no `Ctx` call is not

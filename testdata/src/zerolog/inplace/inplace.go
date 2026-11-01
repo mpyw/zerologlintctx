@@ -1355,6 +1355,106 @@ func badEventCtxInPlaceInNestedIIFEOwnPointer(ctx context.Context, h, g *inPlace
 	h.e.Msg("ctx in place in a nested IIFE, on the pointer declared there") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A func literal in between that reads the place only through the ones it
+// calls on its branches has no read of its own to take the place to, so the
+// two reads are matched with each other (#324).
+
+func goodEventCtxInPlaceInNestedIIFEPointerParamFieldOnBranches(ctx context.Context, h *inPlaceHolder, cond bool) {
+	func() {
+		if cond {
+			func() { h.e.Ctx(ctx) }()
+		} else {
+			func() { h.e.Ctx(ctx) }()
+		}
+	}()
+	h.e.Msg("ctx in place in a nested IIFE on both branches") // OK
+}
+
+func goodEventCtxInPlaceInNestedIIFEPointerToPointerOnBranches(ctx context.Context, pp **inPlaceHolder, cond bool) {
+	func() {
+		if cond {
+			func() { (*pp).e.Ctx(ctx) }()
+		} else {
+			func() { (*pp).e.Ctx(ctx) }()
+		}
+	}()
+	(*pp).e.Msg("ctx in place in a nested IIFE on both branches, through two loads") // OK
+}
+
+func goodEventCtxInPlaceInIIFEThreeLevelsPointerParamFieldOnBranches(ctx context.Context, h *inPlaceHolder, cond bool) {
+	func() {
+		func() {
+			if cond {
+				func() { h.e.Ctx(ctx) }()
+			} else {
+				func() { h.e.Ctx(ctx) }()
+			}
+		}()
+	}()
+	h.e.Msg("ctx in place three IIFEs down on both branches") // OK
+}
+
+func badEventCtxInPlaceInNestedIIFEPointerParamFieldOneBranch(ctx context.Context, h *inPlaceHolder, cond bool) {
+	func() {
+		if cond {
+			func() { h.e.Ctx(ctx) }()
+		} else {
+			func() { _ = h }()
+		}
+	}()
+	h.e.Msg("ctx in place in a nested IIFE on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInNestedIIFEOtherPointerParamOnBranch(ctx context.Context, h, g *inPlaceHolder, cond bool) {
+	func() {
+		if cond {
+			func() { h.e.Ctx(ctx) }()
+		} else {
+			func() { g.e.Ctx(ctx) }()
+		}
+	}()
+	h.e.Msg("ctx in place in a nested IIFE, through another pointer on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+type inPlacePair struct{ e, f *zerolog.Event }
+
+func badEventCtxInPlaceInNestedIIFEOtherFieldOnBranch(ctx context.Context, h *inPlacePair, cond bool) {
+	func() {
+		if cond {
+			func() { h.e.Ctx(ctx) }()
+		} else {
+			func() { h.f.Ctx(ctx) }()
+		}
+	}()
+	h.e.Msg("ctx in place in a nested IIFE, on another field on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInNestedIIFEPointerReplacedOnBranch(ctx context.Context, h, g *inPlaceHolder, cond bool) {
+	func() {
+		if cond {
+			func() { h.e.Ctx(ctx) }()
+		} else {
+			func() { h.e.Ctx(ctx) }()
+			h = g
+		}
+	}()
+	h.e.Msg("ctx in place in a nested IIFE, the pointer replaced on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInNestedIIFEPointerStoredInInnerOnBranch(ctx context.Context, h, g *inPlaceHolder, cond bool) {
+	func() {
+		if cond {
+			func() { h.e.Ctx(ctx) }()
+		} else {
+			func() {
+				func() { h.e.Ctx(ctx) }()
+				h = g
+			}()
+		}
+	}()
+	h.e.Msg("ctx in place in a nested IIFE, the pointer replaced further in on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // LIMITATION (false positive): a store by a closure to a variable it captures
 // is not seen after the closure is called, so h.e after the IIFE is not taken
 // for the g.e it set the context of.
