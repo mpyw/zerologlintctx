@@ -15,6 +15,13 @@
 // An origin in a loop makes an event on each run. A value that holds the
 // event of an earlier run, as one kept from the last iteration does, is not
 // the same event as one that holds the latest (see eventRuns).
+//
+// A Ctx call given a fresh context.Background() or TODO() replaces the
+// context of the event too, so the last Ctx call on a path decides:
+//
+//	e := logger.Info().Ctx(ctx)
+//	e.Ctx(context.TODO())   // replaces ctx
+//	e.Msg("x")              // reported
 
 package chain
 
@@ -97,11 +104,13 @@ type eventStep struct {
 	through []ssaflow.LoadedEdge
 }
 
-// eventCtxCall is a call of Event.Ctx given a context that is not fresh, and
-// the events it can run on.
+// eventCtxCall is a call of Event.Ctx, and the events it can run on.
 type eventCtxCall struct {
 	call    *ssa.Call
 	sources *eventSources
+	// fresh reports that the call is given a fresh context (see
+	// isFreshContext), which replaces the context of the event.
+	fresh bool
 	// recv is the step back from the receiver.
 	recv eventStep
 	// runs is what eventIndex.ctxRunsOf finds runs in, built at the first
@@ -109,14 +118,36 @@ type eventCtxCall struct {
 	runs *eventRunGraph
 }
 
-// eventCtxCalls are the calls of Event.Ctx of a function given a context that
-// is not fresh, and those that a func literal called in place runs, at each
+// eventCtxCalls are the calls of Event.Ctx of a function, and those given a
+// context that is not fresh that a func literal called in place runs, at each
 // call of it (see eventIndex.addClosureCtxCalls).
 type eventCtxCalls struct {
 	// at holds the calls that run at each instruction.
 	at map[ssa.Instruction][]*eventCtxCall
-	// on holds the calls that can run on each event.
+	// on holds the calls given a context that is not fresh that can run on
+	// each event.
 	on map[eventSource][]*eventCtxCall
+	// fresh reports that one of the calls is given a fresh context.
+	fresh bool
+}
+
+// eventCtxFound is what a Ctx call at an instruction does to an event.
+type eventCtxFound int
+
+const (
+	// eventCtxNone is no Ctx call on the event.
+	eventCtxNone eventCtxFound = iota
+	// eventCtxSet is a Ctx call that sets the context in scope.
+	eventCtxSet
+	// eventCtxFresh is a Ctx call that replaces the context with a fresh one.
+	eventCtxFresh
+)
+
+// eventReturnWalk is a walk to the returns of a function, from a point, with
+// the event's context set there or not.
+type eventReturnWalk struct {
+	from ssaflow.WalkPoint
+	set  bool
 }
 
 // eventIndex finds the events each value of a chain can be, and keeps what it
@@ -193,37 +224,59 @@ func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eve
 	}
 }
 
-// eventCtxSetInPlace reports whether Event.Ctx is called in place on the event
-// that c, the terminator at, runs on, before at on every path. For a deferred
-// terminator, a Ctx call on every path from the defer statement to a return
-// counts too, since the terminator runs there:
+// eventCtxSetInPlace reports whether the event that c, the terminator at,
+// runs on has context at at, by the Ctx calls that run on it in place. The
+// last Ctx call on a path decides. inChain tells that the chain of the
+// receiver has context of its own, which holds on a path with no Ctx call:
+//
+//   - With inChain, no path to at may end with a Ctx call given a fresh
+//     context.
+//   - Without it, every path to at must pass a Ctx call given the context in
+//     scope, after the event is made, and no fresh one after that.
+//
+// For a deferred terminator, what holds at each return after the defer
+// statement decides, since the terminator runs there:
 //
 //	e := logger.Info()
 //	defer e.Msg("x")        // runs at the return, after Ctx
 //	e.Ctx(ctx)
 //
-// Each event the receiver can be must have one, on the paths that carry it.
-// hasCtx tells whether a value has context of its own, which a path that
+// Each event the receiver can be must have context, on the paths that carry
+// it. hasCtx tells whether a value has context of its own, which a path that
 // stores it, or takes it at a Phi, needs no Ctx call for.
 //
-//declscope:shared // tracing.go asks this of each terminator whose chain has no context
-func (ix *eventIndex) eventCtxSetInPlace(c callee, at ssa.Instruction, hasCtx func(ssa.Value) bool) bool {
+//declscope:shared // tracing.go asks this of each terminator
+func (ix *eventIndex) eventCtxSetInPlace(c callee, at ssa.Instruction, inChain bool, hasCtx func(ssa.Value) bool) bool {
 	calls := ix.ctxCallsIn(at.Parent())
-	if len(calls.at) == 0 {
-		return false // No Ctx call to look for
+	if len(calls.at) == 0 || inChain && !calls.fresh {
+		return inChain // No Ctx call that changes the context
 	}
 	q := ix.queryOf(c, at, hasCtx, calls)
 	if len(q.sources.list) == 0 {
-		return false
+		return inChain
 	}
 	before := ssaflow.WalkPointBefore(at, ix.positions)
 	d, deferred := at.(*ssa.Defer)
 	for _, src := range q.sources.list {
-		if !q.ctxRunsBefore(src, before) && (!deferred || !q.ctxRunsAfterDefer(src, d)) {
+		set := q.ctxSetBefore(src, before, inChain)
+		if deferred {
+			set = q.ctxSetAfterDefer(src, d, set)
+		}
+		if !set {
 			return false
 		}
 	}
 	return true
+}
+
+// ctxSetBefore reports whether src has context at before, by the last Ctx
+// call on src on each path that carries it there. inChain tells that src has
+// context with no Ctx call, as eventIndex.eventCtxSetInPlace has it.
+func (q *eventQuery) ctxSetBefore(src eventSource, before ssaflow.WalkPoint, inChain bool) bool {
+	if inChain {
+		return !q.freshCtxLastBefore(src, before)
+	}
+	return q.ctxRunsBefore(src, before)
 }
 
 // eventQuery is what a terminator runs on: the events it can be, and the
@@ -272,17 +325,37 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 	return q
 }
 
-// ctxCallOn reports whether instr is a Ctx call that runs on src: on a value
-// that can be src, and on no event the receiver cannot be. Unless anyRun is
-// set, the call must also run on a value that can hold the same run of src
-// as the receiver.
-func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource, anyRun bool) bool {
+// ctxCallOn tells what instr does to src as a Ctx call:
+//
+//   - eventCtxSet, for a call given the context in scope that runs on a value
+//     that can be src, and on no event the receiver cannot be. Unless anyRun
+//     is set, the value must also be able to hold the same run of src as the
+//     receiver.
+//   - eventCtxFresh, for a call given a fresh context that runs on src alone,
+//     and on the same run of src as the receiver. With anyRun set, none is.
+//
+// Otherwise, it is eventCtxNone.
+func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource, anyRun bool) eventCtxFound {
 	for _, cc := range q.calls.at[instr] {
-		if q.counts(cc, src) && (anyRun || q.runsOf(src).sameRun(q.ix.ctxRunsOf(cc, src))) {
-			return true
+		switch {
+		case cc.fresh:
+			if !anyRun && q.freshOn(cc, src) {
+				return eventCtxFresh
+			}
+		case q.counts(cc, src) && (anyRun || q.runsOf(src).sameRun(q.ix.ctxRunsOf(cc, src))):
+			return eventCtxSet
 		}
 	}
-	return false
+	return eventCtxNone
+}
+
+// freshOn reports whether cc, a Ctx call given a fresh context, runs on src
+// and on no other event, and on the same run of src as the receiver. A call
+// that may run on another event may leave the context of src as it was.
+func (q *eventQuery) freshOn(cc *eventCtxCall, src eventSource) bool {
+	q.ix.work++
+	return len(cc.sources.list) == 1 && cc.sources.has(src) &&
+		q.runsOf(src).alwaysSameRun(q.ix.ctxRunsOf(cc, src))
 }
 
 // runsOf returns the runs of src the receiver can hold, or nil when src is
@@ -301,7 +374,8 @@ func (q *eventQuery) runsOf(src eventSource) *eventRuns {
 	return runs
 }
 
-// hasCtxCallOn reports whether some Ctx call of the function runs on src.
+// hasCtxCallOn reports whether some Ctx call of the function given the
+// context in scope runs on src.
 func (q *eventQuery) hasCtxCallOn(src eventSource) bool {
 	for _, cc := range q.calls.on[src] {
 		if q.counts(cc, src) {
@@ -333,7 +407,8 @@ func (q *eventQuery) counts(cc *eventCtxCall, src eventSource) bool {
 }
 
 // ctxRunsBefore reports whether every path that leads to before, and carries
-// src, passes a Ctx call on src after src is made. A path that leads back to
+// src, passes a Ctx call on src after src is made, with no Ctx call given a
+// fresh context after it. A path that leads back to
 // the entry of the function carries src only when the function does not make
 // it, as for a parameter. A path carries another event when it takes an edge
 // of a Phi, or stores a value, that is not src or has context of its own.
@@ -359,9 +434,14 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	earlier, reachesLatest := false, false
 	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
 		q.ix.work++
-		switch {
-		case q.ctxCallOn(instr, src, earlier):
+		switch q.ctxCallOn(instr, src, earlier) {
+		case eventCtxSet:
 			return ssaflow.WalkStop // Ctx runs on this path
+		case eventCtxFresh:
+			return ssaflow.WalkAbort // The last Ctx on this path is given a fresh context
+		case eventCtxNone:
+		}
+		switch {
 		case instr == def && (earlier || !runs.onlyEarlier()):
 			return ssaflow.WalkAbort // src is made on this path, and Ctx does not run after
 		case instr == def:
@@ -387,28 +467,78 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	return ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: from}}, visit, atEntry, edge)
 }
 
-// ctxRunsAfterDefer reports whether, on every path from d, a deferred
-// terminator, to a return, one of calls runs on src. A path that makes src
-// again, in a loop, has another event after. The recover block, reached after
-// a panic, is not looked at, as it has no path from d.
-func (q *eventQuery) ctxRunsAfterDefer(src eventSource, d *ssa.Defer) bool {
-	if !q.hasCtxCallOn(src) {
+// freshCtxLastBefore reports whether a path that leads to before, and carries
+// src, ends with a Ctx call on src given a fresh context: no Ctx call given
+// the context in scope runs after it, and no other event is stored.
+func (q *eventQuery) freshCtxLastBefore(src eventSource, before ssaflow.WalkPoint) bool {
+	def := q.defOf(src)
+	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
+		q.ix.work++
+		switch q.ctxCallOn(instr, src, false) {
+		case eventCtxFresh:
+			return ssaflow.WalkAbort
+		case eventCtxSet:
+			return ssaflow.WalkStop
+		case eventCtxNone:
+		}
+		if instr == def || q.storesOther(instr, src) {
+			return ssaflow.WalkStop // The context of the chain, or of another event
+		}
+		return ssaflow.WalkOn
+	}
+	edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
+		return s, q.edgeCarries(b, i, src)
+	}
+	return !ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, nil, edge)
+}
+
+// ctxSetAfterDefer reports whether src has context at each return after d, a
+// deferred terminator, given whether it has context at d. The last Ctx call
+// on src on each path from d decides. The recover block, reached after a
+// panic, is not looked at, as it has no path from d.
+func (q *eventQuery) ctxSetAfterDefer(src eventSource, d *ssa.Defer, set bool) bool {
+	if !set && !q.hasCtxCallOn(src) {
 		return false // A path that never returns does not end the walk
 	}
+	return q.ctxSetAtReturns(src, ssaflow.WalkPointAfter(d, q.ix.positions), set, make(map[eventReturnWalk]bool))
+}
+
+// ctxSetAtReturns reports whether, on every path from the point from to a
+// return, src has context there: the last Ctx call on src on the path is
+// given the context in scope, or there is none, and set tells that src has
+// context at from. A path that makes src again, in a loop, has another event
+// after, so what src has there holds. A walk reached again while it is in
+// progress, through a loop, adds nothing.
+func (q *eventQuery) ctxSetAtReturns(src eventSource, from ssaflow.WalkPoint, set bool, walks map[eventReturnWalk]bool) bool {
+	key := eventReturnWalk{from: from, set: set}
+	if done, ok := walks[key]; ok {
+		return done
+	}
+	walks[key] = true
 	def := q.defOf(src)
-	return ssaflow.WalkFwd(ssaflow.WalkPointAfter(d, q.ix.positions), func(instr ssa.Instruction) ssaflow.WalkStep {
+	end := ssaflow.WalkAbort
+	if set {
+		end = ssaflow.WalkStop
+	}
+	done := ssaflow.WalkFwd(from, func(instr ssa.Instruction) ssaflow.WalkStep {
 		q.ix.work++
-		switch {
-		case instr == def:
-			return ssaflow.WalkAbort // The event is made again, so a Ctx call after is on another one
-		case q.ctxCallOn(instr, src, false):
-			return ssaflow.WalkStop // Ctx runs on this path
+		if instr == def {
+			return end // The event is made again, so a Ctx call after is on another one
+		}
+		if found := q.ctxCallOn(instr, src, false); found != eventCtxNone {
+			after := ssaflow.WalkPointAfter(instr, q.ix.positions)
+			if q.ctxSetAtReturns(src, after, found == eventCtxSet, walks) {
+				return ssaflow.WalkStop
+			}
+			return ssaflow.WalkAbort
 		}
 		if _, ok := instr.(*ssa.Return); ok {
-			return ssaflow.WalkAbort
+			return end
 		}
 		return ssaflow.WalkOn
 	})
+	walks[key] = done
+	return done
 }
 
 // defOf returns the instruction of the function that makes src, or nil when
@@ -470,11 +600,11 @@ func (q *eventQuery) isOther(v ssa.Value, src eventSource) bool {
 	return (len(sources.list) > 0 && !sources.has(src)) || q.hasCtx(v)
 }
 
-// ctxCallsIn returns the calls of Event.Ctx in fn given a context that is not
-// fresh, with the events each runs on. A Ctx call given a fresh
-// context.Background() or TODO() does not set the context. The Ctx calls
-// that a func literal called in place runs are among them, at each call of
-// it (see addClosureCtxCalls).
+// ctxCallsIn returns the calls of Event.Ctx in fn, with the events each runs
+// on. A Ctx call given a fresh context.Background() or TODO() does not set
+// the context; it replaces the one the event had. The Ctx calls given a
+// context that is not fresh that a func literal called in place runs are
+// among them, at each call of it (see addClosureCtxCalls).
 func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) *eventCtxCalls {
 	if calls, ok := ix.ctxCalls[fn]; ok {
 		return calls
@@ -497,22 +627,20 @@ func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) *eventCtxCalls {
 	return calls
 }
 
-// ctxCallOf returns call as a Ctx call, when it is a call of Event.Ctx given
-// a context that is not fresh.
+// ctxCallOf returns call as a Ctx call, when it is a call of Event.Ctx.
 func (ix *eventIndex) ctxCallOf(call *ssa.Call) (*eventCtxCall, bool) {
 	c, ok := calleeOf(&call.Call)
 	if !ok || c.Recv == nil || c.api.Kind != zerologapi.KindSource || c.api.Recv != zerologapi.TypeEvent {
 		return nil, false
 	}
-	if args := call.Call.Args; len(args) > 0 && isFreshContext(args[len(args)-1], ix.positions, ix.closures) {
-		return nil, false
-	}
+	args := call.Call.Args
+	fresh := len(args) > 0 && isFreshContext(args[len(args)-1], ix.positions, ix.closures)
 	recv := ix.calleeStep(c, call)
-	return &eventCtxCall{call: call, sources: ix.expand(recv, make(map[ssa.Value]bool), nil), recv: recv}, true
+	return &eventCtxCall{call: call, sources: ix.expand(recv, make(map[ssa.Value]bool), nil), fresh: fresh, recv: recv}, true
 }
 
-// addClosureCtxCalls adds to calls the Ctx calls that the func literal of mc
-// runs on every run, at each call of mc where it is made, as for an IIFE. Such
+// addClosureCtxCalls adds to calls the Ctx calls given a context that is not
+// fresh that the func literal of mc runs on every run, at each call of mc where it is made, as for an IIFE. Such
 // a call runs the func literal there, and the Ctx calls with it:
 //
 //	e := logger.Info()
@@ -540,7 +668,9 @@ func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosu
 		}
 		for _, site := range sites {
 			for _, cc := range ccs {
-				calls.add(site, &eventCtxCall{call: site, sources: cc.sources, recv: cc.recv})
+				if !cc.fresh {
+					calls.add(site, &eventCtxCall{call: site, sources: cc.sources, recv: cc.recv})
+				}
 			}
 		}
 	}
@@ -561,6 +691,10 @@ func eventRunsOnEveryReturn(instr ssa.Instruction, fn *ssa.Function) bool {
 // add adds cc, which runs at instr.
 func (calls *eventCtxCalls) add(instr ssa.Instruction, cc *eventCtxCall) {
 	calls.at[instr] = append(calls.at[instr], cc)
+	if cc.fresh {
+		calls.fresh = true
+		return
+	}
 	for _, src := range cc.sources.list {
 		calls.on[src] = append(calls.on[src], cc)
 	}
@@ -775,6 +909,17 @@ func (r *eventRuns) add(run eventRunState) {
 // has only one run.
 func (r *eventRuns) onlyEarlier() bool {
 	return r != nil && !r.latest
+}
+
+// alwaysSameRun reports whether a value with r and a value with o hold the
+// event of the same run on every path: the origin is not in a loop, or both
+// hold only the latest run.
+func (r *eventRuns) alwaysSameRun(o *eventRuns) bool {
+	onlyLatest := func(r *eventRuns) bool { return r.latest && !r.earlier && len(r.anyAt) == 0 }
+	if r == nil || o == nil {
+		return r == nil && o == nil
+	}
+	return onlyLatest(r) && onlyLatest(o)
 }
 
 // sameRun reports whether a value with r and a value with o can hold the

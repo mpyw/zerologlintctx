@@ -78,7 +78,7 @@ func eventQueryWork(fn *ssa.Function) (accepted, terminators, work int) {
 			continue
 		}
 		terminators++
-		if ix.eventCtxSetInPlace(c, call, noCtx) {
+		if ix.eventCtxSetInPlace(c, call, false, noCtx) {
 			accepted++
 		}
 	}

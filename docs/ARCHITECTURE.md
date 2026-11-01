@@ -458,10 +458,32 @@ compares the sources of the call with those of the receiver once per query.
 more than quadratic time before (#247), and checks that it grows no faster
 than the square of the number of terminators.
 
-A deferred terminator runs at each return after the `defer` statement, so for
-one a `Ctx` call on the source that runs on every path from the `defer` to a
-return counts too. A path that makes the source again, in a loop, has
-another event there.
+A `Ctx` call given a fresh context replaces the context of the event, so the
+last `Ctx` call on a path decides. Such a call counts only when it runs on
+the source alone, and on the same run of it (see below). A call that may run
+on another event may leave the context as it was:
+
+| Chain of the receiver | Reported when |
+|-----------------------|---------------|
+| Has no context | A path from the source has no `Ctx` call given the context in scope, or a fresh one after the last such call |
+| Has context | A path ends with a fresh `Ctx` call on the source, with no `Ctx` call given the context in scope after it |
+
+```go
+e := logger.Info().Ctx(ctx)
+if detached {
+    e.Ctx(context.Background())
+}
+e.Msg("x") // reported: Background on one path
+```
+
+A function with no fresh `Ctx` call is not walked for a receiver whose chain
+has context. A fresh `Ctx` call in a func literal called in place is not
+looked at.
+
+A deferred terminator runs at each return after the `defer` statement, so
+for one the last `Ctx` call on the source on each path from the `defer` to a
+return decides. A path with none keeps what the source had at the `defer`. A
+path that makes the source again, in a loop, has another event there.
 
 #### Events made in a loop
 
@@ -885,7 +907,7 @@ Due to SSA analysis constraints:
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Elements at an index computed in a loop**: A store at the same index, on the same iteration, is not taken to write the element, so a store without `.Ctx(ctx)` on an earlier iteration, or the caller's value in a slice parameter, may still be what the read sees
 - **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
-- **Fresh contexts not seen**: A fresh context given to `Ctx` in place, with its result unused, does not replace the context the event had
+- **Fresh contexts not seen**: A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had. Nor does one given to the latest run of an event made in a loop, for a receiver that holds an earlier run
 
 These are documented in test cases with `// LIMITATION` comments, tagged `// LIMITATION(#n)` where an issue tracks the case.
 
