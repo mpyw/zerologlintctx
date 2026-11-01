@@ -337,9 +337,12 @@ for range 1 {  // t0 = 0:int < 1:int ; if t0 goto 1 else 2
 ```
 
 The check of `for range 1` at the end of the loop is on a counter, so the
-loop may still run again. A loop with a counter, such as `for i := 0; i < 1; i++`,
-has no such first check. Its only check is on a Phi of the counter, which
-the back edge reaches too. So it is not folded (see
+loop may still run again. go/types folds `!debug` and `cur == modeOn` into an
+`*ssa.Const` already.
+
+A loop with a counter, such as `for i := 0; i < 1; i++`, has no such first
+check of two constants. Its only check is on a Phi of the counter, which the
+back edge reaches too. So it is not folded (see
 [Known Limitations](#known-limitations)):
 
 ```go
@@ -350,8 +353,7 @@ for i := 0; i < 1; i++ { // t2 = phi [0: 0:int, 2: t5] ; t3 = t2 < 1:int
 
 The check is `0 < 1` only on the edge from the entry. `LiveFlow` tells the
 edges of each block, not which edge a path came in by, so it cannot drop the
-exit edge for that path alone. go/types folds `!debug` and `cur == modeOn` into an
-`*ssa.Const` already.
+exit edge for that path alone.
 
 `walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
 the visit of each instruction too, which may change it for the rest of the
