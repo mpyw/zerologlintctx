@@ -191,7 +191,7 @@ func f(x *T) func() { return x.m }
 		t.Errorf("storeMakersOf(%v) = %v, want nil", wrapper, makers)
 	}
 	stored := storeReaching{captured: []Place{PlaceAt(wrapper.FreeVars[0])}}
-	if _, ok := storeTargetsReaching(stored, wrapper, nil, make(Positions)); ok {
+	if _, ok := storeTargetsReaching(stored, wrapper, nil, newStorePointers(make(Positions))); ok {
 		t.Error("storeTargetsReaching of a free variable of a wrapper: ok")
 	}
 }

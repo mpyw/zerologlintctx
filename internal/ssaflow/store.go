@@ -44,7 +44,13 @@ import (
 // variable carries its zero value, which has no value to trace. One that
 // leads back to the entry of the function carries the value the caller
 // passed, which is unknown, or the value of the captured variable when the
-// closure runs, which is among captured.
+// closure runs, which is among captured. A store through a pointer read
+// from memory is a store to the variable when the pointer can point to it,
+// as one read back from a field where its address was put can:
+//
+//	h := box{p: &l}
+//	*h.p = l.With().Ctx(ctx).Logger() // a store to l
+//	l.Info().Msg("msg")               // reads that store
 //
 // An address whose root is a pointer the function reads from such an address,
 // such as h.p.l for a struct h with a pointer field p, is what is at the same
@@ -88,6 +94,7 @@ func storesReaching(
 
 	w := &storeWalk{at: at, positions: positions, out: &r}
 	if read != nil {
+		w.pointers = newStorePointers(positions)
 		w.walkToRead(read)
 		return r, true
 	}
@@ -1297,7 +1304,7 @@ func (g *storeGuard) holdsOnly(w *storeWalk, at Place, read ssa.Instruction, poi
 	if held, done := g.pointers.held[key]; done {
 		return held
 	}
-	r, ok := storesReachingAt(at, read, w.positions)
+	r, ok := storesReachingWith(at, read, g.pointers)
 	held := ok && len(r.values) > 0 && !r.unknown && len(r.captured) == 0 && len(r.params) == 0 && len(r.made) == 0 &&
 		!slices.ContainsFunc(r.values, func(v ssa.Value) bool { return v != pointer })
 	g.pointers.held[key] = held
@@ -1482,7 +1489,7 @@ func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
 	p.pointed[v] = storePointed{} // Reaching v again while it is followed fails
 	var got storePointed
 	if stored, ok := p.reachingReads(reads); ok {
-		got.targets, got.ok = storeTargetsReaching(stored, parentFunc(v), nil, p.positions)
+		got.targets, got.ok = storeTargetsReaching(stored, parentFunc(v), nil, p)
 	}
 	p.pointed[v] = got
 	return got.targets, got.ok
@@ -1513,7 +1520,7 @@ func storeTargetsReaching(
 	stored storeReaching,
 	from *ssa.Function,
 	via []*ssa.MakeClosure,
-	positions Positions,
+	p *storePointers,
 ) ([]storeTarget, bool) {
 	if stored.unknown || len(stored.params) > 0 || len(stored.made) > 0 {
 		return nil, false
@@ -1533,8 +1540,8 @@ func storeTargetsReaching(
 		}
 		idx := slices.Index(fv.Parent().FreeVars, fv)
 		for _, mc := range makers {
-			bound := storesReachingClosure(mc.Bindings[idx], c.path, mc, positions)
-			more, ok := storeTargetsReaching(bound, from, append(slices.Clip(via), mc), positions)
+			bound := storesReachingClosureWith(mc.Bindings[idx], c.path, mc, p)
+			more, ok := storeTargetsReaching(bound, from, append(slices.Clip(via), mc), p)
 			if !ok {
 				return nil, false
 			}
@@ -1737,8 +1744,19 @@ func storesReachingClosure(
 	mc *ssa.MakeClosure,
 	positions Positions,
 ) storeReaching {
+	return storesReachingClosureWith(v, path, mc, newStorePointers(positions))
+}
+
+// storesReachingClosureWith is storesReachingClosure with pointers, which
+// follows the pointers read from memory, as storesReachingWith does.
+func storesReachingClosureWith(
+	v ssa.Value,
+	path []sel,
+	mc *ssa.MakeClosure,
+	pointers *storePointers,
+) storeReaching {
 	var r storeReaching
-	w := &storeWalk{at: Place{root: v, path: path}, positions: positions, out: &r}
+	w := &storeWalk{at: Place{root: v, path: path}, positions: pointers.positions, out: &r, pointers: pointers}
 	w.walkEscape(mc, storePath{})
 	return r
 }
@@ -2021,12 +2039,21 @@ func storesReachingAt(
 	read ssa.Instruction,
 	positions Positions,
 ) (r storeReaching, ok bool) {
+	return storesReachingWith(at, read, newStorePointers(positions))
+}
+
+// storesReachingWith is storesReachingAt with pointers, which follows the
+// pointers read from memory: a store through one that points to the root of
+// at is a store to it (see storeWalk.storeCover). A walk inside another keeps
+// the pointers of that one, so that a pointer reached again while it is
+// followed is not followed again.
+func storesReachingWith(at Place, read ssa.Instruction, pointers *storePointers) (r storeReaching, ok bool) {
 	if !isTrackedRoot(at.root) {
-		r, ok = newStorePointers(positions).reachingThrough(at, read)
+		r, ok = pointers.reachingThrough(at, read)
 		r.followed = true
 		return r, ok
 	}
-	w := &storeWalk{at: at, positions: positions, out: &r}
+	w := &storeWalk{at: at, positions: pointers.positions, out: &r, pointers: pointers}
 	w.walkToRead(read)
 	return r, true
 }
