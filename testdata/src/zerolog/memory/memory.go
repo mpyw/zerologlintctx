@@ -2137,9 +2137,9 @@ func goodEitherPointerParamOrLoggerOfCtx(ctx context.Context, l1, l2 *zerolog.Lo
 	p.Print("either pointer, or the logger of ctx") // OK
 }
 
-// The logger of ctx made in a loop, after the Phi, cannot be walked along
-// the paths of the Phi. Each pointer parameter takes every store that reaches
-// any read of it instead.
+// The logger of ctx made in a loop, after the Phi, is walked along the paths
+// of the Phi too: no store goes through it, so every path that gets to it
+// carries the logger of ctx itself.
 func goodEitherPointerParamOrLoggerOfCtxInLoop(ctx context.Context, l1, l2 *zerolog.Logger, cond bool, n int) {
 	*l1 = l1.With().Ctx(ctx).Logger()
 	*l2 = zerolog.Ctx(ctx).With().Logger()
@@ -2166,6 +2166,80 @@ func badEitherPointerParamOrLoggerOfCtxInLoop(ctx context.Context, l1, l2 *zerol
 		p.Print("one pointer without ctx, or the logger of ctx made in the loop") // want `zerolog direct logging bypasses context`
 		p = zerolog.Ctx(ctx)
 	}
+}
+
+// In a func literal, the pointer parameter is a captured variable, which the
+// Phi picks through a load of it.
+func goodPointerCapturedOrLoggerOfCtxInLoop(ctx context.Context, l1 *zerolog.Logger, n int) {
+	func() {
+		*l1 = l1.With().Ctx(ctx).Logger()
+		p := l1
+		for range n {
+			p.Print("captured pointer, or the logger of ctx made in the loop") // OK
+			p = zerolog.Ctx(ctx)
+		}
+	}()
+}
+
+func badPointerCapturedOrLoggerOfCtxInLoop(ctx context.Context, l1 *zerolog.Logger, n int) {
+	func() {
+		p := l1
+		for range n {
+			p.Print("captured pointer without ctx, or the logger of ctx made in the loop") // want `zerolog direct logging bypasses context`
+			p = zerolog.Ctx(ctx)
+		}
+	}()
+}
+
+type loggerPtrField struct{ f *zerolog.Logger }
+
+func (r *loggerPtrField) goodPointerFieldOrLoggerOfCtxInLoop(ctx context.Context, n int) {
+	*r.f = r.f.With().Ctx(ctx).Logger()
+	p := r.f
+	for range n {
+		p.Print("pointer from a field, or the logger of ctx made in the loop") // OK
+		p = zerolog.Ctx(ctx)
+	}
+}
+
+func (r *loggerPtrField) badPointerFieldOrLoggerOfCtxInLoop(ctx context.Context, n int) {
+	p := r.f
+	for range n {
+		p.Print("pointer from a field without ctx, or the logger of ctx made in the loop") // want `zerolog direct logging bypasses context`
+		p = zerolog.Ctx(ctx)
+	}
+}
+
+func goodPointerReceivedOrLoggerOfCtxInLoop(ctx context.Context, ch chan *zerolog.Logger, n int) {
+	l1 := <-ch
+	*l1 = l1.With().Ctx(ctx).Logger()
+	p := l1
+	for range n {
+		p.Print("pointer received, or the logger of ctx made in the loop") // OK
+		p = zerolog.Ctx(ctx)
+	}
+}
+
+func badPointerReceivedOrLoggerOfCtxInLoop(ctx context.Context, ch chan *zerolog.Logger, n int) {
+	l1 := <-ch
+	p := l1
+	for range n {
+		p.Print("pointer received without ctx, or the logger of ctx made in the loop") // want `zerolog direct logging bypasses context`
+		p = zerolog.Ctx(ctx)
+	}
+}
+
+// The logger of ctx is stored through in the loop, so it is not walked along
+// the paths of the Phi: a store may be to the pointer of a later iteration.
+func badLoggerOfCtxStoredThroughInLoop(ctx context.Context, l1 *zerolog.Logger, l zerolog.Logger, n int) {
+	*l1 = l1.With().Ctx(ctx).Logger()
+	p := l1
+	for range n {
+		q := zerolog.Ctx(ctx)
+		*q = l
+		p = q
+	}
+	p.Print("the logger of ctx, stored through without ctx in the loop") // want `zerolog direct logging bypasses context`
 }
 
 func badEitherFieldReplacedOrLoggerOfCtx(ctx context.Context, l zerolog.Logger, cond, other bool) {

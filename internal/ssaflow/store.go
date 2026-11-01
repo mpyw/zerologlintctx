@@ -729,14 +729,41 @@ type storePick struct {
 // made, for a walk of the stores through it along the paths on which the Phi
 // is the leaf (see storeWalk.walkPointerBefore). Such a walk keeps to those
 // paths back to where the leaf is made, and goes on from there on every
-// path. ok is false when the leaf may be made after the Phi, as in a loop:
-// a path back from the read may meet it before it meets the Phi.
+// path.
+//
+// The leaf may be made after the Phi, as in a loop. A path back from the read
+// may then meet it before it meets the Phi, where it makes the pointer of a
+// later iteration, and the stores through that one are not what the Phi
+// points to. Such a leaf is walked for only when it is not a load and no
+// store of the function goes through it: every path that gets to it carries
+// the leaf itself, as made, and no store:
+//
+//	p := l1                  // a pointer parameter, stored through before
+//	for range n {
+//	    p.Print("x")         // p is l1, or the logger of ctx
+//	    p = zerolog.Ctx(ctx) // the leaf, made after the Phi
+//	}
+//
+// ok is false for any other leaf that may be made after the Phi.
 func (pk *storePick) pointerOf(positions Positions) (_ *storePointer, ok bool) {
 	p := storePointerOf(pk.leaf)
-	if p.def != nil && positions.reaches(pk.phi, p.def) {
+	if p.def != nil && positions.reaches(pk.phi, p.def) && (p.from != nil || storeIsStoredThrough(pk.leaf)) {
 		return nil, false
 	}
 	return p, true
+}
+
+// storeIsStoredThrough reports whether a store of the function of v, a
+// pointer, goes through it, as addressesMatch matches the root of the store.
+func storeIsStoredThrough(v ssa.Value) bool {
+	for instr := range InstrsIn(parentFunc(v)) {
+		if store, isStore := instr.(*ssa.Store); isStore {
+			if at, _ := PlaceOf(store.Addr); addressesMatch(at.root, v) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // holds reports whether p, phi or a Phi that an edge of phi leads to, may be
