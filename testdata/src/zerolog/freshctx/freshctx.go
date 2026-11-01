@@ -352,6 +352,21 @@ func limitationEventCtxBackgroundInFuncLiteralOverCtx(ctx context.Context, log z
 	e.Msg("Background in a func literal over ctx") // LIMITATION: should report but doesn't
 }
 
+// LIMITATION (false negative): A fresh context in a variable whose address is
+// given to a func literal more than once, as on two branches, is not taken as
+// fresh. Given once, it is.
+func limitationEventCtxBackgroundAddressGivenOnEachBranch(ctx context.Context, log zerolog.Logger, cond bool) {
+	bg := context.Background()
+	f := func(p *context.Context) {
+		log.Info().Ctx(*p).Msg("Background, address given on each branch") // LIMITATION: should report but doesn't
+	}
+	if cond {
+		f(&bg)
+	} else {
+		f(&bg)
+	}
+}
+
 // ===== FRESH CONTEXTS IN CLOSURES AND FUNC LITERALS =====
 
 // A variable a closure captures holds what is stored to it before the
