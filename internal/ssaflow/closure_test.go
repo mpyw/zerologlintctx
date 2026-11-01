@@ -101,4 +101,10 @@ func TestClosures(t *testing.T) {
 	if again, ok := c.funcsHeldBy(held); !ok || !slices.Equal(again, values) {
 		t.Errorf("funcsHeldBy(held) again = %v, %v, want %v", again, ok, values)
 	}
+
+	// The free variable of a method value is made where it cannot be seen
+	recv := &ssa.UnOp{Op: token.MUL, X: bound.Fn.(*ssa.Function).FreeVars[0]}
+	if addr, read := c.capturedRead(recv); addr != nil || read != nil {
+		t.Errorf("capturedRead(a load of the receiver of a method value) = %v, %v, want nil", addr, read)
+	}
 }

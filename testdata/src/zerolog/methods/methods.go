@@ -212,3 +212,12 @@ func limitationMethodValueAssignedTwiceInIIFE(ctx context.Context, base zerolog.
 	info = l.Info
 	func() { info().Msg("method value assigned twice") }() // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// LIMITATION: a method value stored by another closure than the one that
+// calls it is bound where its receiver is not read, so it is reported.
+func limitationMethodValueStoredByAnotherClosure(ctx context.Context, base zerolog.Logger) {
+	l := base.With().Ctx(ctx).Logger()
+	var info func() *zerolog.Event
+	func() { info = l.Info }()
+	func() { info().Msg("method value stored by another closure") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
