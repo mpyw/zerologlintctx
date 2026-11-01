@@ -1845,6 +1845,65 @@ func goodPointerFromStructParamCopiedInClosureStored(ctx context.Context, h logg
 	}()
 }
 
+// An element of an array parameter that a func literal captures, copied
+// there: the pointer is followed past the copy, to the caller's array, as
+// for a struct (#370).
+func badPointerFromArrayParamElemCopiedInClosure(ctx context.Context, arr [1]loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		b := arr[0]
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("from the caller's array, an element copied in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badPointerFromArrayParamElemCopied(ctx context.Context, arr [1]loggerPtrBox, l zerolog.Logger, other bool) {
+	b := arr[0]
+	q := b.p
+	if other {
+		*q = l.With().Ctx(ctx).Logger()
+	}
+	q.Info().Msg("from the caller's array, an element copied") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFromArrayParamElemCopiedInNestedClosure(ctx context.Context, arr [2]loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		func() {
+			b := arr[1]
+			q := b.p
+			if other {
+				*q = l.With().Ctx(ctx).Logger()
+			}
+			q.Info().Msg("from the caller's array, an element copied in a nested closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func goodPointerFromArrayParamElemCopiedInClosureStored(ctx context.Context, arr [1]loggerPtrBox, l zerolog.Logger) {
+	func() {
+		b := arr[0]
+		q := b.p
+		*q = l.With().Ctx(ctx).Logger()
+		q.Info().Msg("an element copied in a closure, stored on every path") // OK
+	}()
+}
+
+// The func literal stores to an element of the array it captures, so the
+// array does not hold the caller's value alone, and the path that skips the
+// store with ctx is not followed to it.
+func goodPointerFromArrayParamElemCopiedInClosureArrayStored(ctx context.Context, arr [1]loggerPtrBox, l zerolog.Logger) {
+	p := &l
+	*p = l.With().Ctx(ctx).Logger()
+	func() {
+		arr[0] = loggerPtrBox{p}
+		b := arr[0]
+		q := b.p
+		q.Info().Msg("an element copied in a closure, after a store of the element") // OK
+	}()
+}
+
 // The field of the struct parameter is set on one branch only, so the copy
 // in the func literal may hold the caller's pointer.
 func badNestedCopyOfStructParamFieldSetOnBranch(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {

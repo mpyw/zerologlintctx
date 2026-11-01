@@ -2238,8 +2238,8 @@ func storeLoadedVariable(v ssa.Value) (_ *ssa.Alloc, ok bool) {
 // storeVariableOnce reports whether alloc, a local variable, holds one value
 // wherever it is loaded: it is stored to once, outside a loop, before each
 // load of it and each closure that captures it, and is otherwise only
-// loaded, whole or by a field, in its function and in those closures. A
-// parameter that a closure captures is such a variable.
+// loaded, whole, by a field or by an element, in its function and in those
+// closures. A parameter that a closure captures is such a variable.
 func (w *storeWalk) storeVariableOnce(alloc *ssa.Alloc) bool {
 	var store *ssa.Store
 	var uses []ssa.Instruction // Loads and captures in the function of alloc
@@ -2254,10 +2254,10 @@ func (w *storeWalk) storeVariableOnce(alloc *ssa.Alloc) bool {
 				store = in
 			case *ssa.UnOp:
 				// A load: the only unary operation on an address
-			case *ssa.FieldAddr:
-				// A field of a struct variable, such as a struct parameter,
-				// that is only loaded
-				if !only(in, false) {
+			case *ssa.FieldAddr, *ssa.IndexAddr:
+				// A field or element of a struct or array variable, such as
+				// a struct or array parameter, that is only loaded
+				if !only(in.(ssa.Value), false) {
 					return false
 				}
 			case *ssa.MakeClosure:
