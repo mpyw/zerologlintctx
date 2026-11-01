@@ -2003,6 +2003,8 @@ func badLoggerPtrsSwappedInLoop(ctx context.Context, l *zerolog.Logger, base zer
 		*y = zerolog.Ctx(ctx).With().Logger()
 	}
 	h.a.Info().Msg("pointers copied back and forth in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // A pointer read from memory and picked by a Phi is walked for along the
 // paths on which the Phi picks it: the stores through the same pointer, read
 // from the same place (#299).
