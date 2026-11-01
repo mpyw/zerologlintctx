@@ -502,6 +502,54 @@ func badEventCtxOnPreviousIterationPhi(ctx context.Context, log zerolog.Logger) 
 	}
 }
 
+func badEventCtxInIIFEOnPreviousIteration(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() { last.Ctx(ctx) }()
+			e.Msg("ctx in an IIFE on the event of the previous iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = e
+	}
+}
+
+func goodEventCtxInIIFEOnPreviousIterationLoggedThere(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() { last.Ctx(ctx) }()
+			last.Msg("ctx in an IIFE on the event of the previous iteration, logged") // OK
+		}
+		last = e
+	}
+}
+
+func badEventCtxInIIFEOnPreviousIterationField(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	for range 2 {
+		e := log.Info()
+		if h.e != nil {
+			func() { h.e.Ctx(ctx) }()
+			e.Msg("ctx in an IIFE on the event of the previous iteration, in a field") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		h.e = e
+	}
+}
+
+func goodEventCtxInIIFEOnPreviousIterationFieldLoggedThere(ctx context.Context, log zerolog.Logger) {
+	var h inPlaceHolder
+	for range 2 {
+		e := log.Info()
+		if h.e != nil {
+			func() { h.e.Ctx(ctx) }()
+			h.e.Msg("ctx in an IIFE on the event of the previous iteration in a field, logged") // OK
+		}
+		h.e = e
+	}
+}
+
 func badEventCtxOnPreviousIterationField(ctx context.Context, log zerolog.Logger) {
 	var h inPlaceHolder
 	for range 2 {
@@ -886,6 +934,33 @@ func goodEventCtxInPlaceInNestedIIFE(ctx context.Context, log zerolog.Logger) {
 		func() { e.Ctx(ctx) }()
 	}()
 	e.Msg("ctx in place in a nested IIFE") // OK
+}
+
+func goodEventCtxInPlaceInNestedIIFEEitherEvent(ctx context.Context, log zerolog.Logger, cond bool) {
+	var e *zerolog.Event
+	if cond {
+		e = log.Info()
+	} else {
+		e = log.Warn()
+	}
+	func() {
+		func() { e.Ctx(ctx) }()
+	}()
+	e.Msg("ctx in place in a nested IIFE, on either event") // OK
+}
+
+func badEventCtxInPlaceInNestedIIFEEitherEventReplaced(ctx context.Context, log zerolog.Logger, cond bool) {
+	var e *zerolog.Event
+	if cond {
+		e = log.Info()
+	} else {
+		e = log.Warn()
+	}
+	func() {
+		func() { e.Ctx(ctx) }()
+	}()
+	e = log.Error()
+	e.Msg("ctx in place in a nested IIFE, on events replaced after") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 func goodEventCtxInPlaceInIIFEDeferredTerminator(ctx context.Context, log zerolog.Logger) {
