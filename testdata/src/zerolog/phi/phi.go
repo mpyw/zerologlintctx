@@ -1491,6 +1491,66 @@ func goodLoggerPointerToOneOfTwoVariablesDeclaredInBranch(ctx context.Context, b
 	p.Info().Msg("one of two variables declared in a branch") // OK - both loggers have ctx
 }
 
+// Read in a func literal, the pointer is a captured variable, and the walk
+// from where the closure runs does not keep to the paths on which it points
+// to l. With the logger of ctx as the other pointer, the pointer is traced
+// as a value instead.
+func goodLoggerPointerToVariableSetBeforePickInIIFE(ctx context.Context, base zerolog.Logger, a, b bool) {
+	p := zerolog.Ctx(ctx)
+	if a {
+		l := base
+		if b {
+			l = base.With().Ctx(ctx).Logger()
+			p = &l
+		}
+	}
+	func() {
+		p.Info().Msg("l lacks ctx only on the edge that does not pick it, in an IIFE") // OK - p points to l only after the store with ctx
+	}()
+}
+
+func goodLoggerPointerToVariableSetBeforePickInDeferred(ctx context.Context, base zerolog.Logger, a, b bool) {
+	p := zerolog.Ctx(ctx)
+	if a {
+		l := base
+		if b {
+			l = base.With().Ctx(ctx).Logger()
+			p = &l
+		}
+	}
+	defer func() {
+		p.Info().Msg("l lacks ctx only on the edge that does not pick it, deferred") // OK - p points to l only after the store with ctx
+	}()
+}
+
+func badLoggerPointerToVariableSetBeforePickInIIFE(ctx context.Context, base zerolog.Logger, a, b bool) {
+	p := zerolog.Ctx(ctx)
+	if a {
+		l := base.With().Ctx(ctx).Logger()
+		if b {
+			l = base.With().Logger()
+			p = &l
+		}
+	}
+	func() {
+		p.Info().Msg("l lacks ctx on the edge that picks it, in an IIFE") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badLoggerPointerToVariableSetBeforePickInDeferred(ctx context.Context, base zerolog.Logger, a, b bool) {
+	p := zerolog.Ctx(ctx)
+	if a {
+		l := base.With().Ctx(ctx).Logger()
+		if b {
+			l = base.With().Logger()
+			p = &l
+		}
+	}
+	defer func() {
+		p.Info().Msg("l lacks ctx on the edge that picks it, deferred") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
 func goodLoggerFieldOfVariableDeclaredInBranch(ctx context.Context, base zerolog.Logger, cond bool) {
 	h0 := phiLoggerHolder{l: base.With().Ctx(ctx).Logger()}
 	p := &h0.l

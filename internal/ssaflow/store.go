@@ -877,6 +877,11 @@ func (p *storePointers) reachingThrough(at Place, read ssa.Instruction) (r store
 // that read runs in, or that via leads out to: the closures read is in,
 // innermost first, out to the function of at.
 //
+// A target that is not in a variable, read through a closure, is not known
+// when no store through it is found, even when a path gets back to where it
+// is made: the walks of the other targets do not keep to the paths on which
+// the variable the closure captures holds each one.
+//
 // A pointer copied from another one read from memory points to what that one
 // does, as it is read where the copy is made. When that one cannot be
 // followed, as for one read from a pointer parameter, the stores through the
@@ -917,9 +922,11 @@ func (p *storePointers) reachingThroughVia(at Place, read ssa.Instruction, via [
 			}
 		}
 		w.walkToRead(read)
-		if !tracked && tr.isEmpty() && len(tr.made) == 0 {
+		if !tracked && tr.isEmpty() && (len(tr.made) == 0 || len(tvia) > 0) {
 			// What a callee stored there is not seen, as for storesReachingPointer.
-			// A path back to where the pointer is made carries the pointer itself
+			// A path back to where the pointer is made carries the pointer itself,
+			// unless the pointer is read through a closure: the walks of the other
+			// targets do not keep to the paths on which the pointer is this one
 			return storeReaching{}, false
 		}
 		r.merge(tr)
