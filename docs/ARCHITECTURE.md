@@ -1155,6 +1155,33 @@ p := newLoggerPtr()
 p.Info().Msg("x")                       // Info(t0): not reported
 ```
 
+A deferred call of a method on such a pointer, or on a Phi of pointers,
+takes the pointer at its `defer` statement and reads what it points to at
+the returns after it. The walk goes back from each return to the statement,
+as for a variable, so a store through the pointer after the statement is
+what the call reads. When the pointer is made again after the statement, as
+in a loop, such a store may be through the pointer of a later iteration. The
+walk then goes back from the statement, and every store after it counts
+too, as for a `go` statement:
+
+```go
+p := &a
+if other {
+    p = &b
+}
+defer p.Print("x")                      // reads *p at the return
+*p = base.With().Ctx(ctx).Logger()      // the only store that reaches it: not reported
+
+for i := range n {
+    p := newLoggerPtr()                 // made again after the defer statement
+    if i == 0 {
+        defer p.Print("x")              // reported: the store below is through a later p
+        continue
+    }
+    *p = base.With().Ctx(ctx).Logger()
+}
+```
+
 A closure that reads the pointer from the variables it captures, such as
 `h.m.log` for a captured struct `h`, does not see where the pointer was
 stored. A path that gets to the entry of the closure goes on before each call
@@ -1400,7 +1427,7 @@ negative is a missed report.
 | Events stored back | A `Ctx` call on a read that can see several events counts for each of them. It counts even where a path stores one of those events back over another after the call | `inplace` |
 | The caller's event copied over | A `Ctx` call on the caller's event at a place counts at later reads of the place. It counts even when another value of the caller's is copied over it in between | `inplace` |
 | Panics | A deferred call is checked at the returns after its `defer` statement. It is not checked at the points where a panic could run it | `deferred` |
-| Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. The value stored before it is taken as the one read | `memory` |
+| Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. Nor is a store to a variable that a Phi of pointers may point to, made after a store through the Phi, such as `*p = l; a = base` for `p` that is `&a` or `&b`. The value stored before it is taken as the one read | `memory`, `phi` |
 | Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
 | Fresh in-place `Ctx` through another reference | `e.Ctx(context.Background())` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to. The event keeps the context it had. This is the mirror of #139 | `freshctx` |
 | Fresh contexts on another run | A fresh `Ctx` call on an event made in a loop counts only for a value that holds the latest run. It is not seen for the event kept from the last iteration | `freshctx` |

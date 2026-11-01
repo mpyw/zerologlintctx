@@ -1624,6 +1624,136 @@ func badLoggerPointerPickedReadInClosureDeferredOnBranch(ctx context.Context, ba
 	}
 }
 
+// A deferred call of a method on the pointer takes the pointer at its defer
+// statement, and reads what it points to at the return: a store through the
+// pointer after the statement is what it reads (#363).
+func goodLoggerPointerPickedDeferredStoredAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	defer p.Print("picked, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func goodLoggerPointerOrCtxPickedDeferredStoredAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	l := base
+	p := zerolog.Ctx(ctx)
+	if other {
+		p = &l
+	}
+	defer p.Print("picked with the logger of ctx, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func goodLoggerPointerToVariableDeclaredInBranchDeferredStoredAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base
+		p = &l
+	}
+	defer p.Print("picked, declared in a branch, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func goodLoggerPointerParamOrVariablePickedDeferredStoredAfter(ctx context.Context, l1 *zerolog.Logger, base zerolog.Logger, other bool) {
+	l := base
+	p := l1
+	if other {
+		p = &l
+	}
+	defer p.Print("pointer parameter or variable, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func goodLoggerPointerPickedInLoopDeferredStoredAfter(ctx context.Context, base zerolog.Logger, n int) {
+	a := base
+	b := base
+	p := &a
+	for i := range n {
+		if i == 1 {
+			p = &b
+		}
+	}
+	defer p.Print("picked in a loop, deferred after it, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func goodLoggerPointerFromCallDeferredStoredAfter(ctx context.Context, base zerolog.Logger) {
+	p := newDeferredLoggerPtr()
+	defer p.Print("from a call, deferred, stored through after") // OK - the store after the defer has ctx
+	*p = base.With().Ctx(ctx).Logger()
+}
+
+func badLoggerPointerPickedDeferredStoredAfterOnBranch(ctx context.Context, base zerolog.Logger, other, cond bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	defer p.Print("picked, deferred, stored through after on a branch") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	if cond {
+		*p = base.With().Ctx(ctx).Logger()
+	}
+}
+
+func badLoggerPointerPickedDeferredStoredWithoutCtxAfter(ctx context.Context, base zerolog.Logger, other bool) {
+	p := zerolog.Ctx(ctx)
+	if other {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	defer p.Print("picked, deferred, stored through without ctx after") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+	*p = base
+}
+
+// Each iteration makes a pointer of its own, and the store after the
+// defer statement is through the pointer of the last one.
+func badLoggerPointerMadeInLoopDeferredStoredAfter(ctx context.Context, base zerolog.Logger, n int) {
+	for i := range n {
+		p := newDeferredLoggerPtr()
+		if i == 0 {
+			defer p.Print("made in a loop, deferred on the first iteration") // want `zerolog direct logging bypasses context; use Event chain with .Ctx\(ctx\)`
+			continue
+		}
+		*p = base.With().Ctx(ctx).Logger()
+	}
+}
+
+func newDeferredLoggerPtr() *zerolog.Logger { return new(zerolog.Logger) }
+
+// LIMITATION(#115) (false negative): a store to a variable that a Phi of
+// pointers may point to, after a store through the Phi, is a write through
+// another reference. The walk for the stores through the pointer does not
+// see it.
+func limitationLoggerPointerPickedStoredThroughThenVariable(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	*p = base.With().Ctx(ctx).Logger()
+	a = base
+	p.Print("picked, stored through, then the variable replaced") // LIMITATION(#115): should report but doesn't
+}
+
+// LIMITATION(#115) (false negative): the same for a deferred call.
+func limitationLoggerPointerPickedDeferredStoredThroughThenVariable(ctx context.Context, base zerolog.Logger, other bool) {
+	a := base
+	b := base
+	p := &a
+	if other {
+		p = &b
+	}
+	defer p.Print("picked, deferred, stored through, then the variable replaced") // LIMITATION(#115): should report but doesn't
+	*p = base.With().Ctx(ctx).Logger()
+	a = base
+}
+
 // A goroutine that stores through the pointer before it reads it reads that
 // store, whichever value the variable holds when it runs.
 func goodLoggerPointerStoredInGoroutineSetAfter(ctx context.Context, base zerolog.Logger) {

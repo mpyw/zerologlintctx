@@ -1720,6 +1720,18 @@ func (w *storeWalk) declaredInLoop() bool {
 	return ok && w.positions.reaches(alloc, alloc)
 }
 
+// pointerMadeAfter reports whether the root of the walk is a pointer that is
+// not in a variable, which a walk without a guard looks for, made again
+// after d, as in a loop: a store through it there may be through another
+// pointer than the one d takes. With a guard, a store through the leaf made
+// again is dropped where the leaf is made (see storeGuard.step).
+func (w *storeWalk) pointerMadeAfter(d *ssa.Defer) bool {
+	if w.pointer == nil || w.guard != nil || w.pointer.def == nil {
+		return false
+	}
+	return w.positions.reaches(d, w.pointer.def)
+}
+
 // walkDeferred walks to the returns after d, where what d defers runs, along
 // the paths that pass d only: on a path that skips d, nothing is deferred.
 // Each path goes back to d, and from there on as walkBefore goes.
@@ -1780,10 +1792,22 @@ func storeReturnsAfter(d *ssa.Defer, positions Positions) []ssa.Instruction {
 // call at any point after it, as an escape does. A deferred call that reads
 // a variable declared in a loop is read as an escape too, since a return may
 // meet a later iteration's variable first. So is one for a pointer that is
-// not in a variable, whose walk goes back from the read.
+// not in a variable and is made again after the defer statement, in a loop,
+// since a store through it there may be through the pointer of a later
+// iteration.
+//
+// A store through the pointer itself after a defer statement writes what the
+// deferred call reads, as the call takes the pointer when the statement runs:
+//
+//	p := &a
+//	if other {
+//	    p = &b
+//	}
+//	defer p.Print("x")                 // reads *p at the return
+//	*p = base.With().Ctx(ctx).Logger() // the only store that reaches it
 func (w *storeWalk) walkToRead(read ssa.Instruction) {
 	st := w.guard.start()
-	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() && w.pointer == nil {
+	if d, ok := read.(*ssa.Defer); ok && !w.declaredInLoop() && !w.pointerMadeAfter(d) {
 		w.walkDeferred(d, st, true)
 		return
 	}
