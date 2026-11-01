@@ -915,6 +915,106 @@ func limitationPointerFieldOnManyBranches(ctx context.Context, logger zerolog.Lo
 	h.p.l.Info().Msg("one of 17 pointers") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// A Phi of more pointers than the walk takes is traced as a value: each
+// field is what every read of it can see, and a store over the whole
+// element after the Phi takes the pointer counts too.
+func badLoggerFieldOfManyElementsReplacedAfter(ctx context.Context, logger zerolog.Logger, n int) {
+	var hs [17]pointedLogger
+	hs[0].l = logger.With().Ctx(ctx).Logger()
+	hs[0].l = hs[0].l.With().Str("k", "v").Logger()
+	hs[0].l.Info().Msg("the first element, updated") // OK
+	c := hs[0].l
+	c.Info().Msg("a copy of the first element") // OK
+	p := &hs[0].l
+	switch n {
+	case 1:
+		p = &hs[1].l
+	case 2:
+		p = &hs[2].l
+	case 3:
+		p = &hs[3].l
+	case 4:
+		p = &hs[4].l
+	case 5:
+		p = &hs[5].l
+	case 6:
+		p = &hs[6].l
+	case 7:
+		p = &hs[7].l
+	case 8:
+		p = &hs[8].l
+	case 9:
+		p = &hs[9].l
+	case 10:
+		p = &hs[10].l
+	case 11:
+		p = &hs[11].l
+	case 12:
+		p = &hs[12].l
+	case 13:
+		p = &hs[13].l
+	case 14:
+		p = &hs[14].l
+	case 15:
+		p = &hs[15].l
+	case 16:
+		p = &hs[16].l
+	}
+	hs[0] = pointedLogger{l: logger}
+	p.Info().Msg("one of 17 fields, the first replaced after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// The same with an element at a variable index among them.
+func badLoggerFieldOfManyElementsAtVariableIndex(ctx context.Context, logger zerolog.Logger, n, i int) {
+	var hs [17]pointedLogger
+	hs[i].l.Info().Msg("an element with no logger stored") // want `zerolog call chain missing .Ctx\(ctx\)`
+	p := &hs[0].l
+	switch n {
+	case 1:
+		p = &hs[1].l
+	case 2:
+		p = &hs[2].l
+	case 3:
+		p = &hs[3].l
+	case 4:
+		p = &hs[4].l
+	case 5:
+		p = &hs[5].l
+	case 6:
+		p = &hs[6].l
+	case 7:
+		p = &hs[7].l
+	case 8:
+		p = &hs[8].l
+	case 9:
+		p = &hs[9].l
+	case 10:
+		p = &hs[10].l
+	case 11:
+		p = &hs[11].l
+	case 12:
+		p = &hs[12].l
+	case 13:
+		p = &hs[13].l
+	case 14:
+		p = &hs[14].l
+	case 15:
+		p = &hs[15].l
+	case 16:
+		p = &hs[i].l
+	}
+	p.Info().Msg("one of 17 fields, one at a variable index") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func newPointedLogger() *pointedLogger { return &pointedLogger{} }
+
+// The holder is made with a pointer a call returns. The callee may have
+// stored anything there, so the pointer is traced as a value.
+func badCapturedHolderOfReturnedPointer(ctx context.Context) {
+	h := &pointedLoggerHolder{newPointedLogger()}
+	func() { h.p.l.Info().Msg("a pointer a call returns, in a captured holder") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func badEmbeddedPointerPlainCall(ctx context.Context, logger zerolog.Logger) {
 	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
 	h.Msg("promoted through a pointer partway") // want `zerolog call chain missing .Ctx\(ctx\)`
@@ -1571,6 +1671,34 @@ func badNestedCopyOfStructParamFieldPickedOutside(ctx context.Context, other log
 	func() {
 		b := other
 		func() { b.p.Info().Msg("nested copy of a struct, its field picked outside") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+// On the path that skips the copy, the pointer is in the zero value of b, and
+// on the other in the caller's struct, which the walk past where q is loaded
+// takes as not known.
+func badPointerFromStructParamCopiedOnBranch(ctx context.Context, h loggerPtrBox, l zerolog.Logger, cond, other bool) {
+	var b loggerPtrBox
+	if cond {
+		b = h
+	}
+	q := b.p
+	if other {
+		*q = l.With().Ctx(ctx).Logger()
+	}
+	q.Info().Msg("from the caller's struct, copied on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// The field of the struct parameter is set on one branch only, so the copy
+// in the func literal may hold the caller's pointer.
+func badNestedCopyOfStructParamFieldSetOnBranch(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	l1 := base.With().Ctx(ctx).Logger()
+	if cond {
+		other.p = &l1
+	}
+	func() {
+		b := other
+		func() { b.p.Info().Msg("nested copy of a struct, its field set on a branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
 	}()
 }
 
