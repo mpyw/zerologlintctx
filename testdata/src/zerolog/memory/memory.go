@@ -1918,6 +1918,59 @@ func badGlobalFieldReadInIIFEStoredAfter(ctx context.Context, l zerolog.Logger) 
 	globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
 }
 
+// A path that skips every store reads the field of a global as it was when
+// the function was called, which is not known (#340).
+func badGlobalFieldStoredOnBranch(ctx context.Context, l zerolog.Logger, cond bool) {
+	if cond {
+		globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+	}
+	globalLoggerHolder.log.Info().Msg("global field, stored on one branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badGlobalFieldStoredOnBranchReadInIIFE(ctx context.Context, l zerolog.Logger, cond bool) {
+	if cond {
+		globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+	}
+	func() { globalLoggerHolder.log.Info().Msg("global field, stored on one branch, in an IIFE") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badGlobalFieldStoredOnBranchInIIFE(ctx context.Context, l zerolog.Logger, cond bool) {
+	func() {
+		if cond {
+			globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+		}
+		globalLoggerHolder.log.Info().Msg("global field, stored on one branch of an IIFE") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badGlobalFieldStoredOnBranchInGoroutine(ctx context.Context, l zerolog.Logger, cond bool) {
+	go func() {
+		if cond {
+			globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+		}
+		globalLoggerHolder.log.Info().Msg("global field, stored on one branch of a goroutine") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodGlobalFieldStoredOnBothBranches(ctx context.Context, l zerolog.Logger, cond bool) {
+	if cond {
+		globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+	} else {
+		globalLoggerHolder.log = zerolog.Ctx(ctx).With().Logger()
+	}
+	globalLoggerHolder.log.Info().Msg("global field, stored on both branches") // OK
+}
+
+func goodGlobalFieldStoredOnBranchOfIIFE(ctx context.Context, l zerolog.Logger, cond bool) {
+	globalLoggerHolder.log = zerolog.Ctx(ctx).With().Logger()
+	func() {
+		if cond {
+			globalLoggerHolder.log = l.With().Ctx(ctx).Logger()
+		}
+		globalLoggerHolder.log.Info().Msg("global field, stored before the IIFE too") // OK
+	}()
+}
+
 func runGlobalLoggerFunc(f func()) { f() }
 
 func limitationGlobalFieldReadInGoroutine(ctx context.Context) {
