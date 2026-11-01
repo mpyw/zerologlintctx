@@ -49,6 +49,12 @@ import (
 // passed, which is unknown, or the value of the captured variable when the
 // closure runs, which is among captured.
 //
+// An address whose root is a pointer the function reads from such an address,
+// such as h.p.l for a struct h with a pointer field p, is what is at the same
+// selections from each pointer that can be there when the pointer is read.
+// The read is then found as for an address in that pointer's variable (see
+// storePointers).
+//
 // For any other address, such as a global, ok is true when the function
 // stores to it, and holds every value it stores there, wherever it runs.
 //
@@ -63,6 +69,11 @@ func storesReaching(
 ) (r storeReaching, ok bool) {
 	at, tracked := placeOf(addr)
 	if !tracked {
+		if read != nil {
+			if r, ok := newStorePointers(positions).reachingThrough(at, read); ok {
+				return r, true
+			}
+		}
 		plain := findStores(addr, make(map[ssa.Value]bool))
 		for _, store := range plain {
 			r.values = append(r.values, store.Val)
@@ -195,6 +206,199 @@ func (pk *storePick) holds(p *ssa.Phi) bool {
 		})
 	}
 	return holds(p)
+}
+
+// storePointers follows the pointers that a function reads from memory to
+// the variables they point to, so that an address whose root is such a
+// pointer is walked for as an address in each of those variables:
+//
+//	h := holder{p: &inner{l: base}}  // t1 = new inner ; *&t1.l = base ; *&t0.p = t1
+//	h.p.l.Info()                     // t3 = *&t0.p ; Info(&t3.l), and t3 is t1
+//
+// A pointer is what the stores that reach its read left where it is read
+// from: a field or element of a variable, or of a struct or array value
+// loaded from one, or of what another pointer read from memory points to.
+// Each one it can be must be a variable, a pointer parameter, a captured
+// variable, a field or element of one, or such a pointer itself, or a Phi
+// that picks one of them (see storesReachingPicked). A nil pointer has no
+// variable to read, and is left out.
+//
+// The walk for each variable takes a store through another pointer that may
+// point to it as a store to it: on every path when that pointer can be the
+// variable only, or maybe otherwise (see storeWalk.storeCover). A write
+// through a reference that is not read from memory, such as a pointer
+// passed to a function, is not seen there either.
+//
+//	h.p.l = base.With().Ctx(ctx).Logger() // t5 = *&t0.p ; *&t5.l = ..., and t5 is t1 too
+//	h.p.l.Info()                          // reads only that store
+type storePointers struct {
+	positions instrPositions
+	// pointed holds what each pointer already followed can point to, by the
+	// value read. One still being followed is there and not ok, so that
+	// reaching it again, through a store that leads back to it, fails.
+	pointed map[ssa.Value]storePointed
+}
+
+// storePointed is what a pointer read from memory can point to. ok is false
+// when that cannot be told.
+type storePointed struct {
+	targets []storeTarget
+	ok      bool
+}
+
+// storeTarget is something a pointer can point to: v, or one of the values
+// that the Phi of picked can be, when v is that one.
+type storeTarget struct {
+	v      ssa.Value
+	picked *storePick
+}
+
+// newStorePointers returns a storePointers that has followed no pointer yet.
+func newStorePointers(positions instrPositions) *storePointers {
+	return &storePointers{positions: positions, pointed: make(map[ssa.Value]storePointed)}
+}
+
+// reachingThrough finds the values that can be at at, whose root is a
+// pointer read from memory, when read runs: what can be at the same
+// selections from each variable the pointer can point to. ok is false when
+// the pointer cannot be followed, or points to nothing but nil.
+func (p *storePointers) reachingThrough(at place, read ssa.Instruction) (r storeReaching, ok bool) {
+	targets, ok := p.targetsOf(at.root)
+	if !ok || len(targets) == 0 {
+		return r, false
+	}
+	for _, t := range targets {
+		tat, tracked := placeOf(t.v)
+		tat = tat.with(at.path...)
+		var tr storeReaching
+		switch {
+		case t.picked != nil && !tracked:
+			return storeReaching{}, false
+		case t.picked != nil:
+			switch read.(type) {
+			case *ssa.Defer, *ssa.Go:
+				return storeReaching{}, false // walkToRead does not keep to the picked paths
+			}
+		case !tracked:
+			// A pointer copied from another one read from memory
+			if tr, ok = p.reachingThrough(tat, read); !ok {
+				return storeReaching{}, false
+			}
+			r.merge(tr)
+			continue
+		}
+		w := &storeWalk{at: tat, positions: p.positions, out: &tr, picked: t.picked, pointers: p}
+		w.walkToRead(read)
+		r.merge(tr)
+	}
+	return r, true
+}
+
+// targetsOf returns what v, a pointer read from memory, can point to. ok is
+// false when v is not one, or what it points to cannot be told.
+func (p *storePointers) targetsOf(v ssa.Value) ([]storeTarget, bool) {
+	if got, done := p.pointed[v]; done {
+		return got.targets, got.ok
+	}
+	at, load, isRead := storePointerRead(v)
+	if !isRead {
+		return nil, false
+	}
+	p.pointed[v] = storePointed{} // Reaching v again while it is followed fails
+	var got storePointed
+	if stored, ok := p.reaching(at, load); ok && !stored.unknown && len(stored.captured) == 0 && len(stored.params) == 0 {
+		got.targets, got.ok = storeTargetsOf(stored.values)
+	}
+	p.pointed[v] = got
+	return got.targets, got.ok
+}
+
+// reaching finds the values that can be at at when read runs, for at in a
+// variable, or in what a pointer read from memory points to.
+func (p *storePointers) reaching(at place, read ssa.Instruction) (storeReaching, bool) {
+	if !isTrackedRoot(at.root) {
+		return p.reachingThrough(at, read)
+	}
+	var r storeReaching
+	w := &storeWalk{at: at, positions: p.positions, out: &r, pointers: p}
+	w.walkToRead(read)
+	return r, true
+}
+
+// through returns at, an address whose root is a pointer read from memory,
+// as an address in root, when the pointer can point to root, and how much
+// of it a store to at writes: all of it when root is all the pointer can
+// point to, or maybe all of it otherwise. It is coverNone when the pointer
+// cannot point to root, or cannot be followed.
+func (p *storePointers) through(at place, root ssa.Value) (place, placeCover) {
+	if _, _, isRead := storePointerRead(at.root); !isRead {
+		return at, coverNone
+	}
+	targets, ok := p.targetsOf(at.root)
+	if !ok {
+		return at, coverNone
+	}
+	for _, t := range targets {
+		tat, _ := placeOf(t.v)
+		if tat.root != root {
+			continue
+		}
+		if len(targets) == 1 && t.picked == nil {
+			return tat.with(at.path...), coverMust
+		}
+		return tat.with(at.path...), coverMay
+	}
+	return at, coverNone
+}
+
+// storePointerRead returns where the pointer v is read from, when it is read
+// from memory: the address a load reads, with the fields and elements of a
+// struct or array value selected from what it loads, and the load.
+//
+//	t3 = *&t0.p             // read from t0.p
+//	t5 = *t0 ; t6 = t5.p    // read from t0.p too, as t5 is loaded
+func storePointerRead(v ssa.Value) (at place, load *ssa.UnOp, ok bool) {
+	var selections []sel
+	for {
+		from, s, isSel := valueSel(v)
+		if !isSel {
+			break
+		}
+		selections = append(selections, s)
+		v = from
+	}
+	load, ok = asLoad(v)
+	if !ok {
+		return place{}, nil, false
+	}
+	slices.Reverse(selections)
+	base, _ := placeOf(load.X)
+	return base.with(selections...), load, true
+}
+
+// storeTargetsOf returns what a pointer can point to when it can be any of
+// values: each value apart from nil, and each value a Phi among them can be.
+// ok is false when a Phi can be more than storePickedMax of them.
+func storeTargetsOf(values []ssa.Value) ([]storeTarget, bool) {
+	var targets []storeTarget
+	for _, v := range values {
+		if isNilConst(v) {
+			continue // A nil pointer has no variable to read
+		}
+		phi, isPhi := v.(*ssa.Phi)
+		if !isPhi {
+			targets = append(targets, storeTarget{v: v})
+			continue
+		}
+		leaves, ok := storePickedLeaves(phi)
+		if !ok {
+			return nil, false
+		}
+		for _, leaf := range leaves {
+			targets = append(targets, storeTarget{v: leaf, picked: &storePick{phi: phi, leaf: leaf}})
+		}
+	}
+	return targets, true
 }
 
 // merge adds what o found to r.
@@ -430,7 +634,8 @@ func storeIsFuncLiteralParam(v ssa.Value) (*ssa.Parameter, bool) {
 
 // storesReachingAt finds the values that can be at the address at when read
 // runs, as storesReaching does for a read it is given. ok is false when the
-// root of at is not one isTrackedRoot accepts.
+// root of at is not one isTrackedRoot accepts, nor a pointer read from such
+// an address that storePointers can follow.
 //
 //declscope:shared // resolve.go walks from a call of a func literal, tracing.go from an embedded field
 func storesReachingAt(
@@ -439,7 +644,7 @@ func storesReachingAt(
 	positions instrPositions,
 ) (r storeReaching, ok bool) {
 	if !isTrackedRoot(at.root) {
-		return r, false
+		return newStorePointers(positions).reachingThrough(at, read)
 	}
 	w := &storeWalk{at: at, positions: positions, out: &r}
 	w.walkToRead(read)
@@ -495,6 +700,9 @@ type storeWalk struct {
 	// variable of root it points to. The walk takes only the paths on which
 	// the Phi points to it.
 	picked *storePick
+	// pointers, when not nil, follows the pointers read from memory, so that
+	// a store through one that points to root is a store to root.
+	pointers *storePointers
 }
 
 // storeCopy is a load that a copied walk starts from, and the selections it
@@ -609,9 +817,17 @@ func (w *storeWalk) stepAt(instr ssa.Instruction) walkStep {
 
 // storeCover tells how much of the address of the walk a store to addr
 // writes, as place.covers does, and how many selections addr takes.
+//
+// With pointers, a store through a pointer read from memory writes root when
+// the pointer is root: on every path when that is the only pointer that can
+// be there, or maybe otherwise.
 func (w *storeWalk) storeCover(addr ssa.Value) (int, placeCover) {
 	at, _ := placeOf(addr)
-	return len(at.path), at.covers(w.at, w.indexOnce)
+	limit := coverMust
+	if at.root != w.at.root && w.pointers != nil {
+		at, limit = w.pointers.through(at, w.at.root)
+	}
+	return len(at.path), min(at.covers(w.at, w.indexOnce), limit)
 }
 
 // storeIndexAlways is an index that is always taken to have one value, so
@@ -678,6 +894,7 @@ func (w *storeWalk) copied(store *ssa.Store, rest []sel) {
 		positions: w.positions,
 		out:       w.out,
 		copies:    w.copies,
+		pointers:  w.pointers,
 	}
 	// An aggregate copied back and forth in a loop leads back to a copy
 	// already followed, which adds nothing new.

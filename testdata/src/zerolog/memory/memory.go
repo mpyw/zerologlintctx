@@ -614,6 +614,155 @@ func goodCapturedPointerInLoop(ctx context.Context, ms []*reloadedMonitor) {
 	}
 }
 
+// ===== STRUCT THROUGH A POINTER IN A FIELD =====
+
+// A struct reached through a pointer that the function stores in a field,
+// embedded or not, holds what the stores to the struct it points to left
+// there, as for a method expression (#204). Each pointer that can be in the
+// field is followed, and a store through another read of the same pointer
+// is a store to the struct (#231).
+
+type pointedLogger struct{ l zerolog.Logger }
+
+type pointedLoggerHolder struct{ p *pointedLogger }
+
+type pointedEvent struct{ e *zerolog.Event }
+
+type pointedEventHolder struct{ p *pointedEvent }
+
+type embeddedPointedEvent struct{ *pointedEvent }
+
+func goodEmbeddedPointerPlainCall(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info().Ctx(ctx)}}
+	h.Msg("promoted through a pointer partway") // OK - the embedded event has ctx
+}
+
+func goodEmbeddedPointerMethodValue(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info().Ctx(ctx)}}
+	m := h.Msg
+	m("method value through a pointer partway") // OK - the embedded event has ctx
+}
+
+func goodPointerFieldLogger(ctx context.Context, logger zerolog.Logger) {
+	h := pointedLoggerHolder{&pointedLogger{logger.With().Ctx(ctx).Logger()}}
+	h.p.l.Info().Msg("logger through a pointer field") // OK - the logger has ctx
+}
+
+func goodPointerFieldLoggerFromVariable(ctx context.Context, logger zerolog.Logger) {
+	in := &pointedLogger{logger.With().Ctx(ctx).Logger()}
+	h := pointedLoggerHolder{p: in}
+	h.p.l.Info().Msg("logger through a pointer field, from a variable") // OK - the logger has ctx
+}
+
+func goodPointerFieldEvent(ctx context.Context, logger zerolog.Logger) {
+	h := pointedEventHolder{&pointedEvent{logger.Info().Ctx(ctx)}}
+	h.p.e.Msg("event through a pointer field") // OK - the event has ctx
+}
+
+func goodEmbeddedPointerField(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedPointedEvent{&pointedEvent{logger.Info().Ctx(ctx)}}
+	h.e.Msg("event through an embedded pointer") // OK - the event has ctx
+}
+
+func goodPointerFieldStoredThrough(ctx context.Context, logger zerolog.Logger) {
+	h := pointedLoggerHolder{&pointedLogger{logger}}
+	h.p.l = logger.With().Ctx(ctx).Logger()
+	h.p.l.Info().Msg("stored through another read of the pointer") // OK - the store through the pointer has ctx
+}
+
+func goodPointerFieldOnBranches(ctx context.Context, logger zerolog.Logger, cond bool) {
+	p := &pointedLogger{logger.With().Ctx(ctx).Logger()}
+	if cond {
+		p = &pointedLogger{logger.With().Str("k", "v").Ctx(ctx).Logger()}
+	}
+	h := pointedLoggerHolder{p}
+	h.p.l.Info().Msg("either pointer") // OK - both loggers have ctx
+}
+
+func goodPointerFieldOfParamStored(ctx context.Context, logger zerolog.Logger, in *pointedLogger) {
+	in.l = logger.With().Ctx(ctx).Logger()
+	h := pointedLoggerHolder{in}
+	h.p.l.Info().Msg("pointer parameter stored to first") // OK - the store has ctx
+}
+
+func goodPointerFieldCopiedFromAnother(ctx context.Context, logger zerolog.Logger) {
+	a := pointedLoggerHolder{&pointedLogger{logger.With().Ctx(ctx).Logger()}}
+	h := pointedLoggerHolder{a.p}
+	h.p.l.Info().Msg("pointer copied from another field") // OK - the logger has ctx
+}
+
+func badEmbeddedPointerPlainCall(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
+	h.Msg("promoted through a pointer partway") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEmbeddedPointerMethodValue(ctx context.Context, logger zerolog.Logger) {
+	h := embeddedHolderPointerOfHolder{&embeddedHolder{logger.Info()}}
+	m := h.Msg
+	m("method value through a pointer partway") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldLogger(ctx context.Context, logger zerolog.Logger) {
+	h := pointedLoggerHolder{&pointedLogger{logger}}
+	h.p.l.Info().Msg("logger through a pointer field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldReassigned(ctx context.Context, logger zerolog.Logger) {
+	h := pointedLoggerHolder{&pointedLogger{logger.With().Ctx(ctx).Logger()}}
+	h.p = &pointedLogger{logger}
+	h.p.l.Info().Msg("the pointer is replaced by one without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldReassignedOnOneBranch(ctx context.Context, logger zerolog.Logger, cond bool) {
+	h := pointedLoggerHolder{&pointedLogger{logger.With().Ctx(ctx).Logger()}}
+	if cond {
+		h.p = &pointedLogger{logger}
+	}
+	h.p.l.Info().Msg("one pointer lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldOnBranches(ctx context.Context, logger zerolog.Logger, cond bool) {
+	p := &pointedLogger{logger.With().Ctx(ctx).Logger()}
+	if cond {
+		p = &pointedLogger{logger}
+	}
+	h := pointedLoggerHolder{p}
+	h.p.l.Info().Msg("one pointer lacks ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldStoredThroughAfter(ctx context.Context, logger zerolog.Logger) {
+	h := pointedLoggerHolder{&pointedLogger{logger.With().Ctx(ctx).Logger()}}
+	h.p.l = logger
+	h.p.l.Info().Msg("stored through another read of the pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldStoredThroughMaybeSame(ctx context.Context, logger zerolog.Logger, cond bool) {
+	p := &pointedLogger{logger.With().Ctx(ctx).Logger()}
+	h := pointedLoggerHolder{p}
+	other := pointedLoggerHolder{p}
+	if cond {
+		other.p = &pointedLogger{logger.With().Ctx(ctx).Logger()}
+	}
+	other.p.l = logger
+	h.p.l.Info().Msg("stored through a pointer that may be the same") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldCopiedFromAnother(ctx context.Context, logger zerolog.Logger) {
+	a := pointedLoggerHolder{&pointedLogger{logger}}
+	h := pointedLoggerHolder{a.p}
+	h.p.l.Info().Msg("pointer copied from another field") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFieldOfParam(ctx context.Context, in *pointedLogger) {
+	h := pointedLoggerHolder{in}
+	h.p.l.Info().Msg("pointer parameter, not stored to") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEmbeddedPointerOfParamPlainCall(ctx context.Context, inner *embeddedHolder) {
+	h := embeddedHolderPointerOfHolder{inner}
+	h.Msg("promoted through a pointer parameter") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 // ===== WRITES THROUGH ANOTHER REFERENCE =====
 
 // LIMITATION(#115) (false negative): A write through another reference to the same
