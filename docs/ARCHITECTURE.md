@@ -1080,7 +1080,7 @@ Info(&t8.log)             // reads t8.log, and t8 is t1
 | Where a path gets | What it does |
 |-------------------|--------------|
 | A store through the same pointer | Records the value, and stops (or goes on for a may store) |
-| Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable. A store there of a parameter, as SSA makes for a struct parameter, carries the caller's value |
+| Where the pointer is made, a load | Goes on, up to a store of another pointer where it is loaded from, or the declaration of that variable. A store there of a parameter, as SSA makes for a struct parameter, carries the caller's value. A copy there of a whole struct loaded from memory goes on past the copy (below) |
 | Where the pointer is made, any other instruction, such as a call or a Phi | Stops, and carries what tracing the pointer itself finds, for an address that is the pointer itself. Otherwise carries nothing |
 | The entry of a closure, past where the pointer is made, when the closure reads it from the variables it captures | Goes on before each call of the closure, when it is only called where it is made (below) |
 | The entry of a func literal, for a global | Goes on before each call of the func literal, when it is only called where it is made (below) |
@@ -1099,6 +1099,28 @@ if cond {
     *b.p = b.p.With().Ctx(ctx).Logger()
 }
 b.p.Info().Msg("x") // the caller's Logger when cond is false: reported
+```
+
+A copy of a whole struct, such as `b := h`, puts the pointer where it is
+loaded from: it is the one at the same field of what the copy loads
+(`storeWalk.walkPastCopyIn`). The path goes on back from the copy, and a
+store through a pointer read from that field, with the same stores reaching
+it as reach the copy, is a store through the pointer (`matchLoadedSels`).
+Past the copy, the path ends as it does past where the pointer is made: at
+a store over what the copy loads, with the caller's value for a parameter,
+past another copy, or at the entry of the function, out of a closure when
+the copy loads from a variable the closure captures (see
+[Pointers Read From Memory](#pointers-read-from-memory)):
+
+```go
+func() {
+    b := h                            // h is a struct parameter the closure captures
+    q := b.p
+    if other {
+        *q = l.With().Ctx(ctx).Logger()
+    }
+    q.Info().Msg("x")                 // the caller's Logger when other is false: reported
+}()
 ```
 
 For the receiver of a call, such as `p.Info()` for `p := newLoggerPtr()`, a
@@ -1357,11 +1379,11 @@ negative is a missed report.
 | `sync.Pool` | An event from `Pool.Get` is not traced to the `New` function | `memory` |
 | Slice literals and map elements | An element of a slice literal, or a value looked up in a map, is not traced to what was put there. An event or a Logger with `.Ctx(ctx)` is still reported. A store at an index, such as `es[0] = e`, is followed | `memory` |
 | Elements at an index computed in a loop | A store at the same index, on the same iteration, is not taken to write the element. A store without `.Ctx(ctx)` on an earlier iteration may still be what the read sees. So may the caller's value in a slice parameter | `memory` |
-| Stores by a closure | A store by a closure to a variable it captures is not seen by a read after the closure is called | `closures` |
+| Stores by a closure | A store by a closure to a variable it captures, or through a pointer it captures, is not seen by a read after the closure is called. The read sees the value from before the call. This also misses reports (see False negatives) | `closures` |
 | In-place `Ctx` through another reference (#139) | `e.Ctx(ctx)` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to | `inplace` |
 | Pointers picked on many branches | A pointer that a Phi picks out of more than 16 (`storePickedMax`) is not followed | `memory` |
 | A method value assigned twice, in a closure | A closure that loads a method value from a variable assigned more than once does not know which method it calls. Nor does one that loads a method value another closure stored | `methods` |
-| A pointer read in a closure that is not only called | A closure may read a pointer from a captured variable, such as `h.m` or `*pp`, or the field of a global. The pointer is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it. Nor is a pointer in a copy of the captured struct that the closure makes, even when the closure is only called | `closures`, `memory` |
+| A pointer read in a closure that is not only called | A closure may read a pointer from a captured variable, such as `h.m` or `*pp`, or the field of a global. The pointer is followed out of the closure only when the closure is only called where it is made. One run by a `go` or `defer` statement, or passed on, does not see a store through the pointer before it | `closures`, `memory` |
 | A struct loaded through a pointer a call returns | The struct is not followed, so each read of the event in it is an event of its own | `phi` |
 | `Context.CreateDict` | Tracing does not follow the dict back to the Context. A dict that carries the context from `Context.Ctx` is taken to have none | `logger` |
 | An IIFE with an unreachable return | Every return of the func literal is checked, even one that cannot run | `iife` |
@@ -1378,6 +1400,7 @@ negative is a missed report.
 | Events stored back | A `Ctx` call on a read that can see several events counts for each of them. It counts even where a path stores one of those events back over another after the call | `inplace` |
 | The caller's event copied over | A `Ctx` call on the caller's event at a place counts at later reads of the place. It counts even when another value of the caller's is copied over it in between | `inplace` |
 | Panics | A deferred call is checked at the returns after its `defer` statement. It is not checked at the points where a panic could run it | `deferred` |
+| Stores by a closure | The mirror of the false positive row: a store without `.Ctx(ctx)` by a closure, such as `func() { *p = base }()` or `func() { l = base }()`, is not seen by a read after the call. The read sees the value from before the call, which may have the context | `closures` |
 | Writes through another reference (#115) | A write through a pointer passed to a function is not seen. Nor is one through another slice of the same array, or another pointer parameter. The value stored before it is taken as the one read | `memory` |
 | Fresh contexts in a func literal | A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had | `freshctx` |
 | Fresh in-place `Ctx` through another reference | `e.Ctx(context.Background())` with its result unused is not seen by a terminator in a closure that captures `e`. Nor is it seen in a func literal `e` is passed to. The event keeps the context it had. This is the mirror of #139 | `freshctx` |

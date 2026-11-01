@@ -170,6 +170,10 @@ type storePointer struct {
 	// a store there is the same pointer as matchAcrossClosure tells (see
 	// walkPointerOut).
 	closure []matchClosureRun
+	// source, when not nil, is the copy the pointer was taken from, in the
+	// function it is read in: the root of a store is the same pointer when it
+	// is read from where the copy loaded it from (see walkPastCopyIn).
+	source *storeCopySource
 }
 
 // storePointerOf returns where root, a pointer that is not in a variable, is
@@ -239,10 +243,13 @@ func (w *storeWalk) walkPointerBefore(starts []WalkFrom[storePath]) {
 	if !reached || from == nil {
 		return
 	}
+	var copies []storeCopySource
 	pastDef := func(in ssa.Instruction) WalkStep {
 		if matchOverwrites(in, from) {
 			if store, isStore := in.(*ssa.Store); isStore && storeIsCallerParam(store.Val) {
 				w.out.unknown = true // The pointer is in what the caller passed
+			} else if c, isCopy := storeCopyOf(in, from, nil); isCopy {
+				copies = append(copies, c)
 			}
 			return WalkStop
 		}
@@ -257,8 +264,105 @@ func (w *storeWalk) walkPointerBefore(starts []WalkFrom[storePath]) {
 		return true
 	}
 	walkBack([]WalkPoint{WalkPointBefore(def, w.positions)}, pastDef, atEntry, nil)
+	for _, c := range copies {
+		w.walkPastCopyIn(c)
+	}
 	if fv, isFreeVar := storeReadFrom(from).(*ssa.FreeVar); entered && isFreeVar {
 		w.walkPointerOut(def.Parent(), fv, nil, storeLoadsIn(from))
+	}
+}
+
+// storeCopySource is where a copy of a whole aggregate, made in the function
+// the pointer of a walk is read in, took the pointer from: the pointer at
+// sels in what load loaded, for store, the copy.
+//
+//	b := h                            // t2 = *h ; *t1 = t2: load is t2, sels .p
+//	q := b.p                          // t4 = *&t1.p
+type storeCopySource struct {
+	store *ssa.Store
+	load  *ssa.UnOp
+	sels  []sel
+}
+
+// storeCopyOf returns where instr, which puts another value at the address
+// sels from addr, takes the pointer there from, when it is a store of a whole
+// aggregate that holds that address, loaded from memory. ok is false for any
+// other instruction, such as a store of the pointer itself.
+func storeCopyOf(instr ssa.Instruction, addr ssa.Value, sels []sel) (_ storeCopySource, ok bool) {
+	store, isStore := instr.(*ssa.Store)
+	if !isStore {
+		return storeCopySource{}, false
+	}
+	load, isLoad := AsLoad(store.Val)
+	to, toSels := matchSelsOf(store.Addr)
+	x, xSels := matchSelsOf(addr)
+	n := len(toSels)
+	if !isLoad || n > len(xSels) || !addressesMatch(to, x) || !slices.EqualFunc(toSels, xSels[:n], sel.same) {
+		return storeCopySource{}, false
+	}
+	rest := append(xSels[n:], sels...)
+	return storeCopySource{store: store, load: load, sels: rest}, len(rest) > 0
+}
+
+// walkPastCopyIn goes on past c, a copy of a whole aggregate that put the
+// root of the walk where it is read from, in the function it is read in. The
+// pointer is then the one at c.sels in what c.load loads, and a store through
+// a pointer read from the same place, as the load saw it, is a store through
+// the root (see matchLoadedSels):
+//
+//	func() {
+//	    *h.p = base                   // reaches the read, through h.p
+//	    b := h                        // the copy: t2 = *h ; *t1 = t2
+//	    q := b.p
+//	    if other {
+//	        *q = l.With().Ctx(ctx).Logger()
+//	    }
+//	    q.Info().Msg("x")             // base when other is false: reported
+//	}()
+//
+// The walk goes back from the copy as walkPastCopy goes back from a call: a
+// store over where c.load loads, before it loads, stops a path, with the
+// caller's value for a parameter, and past another copy, it goes on past that
+// one. A path that gets to the entry of the function carries the caller's
+// value, when c.load loads from a parameter, and goes on out of the closure
+// when it loads from a variable the closure captures (see walkPointerOut).
+// Each copy gone past is before the one it is found from, and cannot run
+// after the load of that one, so the walk does not come back to a copy.
+func (w *storeWalk) walkPastCopyIn(c storeCopySource) {
+	past := &storeWalk{
+		at:        w.at,
+		positions: w.positions,
+		out:       w.out,
+		pointer:   &storePointer{same: make(map[ssa.Value]bool), source: &c},
+	}
+	var copies []storeCopySource
+	visit := func(in ssa.Instruction) WalkStep {
+		store, isStore := in.(*ssa.Store)
+		if !isStore || w.positions.reaches(c.load, store) ||
+			!matchOverwrites(store, c.load.X) && !storeOverwritesWithin(store, c.load.X, c.sels) {
+			return past.stepAt(in)
+		}
+		if storeIsCallerParam(store.Val) {
+			w.out.unknown = true // The pointer is in what the caller passed
+		} else if next, isCopy := storeCopyOf(store, c.load.X, c.sels); isCopy {
+			copies = append(copies, next)
+		}
+		return WalkStop
+	}
+	entered := false
+	atEntry := func() bool {
+		entered = true
+		if storeIsCallerParam(storeReadFrom(c.load.X)) {
+			w.out.unknown = true // The pointer is read from what the caller passed
+		}
+		return true
+	}
+	walkBack([]WalkPoint{WalkPointBefore(c.store, w.positions)}, visit, atEntry, nil)
+	for _, next := range copies {
+		w.walkPastCopyIn(next)
+	}
+	if fv, isFreeVar := storeReadFrom(c.load.X).(*ssa.FreeVar); entered && isFreeVar {
+		past.walkPointerOut(c.store.Parent(), fv, nil, storeLoadsIn(c.load.X))
 	}
 }
 
@@ -352,7 +456,8 @@ func storeCallsOf(fn *ssa.Function) (calls []ssa.Instruction, ok bool) {
 // nothing. A walk that went past a copy already looks for no other one.
 func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []matchClosureRun, loads int) {
 	idx := slices.Index(fn.FreeVars, fv)
-	pastCopy := slices.ContainsFunc(runs, func(r matchClosureRun) bool { return r.copied != nil })
+	source := w.pointer.source
+	pastCopy := source != nil || slices.ContainsFunc(runs, func(r matchClosureRun) bool { return r.copied != nil })
 	for _, mc := range storeMakersOf(fn) {
 		closureRuns, ok := closureRunsOf(mc)
 		if !ok {
@@ -373,7 +478,7 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 				at:        w.at,
 				positions: w.positions,
 				out:       w.out,
-				pointer:   &storePointer{same: make(map[ssa.Value]bool), closure: outRuns},
+				pointer:   &storePointer{same: make(map[ssa.Value]bool), closure: outRuns, source: source},
 			}
 			if copied != nil {
 				out.walkPastCopy(call, w.pointer.from)
@@ -625,6 +730,8 @@ func (p *storePointer) samePointer(root, pointer ssa.Value) bool {
 	same, done := p.same[root]
 	switch {
 	case done:
+	case p.source != nil:
+		same = matchLoadedSels(p.source.load, p.source.sels, root, p.closure)
 	case len(p.closure) > 0:
 		same = matchAcrossClosure(pointer, root, p.closure)
 	default:

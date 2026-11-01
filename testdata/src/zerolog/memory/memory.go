@@ -1689,6 +1689,162 @@ func badPointerFromStructParamCopiedOnBranch(ctx context.Context, h loggerPtrBox
 	q.Info().Msg("from the caller's struct, copied on a branch") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+// The same with the copy made in a func literal, from the struct it
+// captures: the pointer is followed past the copy, to the caller's struct
+// (#362).
+func badPointerFromStructParamCopiedInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		b := h
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("from the caller's struct, copied in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badPointerFromStructParamCopiedOnBranchInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, cond, other bool) {
+	func() {
+		var b loggerPtrBox
+		if cond {
+			b = h
+		}
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("from the caller's struct, copied on a branch in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badPointerFromStructParamCopiedInNestedClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		func() {
+			b := h
+			q := b.p
+			if other {
+				*q = l.With().Ctx(ctx).Logger()
+			}
+			q.Info().Msg("from the caller's struct, copied in a nested closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func badPointerFromStructParamCopiedOutsideAndInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	a := h
+	func() {
+		b := a
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("from the caller's struct, copied outside and in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badPointerFromStructParamCopiedTwiceInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		a := h
+		if a.p == nil {
+			return
+		}
+		b := a
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("from the caller's struct, copied twice in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+// A store through the pointer in the struct, before the copy, is a store
+// through the pointer read from the copy.
+func goodPointerFromStructParamStoredThroughThenCopiedInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		*h.p = l.With().Ctx(ctx).Logger()
+		b := h
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("stored through before the copy in a closure") // OK
+	}()
+}
+
+func badPointerFromStructParamStoredThroughThenCopiedInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	func() {
+		*h.p = l
+		b := h
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("stored through before the copy in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodPointerFromStructParamStoredThroughOutsideCopiedInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	*h.p = l.With().Ctx(ctx).Logger()
+	func() {
+		b := h
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("stored through outside, copied in a closure") // OK
+	}()
+}
+
+func badPointerFromStructParamStoredThroughOutsideCopiedInClosure(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	*h.p = l
+	func() {
+		b := h
+		q := b.p
+		if other {
+			*q = l.With().Ctx(ctx).Logger()
+		}
+		q.Info().Msg("stored through outside, copied in a closure") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func goodPointerFromStructParamStoredThroughThenCopied(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	*h.p = l.With().Ctx(ctx).Logger()
+	b := h
+	q := b.p
+	if other {
+		*q = l.With().Ctx(ctx).Logger()
+	}
+	q.Info().Msg("stored through before the copy") // OK
+}
+
+func badPointerFromStructParamStoredThroughThenCopied(ctx context.Context, h loggerPtrBox, l zerolog.Logger, other bool) {
+	*h.p = l
+	b := h
+	q := b.p
+	if other {
+		*q = l.With().Ctx(ctx).Logger()
+	}
+	q.Info().Msg("stored through before the copy") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badPointerFromPointedStructCopied(ctx context.Context, h *loggerPtrBox, l zerolog.Logger, other bool) {
+	b := *h
+	q := b.p
+	if other {
+		*q = l.With().Ctx(ctx).Logger()
+	}
+	q.Info().Msg("from the caller's struct, copied through a pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodPointerFromStructParamCopiedInClosureStored(ctx context.Context, h loggerPtrBox, l zerolog.Logger) {
+	func() {
+		b := h
+		q := b.p
+		*q = l.With().Ctx(ctx).Logger()
+		q.Info().Msg("copied in a closure, stored on every path") // OK
+	}()
+}
+
 // The field of the struct parameter is set on one branch only, so the copy
 // in the func literal may hold the caller's pointer.
 func badNestedCopyOfStructParamFieldSetOnBranch(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {

@@ -152,8 +152,25 @@ func matchCopiedLoad(inner *ssa.UnOp, outer ssa.Value, runs []matchClosureRun) b
 		return len(rest) == 0 && addressesMatch(store.Val, outer) || len(rest) > 0 && matchAcrossClosure(store.Val, outer, rest)
 	}
 	from, isLoad := AsLoad(store.Val)
+	return isLoad && matchLoadedSels(from, sels, outer, rest)
+}
+
+// matchLoadedSels reports whether outer, a load of a pointer, reads the
+// pointer at sels in what from, a load of an aggregate, loaded: outer loads
+// the same selections from where from loads, and the same stores reach both.
+//
+//	t2 = *&t0.p ; *t2 = v             // outer
+//	t8 = *t0                          // from, with sels .p: t2 is t8.p
+//
+// With runs, outer is in the function of the last of them, and from is in the
+// closure runs[0] runs, where it must see what is at its address as the
+// closure starts. Where from loads is matched across the runs as
+// matchAcrossClosure matches it.
+//
+//declscope:shared // store.go matches a store through the pointer in a copy made where it is read
+func matchLoadedSels(from *ssa.UnOp, sels []sel, outer ssa.Value, runs []matchClosureRun) bool {
 	out, isOut := AsLoad(outer)
-	if !isLoad || !isOut {
+	if !isOut {
 		return false
 	}
 	x, outSels := matchSelsOf(out.X)
@@ -161,17 +178,19 @@ func matchCopiedLoad(inner *ssa.UnOp, outer ssa.Value, runs []matchClosureRun) b
 	if !slices.EqualFunc(append(fromSels, sels...), outSels, sel.same) {
 		return false
 	}
-	if len(rest) == 0 {
+	if len(runs) == 0 {
 		return addressesMatch(x, fromX) && maps.Equal(matchStoresBefore(out.X, out), matchStoresBefore(out.X, from))
 	}
-	return matchAcrossClosure(fromX, x, rest) &&
+	return matchAcrossClosure(fromX, x, runs) &&
 		maps.Equal(matchStoresBefore(from.X, from), map[ssa.Instruction]bool{nil: true}) &&
-		maps.Equal(matchStoresBefore(out.X, out), matchStoresBefore(out.X, rest[len(rest)-1].run))
+		maps.Equal(matchStoresBefore(out.X, out), matchStoresBefore(out.X, runs[len(runs)-1].run))
 }
 
 // matchSelsOf returns the address that v, an address, selects from through
 // fields and elements, and those selections, outermost first: v itself and
 // none when it is neither.
+//
+//declscope:shared // store.go finds the selections a copy of an aggregate holds the pointer at
 func matchSelsOf(v ssa.Value) (ssa.Value, []sel) {
 	var sels []sel
 	for x, s, ok := addrSel(v); ok; x, s, ok = addrSel(v) {
