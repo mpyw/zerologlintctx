@@ -219,11 +219,11 @@ func (m *MatchedPlaces) KeyOf(at Place) (key PlaceKey, ok bool) {
 }
 
 // KeyAtRun returns the key that the function making mc has for key, the key
-// of a place the func literal of mc reads through a pointer it loads from a
-// variable it captures, through any number of loads, as run, a call of mc,
-// runs it. That is the key of the same place through the same loads of the
-// variable bound there, which the same stores reach as reach run (see
-// matchAcrossClosure):
+// of a place the func literal of mc, or one nested in it, reads through a
+// pointer it loads from a variable it captures, through any number of loads,
+// as run, a call of mc, runs it. That is the key of the same place through
+// the same loads of the variable bound there, which the same stores reach as
+// reach run (see matchAcrossClosure and matchRunsOut):
 //
 //	t2 = make closure f$1 [t1] ; t3 = t2()   // f$1: t0 = *h ; &t0.e
 //	t4 = *t1 ; t5 = &t4.e                     // the same place: t4 is *h at t3
@@ -237,12 +237,20 @@ func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Inst
 	if _, isLoad := AsLoad(key.base()); !isLoad {
 		return key, false
 	}
+	fv, isFreeVar := matchReadFrom(key.base()).(*ssa.FreeVar)
+	if !isFreeVar {
+		return key, false
+	}
+	_, runs, ok := matchRunsOut(fv, mc, run)
+	if !ok {
+		return key, false
+	}
 	for instr := range InstrsIn(mc.Parent()) {
 		v, isValue := instr.(ssa.Value)
 		if !isValue {
 			continue
 		}
-		if outer, isLoad := AsLoad(v); isLoad && matchAcrossClosure(key.base(), outer, []matchClosureRun{{mc: mc, run: run}}) {
+		if outer, isLoad := AsLoad(v); isLoad && matchAcrossClosure(key.base(), outer, runs) {
 			at, ok := m.KeyOf(PlaceAt(outer))
 			return key.rooted(at.base()), ok
 		}
@@ -251,10 +259,11 @@ func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Inst
 }
 
 // MatchPlaceAtRun returns the place that the function making mc has for the
-// place load reads, in the func literal of mc, from a variable the func
-// literal captures, as a call of mc runs it: the same selections from the
-// variable bound there. The func literal must not store there before load, so
-// that load sees what is there as the call runs it:
+// place load reads, in the func literal of mc or one nested in it, from a
+// variable the func literal captures, as a call of mc runs it: the same
+// selections from the variable bound there (see matchRunsOut). The func
+// literal must not store there before load, so that load sees what is there
+// as the call runs it:
 //
 //	t2 = make closure f$1 [t1] ; t3 = t2()   // f$1: t0 = *last ; Ctx(t0, ctx)
 //	                                          // *last is *t1 at t3
@@ -264,10 +273,91 @@ func (m *MatchedPlaces) KeyAtRun(key PlaceKey, mc *ssa.MakeClosure, run ssa.Inst
 func MatchPlaceAtRun(load *ssa.UnOp, mc *ssa.MakeClosure) (_ Place, ok bool) {
 	at, _ := PlaceOf(load.X)
 	fv, isFreeVar := at.root.(*ssa.FreeVar)
-	if !isFreeVar || fv.Parent() != mc.Fn || at.Variable() || !maps.Equal(matchReachingStores(load), map[ssa.Instruction]bool{nil: true}) {
+	if !isFreeVar || at.Variable() || !maps.Equal(matchReachingStores(load), map[ssa.Instruction]bool{nil: true}) {
 		return Place{}, false
 	}
-	return Place{root: mc.Bindings[slices.Index(fv.Parent().FreeVars, fv)], path: at.path}, true
+	bound, _, ok := matchRunsOut(fv, mc, nil)
+	if !ok {
+		return Place{}, false
+	}
+	return Place{root: bound, path: at.path}, true
+}
+
+// matchRunsOut returns the value bound to fv, a variable that the func literal
+// of mc or one nested in it captures, in the function that makes mc, and the
+// runs out to there, innermost first, as matchAcrossClosure takes them. run is
+// the run of mc, and the runs of the closures in between have no call, which
+// matchAcrossClosure does not look at.
+//
+// A closure in between must capture a variable of the function it is nested
+// in, and store nothing to it or through it, so that what is there as it runs
+// the inner one is what that function left:
+//
+//	func() {                 // captures h, and stores nothing through it
+//	    func() { h.e.Ctx(ctx) }()
+//	}()
+//
+// ok is false when a closure in between does, or when fv is not captured
+// from the function that makes mc.
+func matchRunsOut(fv *ssa.FreeVar, mc *ssa.MakeClosure, run ssa.Instruction) (bound ssa.Value, runs []matchClosureRun, ok bool) {
+	for fn := fv.Parent(); fn != mc.Fn; fn = fn.Parent() {
+		if fn == nil {
+			return nil, nil, false // Not in the func literal of mc
+		}
+	}
+	for {
+		fn := fv.Parent()
+		idx := slices.Index(fn.FreeVars, fv)
+		if fn == mc.Fn {
+			return mc.Bindings[idx], append(runs, matchClosureRun{mc: mc, run: run}), true
+		}
+		maker := matchMakerOf(fn)
+		runs = append(runs, matchClosureRun{mc: maker})
+		if fv, ok = maker.Bindings[idx].(*ssa.FreeVar); !ok || matchStoredThrough(fv) {
+			return nil, nil, false
+		}
+	}
+}
+
+// matchMakerOf returns the MakeClosure that makes fn, a func literal that
+// captures variables, in the function it is declared in. SSA makes a func
+// literal once, where it is written.
+func matchMakerOf(fn *ssa.Function) *ssa.MakeClosure {
+	for instr := range InstrsIn(fn.Parent()) {
+		if mc, isMaker := instr.(*ssa.MakeClosure); isMaker && mc.Fn == fn {
+			return mc
+		}
+	}
+	return nil // Not reached: a func literal that captures variables is made where it is written
+}
+
+// matchStoredThrough reports whether the function of fv, a free variable,
+// stores to it, or to what is read through it: a field or element of it, or
+// what a pointer loaded from it points to, at any depth. A store through a
+// copy of it, or through a pointer passed to a function, is not seen.
+func matchStoredThrough(fv *ssa.FreeVar) bool {
+	for instr := range InstrsIn(fv.Parent()) {
+		if store, isStore := instr.(*ssa.Store); isStore && matchReadFrom(store.Addr) == fv {
+			return true
+		}
+	}
+	return false
+}
+
+// matchReadFrom returns the value that v, an address or a pointer, is read
+// from through loads, fields and elements: v itself when it is none of those.
+func matchReadFrom(v ssa.Value) ssa.Value {
+	for {
+		if load, isLoad := AsLoad(v); isLoad {
+			v = load.X
+			continue
+		}
+		x, _, ok := addrSel(v)
+		if !ok {
+			return v
+		}
+		v = x
+	}
 }
 
 // matchFromGlobal reports whether v is a global, or is read from one: a load

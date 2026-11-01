@@ -165,3 +165,61 @@ func f(x *int) {
 		t.Errorf("KeyAtRun(x) = %v, %v, want %v, false", got, ok, key)
 	}
 }
+
+// TestMatchedPlacesKeyAtRunNotCaptured checks that a place read through a
+// pointer that is not loaded from a variable the func literal captures, or
+// that another func literal reads, keeps its key.
+func TestMatchedPlacesKeyAtRunNotCaptured(t *testing.T) {
+	const src = `package p
+
+func f(x **int) {
+	_ = **x
+	func() { _ = **x }()
+	func() { _ = **x }()
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, _, err := ssautil.BuildPackage(&types.Config{Importer: importer.Default()}, fset, types.NewPackage("p", "p"), []*ast.File{file}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := pkg.Func("f")
+	firstLoad := func(f *ssa.Function) *ssa.UnOp {
+		for instr := range InstrsIn(f) {
+			if v, isValue := instr.(ssa.Value); isValue {
+				if load, ok := AsLoad(v); ok {
+					return load
+				}
+			}
+		}
+		t.Fatalf("no load in %s", f)
+		return nil
+	}
+	var mc *ssa.MakeClosure
+	var call *ssa.Call
+	for instr := range InstrsIn(fn) {
+		switch in := instr.(type) {
+		case *ssa.MakeClosure:
+			if mc == nil {
+				mc = in
+			}
+		case *ssa.Call:
+			if call == nil {
+				call = in
+			}
+		}
+	}
+	if mc == nil || call == nil || len(fn.AnonFuncs) != 2 {
+		t.Fatal("no two IIFEs in f")
+	}
+	for _, load := range []*ssa.UnOp{firstLoad(fn), firstLoad(fn.AnonFuncs[1])} {
+		key := PlaceAt(load).Key()
+		if got, ok := NewMatchedPlaces().KeyAtRun(key, mc, call); ok || got != key {
+			t.Errorf("KeyAtRun(%v) = %v, %v, want %v, false", load, got, ok, key)
+		}
+	}
+}

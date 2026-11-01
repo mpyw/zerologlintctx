@@ -486,7 +486,10 @@ the call for the event at the same place through the variable bound there.
 That place goes through the same loads of the variable, such as both of
 `(*pp).e`, which the same stores reach as reach the call, and the func
 literal must not store to the variable before its own load
-(`MatchedPlaces.KeyAtRun`):
+(`MatchedPlaces.KeyAtRun`). The read may be in a func literal nested in it,
+any number of levels down. Each func literal in between must capture the
+variable from the one it is nested in, and store nothing to it or through it
+(`matchRunsOut`):
 
 ```go
 func f(ctx context.Context, h *holder) {
@@ -574,7 +577,9 @@ A `Ctx` call in a func literal called in place, on an event it reads from a
 variable it captures, is followed from where the func literal is called: a
 read of the variable bound there, as the call runs it (`recvAtRun`). So
 `func() { last.Ctx(ctx) }()` holds the same runs as `last.Ctx(ctx)` would at
-that call.
+that call. The read may be in a func literal nested in it, as for
+`MatchedPlaces.KeyAtRun`, and may reach the `Ctx` call through values of the
+func literal that hold it, as `(&box{last}).v` does.
 
 Only calls that can run again after they run, in a loop, get this check, so
 the graph is not built for the others.
