@@ -1107,6 +1107,135 @@ func goodCapturedReassignedParamStoredOnBranch(ctx context.Context, b, other *lo
 	}()
 }
 
+// A closure that captures a copy of a struct parameter, or of a pointer to
+// one, reads the pointer the copy took: a store through the original before
+// the copy, or through the same pointer after it, is what it reads (#322).
+func goodCapturedCopyOfStructPtrParam(ctx context.Context, other *loggerPtrBox) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b := other
+	func() { b.p.Info().Msg("captured copy of a pointer parameter") }() // OK
+}
+
+func goodCapturedReassignedStructPtrParam(ctx context.Context, b, other *loggerPtrBox) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b = other
+	func() { b.p.Info().Msg("captured pointer parameter, replaced before") }() // OK
+}
+
+func goodNestedCapturedCopyOfStructPtrParam(ctx context.Context, other *loggerPtrBox) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b := other
+	func() {
+		func() { b.p.Info().Msg("nested, captured copy of a pointer parameter") }() // OK
+	}()
+}
+
+func goodCapturedCopyOfStructParam(ctx context.Context, other loggerPtrBox) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b := other
+	func() { b.p.Info().Msg("captured copy of a struct parameter") }() // OK
+}
+
+func goodCapturedReassignedStructParam(ctx context.Context, b, other loggerPtrBox) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b = other
+	func() { b.p.Info().Msg("captured struct parameter, replaced before") }() // OK
+}
+
+func goodCapturedCopyOfStructParamStoredAfter(ctx context.Context, other loggerPtrBox) {
+	b := other
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	func() { b.p.Info().Msg("captured copy, stored through the same pointer after") }() // OK
+}
+
+func goodCapturedCopyOfStructParamReplacedAfter(ctx context.Context, other loggerPtrBox, l *zerolog.Logger) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b := other
+	other.p = l
+	func() { b.p.Info().Msg("captured copy, the original's pointer replaced after") }() // OK
+}
+
+func badCapturedCopyOfStructParam(ctx context.Context, other loggerPtrBox) {
+	b := other
+	func() { b.p.Info().Msg("captured copy, the caller's Logger") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedCopyOfStructParamReplacedBefore(ctx context.Context, other loggerPtrBox, l *zerolog.Logger) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	other.p = l
+	b := other
+	func() { b.p.Info().Msg("captured copy, the pointer replaced before") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedCopyOfStructParamFieldReplaced(ctx context.Context, other loggerPtrBox, l *zerolog.Logger) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b := other
+	b.p = l
+	func() { b.p.Info().Msg("captured copy, its pointer replaced") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedCopyOfStructParamStoredOnBranch(ctx context.Context, other loggerPtrBox, cond bool) {
+	if cond {
+		*other.p = zerolog.Ctx(ctx).With().Logger()
+	}
+	b := other
+	func() { b.p.Info().Msg("captured copy of a struct, stored through on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedCopyOfStructPtrParamStoredOnBranch(ctx context.Context, other *loggerPtrBox, cond bool) {
+	if cond {
+		*other.p = zerolog.Ctx(ctx).With().Logger()
+	}
+	b := other
+	func() { b.p.Info().Msg("captured copy, stored through on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedCopyOfStructPtrParamReplacedAfter(ctx context.Context, other *loggerPtrBox, l *zerolog.Logger) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	b := other
+	other.p = l
+	func() { b.p.Info().Msg("captured copy of a pointer, the shared pointer replaced") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedStructPtrParamReplacedOnBranch(ctx context.Context, b, other *loggerPtrBox, cond bool) {
+	*other.p = zerolog.Ctx(ctx).With().Logger()
+	if cond {
+		b = other
+	}
+	func() { b.p.Info().Msg("captured pointer parameter, replaced on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedStructPtrParamReplacedByLocalOnBranch(ctx context.Context, b *loggerPtrBox, l zerolog.Logger, cond bool) {
+	if cond {
+		b = &loggerPtrBox{p: &l}
+	}
+	func() { b.p.Info().Msg("captured pointer parameter, replaced by a local on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badNestedCapturedCopyOfStructPtrParam(ctx context.Context, other *loggerPtrBox) {
+	b := other
+	func() {
+		func() { b.p.Info().Msg("nested, captured copy, the caller's Logger") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+// A struct parameter that a closure captures is copied into a variable: a
+// path back to that copy reads the caller's Logger (#326).
+func badCapturedLoggerPtrInStructValueParamStoredOnBranch(ctx context.Context, b loggerPtrBox, cond bool) {
+	if cond {
+		*b.p = b.p.With().Ctx(ctx).Logger()
+	}
+	func() { b.p.Info().Msg("captured struct parameter, stored through on one branch") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodCapturedLoggerPtrInStructValueParamStored(ctx context.Context, b loggerPtrBox, cond bool) {
+	*b.p = b.p.With().Ctx(ctx).Logger()
+	if cond {
+		*b.p = b.p.With().Str("k", "v").Logger()
+	}
+	func() { b.p.Info().Msg("captured struct parameter, updated on one branch") }() // OK
+}
+
 // A closure in between that stores through the pointer, not to where it is
 // read from, leaves the pointer as it is: the walk goes on out of it (#323).
 func goodNestedCapturedLoggerPtrInStructParamStoredOnBranch(ctx context.Context, b *loggerPtrBox, cond bool) {
