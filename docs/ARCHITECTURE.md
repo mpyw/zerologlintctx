@@ -763,9 +763,10 @@ counts too.
 A pointer the Phi picks that is not in a variable, such as `b.p` read from a
 pointer parameter, is walked for as below (see
 [Pointers Not in a Variable](#pointers-not-in-a-variable)), along the same
-paths back to where it is made, and on from there on every path. When no store
-through it is found, or it may be made after the Phi, as in a loop, the Phi
-is not walked. A pointer receiver that a Phi picks is such an address too
+paths back to where it is made, and on from there on every path. A path that
+gets back to where it is made, as for `zerolog.Ctx(ctx)`, carries what tracing
+the pointer itself finds. When no path carries a store or such a pointer, or
+it may be made after the Phi, as in a loop, the Phi is not walked. A pointer receiver that a Phi picks is such an address too
 (`Resolver.ResolvesThrough`):
 
 ```go

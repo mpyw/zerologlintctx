@@ -1522,6 +1522,34 @@ func goodLoggerPointerToVariableSetBeforePick(ctx context.Context, base zerolog.
 	p.Info().Msg("l lacks ctx only on the edge that does not pick it") // OK - p points to l only after the store with ctx
 }
 
+// The logger of ctx made in a loop, after the Phi, cannot be walked along
+// the paths of the Phi. The variable declared in the branch still holds
+// nothing on the other edges.
+func goodLoggerPointerToVariableDeclaredInBranchPickedInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+	}
+	for range n {
+		p.Info().Msg("pointer to a variable declared in a branch, in a loop") // OK - both loggers have ctx
+		p = zerolog.Ctx(ctx)
+	}
+}
+
+func badLoggerPointerToVariableChangedAfterPickInLoop(ctx context.Context, base zerolog.Logger, cond bool, n int) {
+	p := zerolog.Ctx(ctx)
+	if cond {
+		l := base.With().Ctx(ctx).Logger()
+		p = &l
+		l = base
+	}
+	for range n {
+		p.Info().Msg("the variable changed after the pick, in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+		p = zerolog.Ctx(ctx)
+	}
+}
+
 func badLoggerPointerToVariableDeclaredInBranch(ctx context.Context, base zerolog.Logger, cond bool) {
 	p := zerolog.Ctx(ctx)
 	if cond {
