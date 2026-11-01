@@ -1068,7 +1068,7 @@ func (w *storeWalk) walkBefore(instr ssa.Instruction) {
 		}
 		return w.pickedThrough(need.Edges[i]) // The Phi may not point to the variable on this path
 	}
-	WalkBackWith(from, w.stepAt, atEntry, edge)
+	walkBackWith(from, w.stepAt, atEntry, edge)
 }
 
 // walkBackFrom walks every path that leads to a point of from, and stops each

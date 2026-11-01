@@ -287,7 +287,8 @@ check asks it to tell whether a value kept at a Phi or in memory still holds
 the event of the latest run of a call in a loop (see
 [Events made in a loop](#events-made-in-a-loop)).
 
-`WalkBackWith` carries a state on each path. A block is walked once in each
+`walkBackWith` carries a state on each path, and `WalkBackIn` shows it to
+the visit of each instruction too. A block is walked once in each
 state. `walkBefore` uses it to keep, on each path, the Phi that must still
 point to the variable picked.
 

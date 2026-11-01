@@ -1,5 +1,5 @@
 // walk.go walks the paths of the control flow of a function, block by block:
-// backwards to a point with walkBack and WalkBackWith, and forwards from one
+// backwards to a point with walkBack and walkBackWith, and forwards from one
 // with WalkFwd. The callers decide what each instruction means to a path;
 // the walk only takes each block once and in the same order.
 //
@@ -89,14 +89,14 @@ func walkBack(
 			return s, through(b.Preds[i])
 		}
 	}
-	return WalkBackWith(starts, visit, atEntry, edge)
+	return walkBackWith(starts, visit, atEntry, edge)
 }
 
-// WalkBackWith is walkBack with a state on each path, which edge, when not
+// walkBackWith is walkBack with a state on each path, which edge, when not
 // nil, carries into each predecessor, or drops a path with. A block is walked
 // into once in each state. With a nil edge, every predecessor is taken in the
 // same state.
-func WalkBackWith[S comparable](
+func walkBackWith[S comparable](
 	from []WalkFrom[S],
 	visit walkVisit,
 	atEntry func() bool,
@@ -105,7 +105,7 @@ func WalkBackWith[S comparable](
 	return WalkBackIn(from, func(instr ssa.Instruction, _ S) WalkStep { return visit(instr) }, atEntry, edge)
 }
 
-// WalkBackIn is WalkBackWith with visit shown the state of the path too.
+// WalkBackIn is walkBackWith with visit shown the state of the path too.
 func WalkBackIn[S comparable](
 	from []WalkFrom[S],
 	visit func(ssa.Instruction, S) WalkStep,
