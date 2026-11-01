@@ -1968,6 +1968,122 @@ func badLoggerPtrsSwappedInLoop(ctx context.Context, l *zerolog.Logger, base zer
 		*y = zerolog.Ctx(ctx).With().Logger()
 	}
 	h.a.Info().Msg("pointers copied back and forth in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+// A pointer read from memory and picked by a Phi is walked for along the
+// paths on which the Phi picks it: the stores through the same pointer, read
+// from the same place (#299).
+
+func goodLoggerPtrReadFromStructParamPicked(ctx context.Context, b *loggerPtrBox, l *zerolog.Logger, cond bool) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	*l = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		p = l
+	}
+	p.Info().Msg("pointer read from a struct parameter, picked on a branch") // OK
+}
+
+func goodLoggerPtrReadFromPtrPtrParamPicked(ctx context.Context, pl **zerolog.Logger, l *zerolog.Logger, cond bool) {
+	**pl = zerolog.Ctx(ctx).With().Logger()
+	*l = zerolog.Ctx(ctx).With().Logger()
+	p := *pl
+	if cond {
+		p = l
+	}
+	p.Info().Msg("pointer read from a pointer to a pointer, picked on a branch") // OK
+}
+
+func goodLoggerPtrPickedStoredOnOtherPath(ctx context.Context, b *loggerPtrBox, l *zerolog.Logger, base zerolog.Logger, cond bool) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	*l = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		*b.p = base
+		p = l
+	}
+	p.Info().Msg("the store without ctx is on the path that picks l") // OK
+}
+
+func goodLoggerPtrCopiedFromStructParamsPicked(ctx context.Context, b, c *loggerPtrBox, cond bool) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	*c.p = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		p = c.p
+	}
+	h := loggerPtrBox{p}
+	h.p.Info().Msg("either pointer copied, both stored through") // OK
+}
+
+func goodCapturedLoggerPtrsPicked(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	func() {
+		*l1 = l1.With().Ctx(ctx).Logger()
+		*l2 = l2.With().Ctx(ctx).Logger()
+		p := l1
+		if cond {
+			p = l2
+		}
+		p.Info().Msg("captured pointers picked on a branch") // OK
+	}()
+}
+
+func badLoggerPtrReadFromStructParamPicked(ctx context.Context, b *loggerPtrBox, l *zerolog.Logger, base zerolog.Logger, cond bool) {
+	*b.p = base
+	*l = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		p = l
+	}
+	p.Info().Msg("pointer read from a struct parameter, no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrReadFromStructParamPickedNoStore(ctx context.Context, b *loggerPtrBox, l *zerolog.Logger, cond bool) {
+	*l = zerolog.Ctx(ctx).With().Logger()
+	p := b.p
+	if cond {
+		p = l
+	}
+	p.Info().Msg("nothing stored through b.p") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerPtrPickedStoredOnSamePath(ctx context.Context, b *loggerPtrBox, l *zerolog.Logger, base zerolog.Logger, cond bool) {
+	*b.p = zerolog.Ctx(ctx).With().Logger()
+	*l = zerolog.Ctx(ctx).With().Logger()
+	p := l
+	if cond {
+		*b.p = base
+		p = b.p
+	}
+	p.Info().Msg("the store without ctx is on the path that picks b.p") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badCapturedLoggerPtrsPicked(ctx context.Context, l1, l2 *zerolog.Logger, cond bool) {
+	func() {
+		*l1 = l1.With().Ctx(ctx).Logger()
+		p := l1
+		if cond {
+			p = l2
+		}
+		p.Info().Msg("l2 has no ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}()
+}
+
+func badLoggerPtrPickedInLoop(ctx context.Context, b *loggerPtrBox, l *zerolog.Logger, n int) {
+	p := l
+	for range n {
+		p.Info().Msg("l on the first iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		*b.p = zerolog.Ctx(ctx).With().Logger()
+		p = b.p
+	}
+}
+
+func badLoggerPtrCopiedPickedInLoop(ctx context.Context, b *loggerPtrBox, l *zerolog.Logger, n int) {
+	p := l
+	for range n {
+		h := loggerPtrBox{p}
+		h.p.Info().Msg("l on the first iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		*b.p = zerolog.Ctx(ctx).With().Logger()
+		p = b.p
+	}
 }
 
 // ===== A POINTER PICKED ON A BRANCH, TO A VARIABLE CHANGED ELSEWHERE =====
