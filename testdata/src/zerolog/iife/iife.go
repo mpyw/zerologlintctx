@@ -679,6 +679,66 @@ func badFuncLiteralReturnsParamInStructPointerPerCall(ctx context.Context, logge
 	b.Msg("through a struct pointer, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
+func badFuncLiteralReturnsParamThroughTwoStructPointersPerCall(ctx context.Context, logger zerolog.Logger) {
+	id := func(e *zerolog.Event) *zerolog.Event {
+		h := &iifeEventHolder{e}
+		h2 := &iifeEventHolder{h.e}
+		return h2.e
+	}
+	a := id(logger.Info().Ctx(ctx))
+	b := id(logger.Info())
+	a.Msg("through two struct pointers, with ctx")    // OK - this call passes ctx
+	b.Msg("through two struct pointers, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsParamThroughTwoStructsPerCall(ctx context.Context, logger zerolog.Logger) {
+	id := func(e *zerolog.Event) *zerolog.Event {
+		h := iifeEventHolder{e}
+		h2 := iifeEventHolder{h.e.Str("k", "v")}
+		return h2.e
+	}
+	a := id(logger.Info().Ctx(ctx))
+	b := id(logger.Info())
+	a.Msg("through two structs, with ctx")    // OK - this call passes ctx
+	b.Msg("through two structs, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsParamStoredBackPerCall(ctx context.Context, logger zerolog.Logger, n int) {
+	id := func(e *zerolog.Event) *zerolog.Event {
+		h := &iifeEventHolder{e}
+		for range n {
+			h.e = h.e.Str("k", "v")
+		}
+		return h.e
+	}
+	a := id(logger.Info().Ctx(ctx))
+	b := id(logger.Info())
+	a.Msg("stored back in a loop, with ctx")    // OK - this call passes ctx
+	b.Msg("stored back in a loop, without ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsGlobalThroughStructPerCall(ctx context.Context, logger zerolog.Logger) {
+	id := func(e *zerolog.Event) *zerolog.Event {
+		h := &iifeEventHolder{e}
+		if e == nil {
+			h = &iifeEventHolder{iifeGlobalHolder.e}
+		}
+		return h.e
+	}
+	a := id(logger.Info().Ctx(ctx))
+	a.Msg("a global on the other branch") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badFuncLiteralReturnsCapturedFieldCopiedFromAnother(ctx context.Context, logger zerolog.Logger) {
+	w := iifeEventHolder{logger.Info()}
+	h := &iifeEventHolder{w.e}
+	get := func(e *zerolog.Event) *zerolog.Event {
+		_ = e
+		return h.e
+	}
+	get(logger.Info().Ctx(ctx)).Msg("a captured field, not the argument") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
 func badFuncLiteralReturnsFieldOfPointerParamPerCall(ctx context.Context, logger zerolog.Logger) {
 	get := func(h *iifeEventHolder) *zerolog.Event { return h.e }
 	withCtx := iifeEventHolder{logger.Info().Ctx(ctx)}

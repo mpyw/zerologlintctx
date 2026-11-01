@@ -480,6 +480,19 @@ func (tr *tracer) traceBoundArgument(param *ssa.Parameter, fn *ssa.Function, cal
 // ok is false when v is not a load from an address whose stores the
 // resolver can find.
 func (tr *tracer) traceBoundRead(v ssa.Value, fn *ssa.Function, call *ssa.Call, st traceState) (found verdict, ok bool) {
+	return tr.traceBoundLoad(v, fn, call, st, make(map[ssa.Value]bool))
+}
+
+// traceBoundLoad traces v as traceBoundRead does. seen holds the loads
+// whose sources are being traced, so that one reached again, through a
+// store that leads back to it, is neutral (see traceBoundSources).
+func (tr *tracer) traceBoundLoad(
+	v ssa.Value,
+	fn *ssa.Function,
+	call *ssa.Call,
+	st traceState,
+	seen map[ssa.Value]bool,
+) (found verdict, ok bool) {
 	load, isLoad := ssaflow.AsLoad(v)
 	if !isLoad {
 		return no, false
@@ -490,19 +503,48 @@ func (tr *tracer) traceBoundRead(v ssa.Value, fn *ssa.Function, call *ssa.Call, 
 	if !ok {
 		return no, false
 	}
-	return tr.traceBoundSources(sources, fn, call, st), true
+	seen[load] = true
+	return tr.traceBoundSources(sources, fn, call, st, seen), true
 }
 
 // traceBoundSources combines the verdicts of sources, as traceResolved does,
 // with a value that is a parameter of fn, or a chain of event methods on one,
 // traced as the argument call passes for it, when it is not found to have
-// context through every call of fn.
-func (tr *tracer) traceBoundSources(sources iter.Seq[ssaflow.Resolved], fn *ssa.Function, call *ssa.Call, st traceState) verdict {
+// context through every call of fn. A value loaded in fn from memory, such
+// as a field of another struct the parameter is stored in, is traced in the
+// same way, from the stores that reach the load:
+//
+//	h := &holder{e}
+//	h2 := &holder{h.e} // t3 = *&t1.e ; *&t5.e = t3
+//	return h2.e        // t3, then e, the argument call passes
+func (tr *tracer) traceBoundSources(
+	sources iter.Seq[ssaflow.Resolved],
+	fn *ssa.Function,
+	call *ssa.Call,
+	st traceState,
+	seen map[ssa.Value]bool,
+) verdict {
 	return all(func(yield func(verdict) bool) {
 		for src := range sources {
 			found := tr.traceResolvedSource(src, st)
-			if param, ok := eventOrigin(src.V, tr.closures).(*ssa.Parameter); ok && !src.Pointer && param.Parent() == fn {
-				found = found.or(func() verdict { return tr.traceBoundArgument(param, fn, call, st) })
+			switch origin := eventOrigin(src.V, tr.closures).(type) {
+			case *ssa.Parameter:
+				if !src.Pointer && origin.Parent() == fn {
+					found = found.or(func() verdict { return tr.traceBoundArgument(origin, fn, call, st) })
+				}
+			case *ssa.UnOp:
+				switch {
+				case origin.Parent() != fn:
+				case seen[origin]:
+					found = neutral // A load reached again adds nothing
+				default:
+					found = found.or(func() verdict {
+						if bound, ok := tr.traceBoundLoad(origin, fn, call, st, seen); ok {
+							return bound
+						}
+						return found
+					})
+				}
 			}
 			if !yield(found) {
 				return
