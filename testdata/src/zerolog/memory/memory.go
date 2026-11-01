@@ -1492,6 +1492,57 @@ func badNestedCopyOfStructParamFieldPickedOutside(ctx context.Context, other log
 	}()
 }
 
+// The same in a func literal: the field is stored to through the captured
+// parameter, and the walk out of the closures stops a path there, as the
+// pointer before it is another one.
+func goodNestedCopyOfStructParamFieldPickedInClosure(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	func() {
+		l1 := base.With().Ctx(ctx).Logger()
+		l2 := base.With().Ctx(ctx).Logger()
+		p := &l1
+		if cond {
+			p = &l2
+		}
+		other.p = p
+		func() {
+			b := other
+			func() { b.p.Info().Msg("nested copy of a struct, its field picked in a closure") }() // OK
+		}()
+	}()
+}
+
+func badNestedCopyOfStructParamFieldPickedInClosure(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	func() {
+		l1 := base.With().Ctx(ctx).Logger()
+		p := &l1
+		if cond {
+			p = &base
+		}
+		other.p = p
+		func() {
+			b := other
+			func() { b.p.Info().Msg("nested copy of a struct, its field picked in a closure") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
+func badNestedCopyOfStructParamFieldStoredThroughInClosure(ctx context.Context, other loggerPtrBox, base zerolog.Logger, cond bool) {
+	func() {
+		l1 := base.With().Ctx(ctx).Logger()
+		l2 := base.With().Ctx(ctx).Logger()
+		p := &l1
+		if cond {
+			p = &l2
+		}
+		other.p = p
+		*other.p = base
+		func() {
+			b := other
+			func() { b.p.Info().Msg("nested copy of a struct, stored through without ctx") }() // want `zerolog call chain missing .Ctx\(ctx\)`
+		}()
+	}()
+}
+
 func goodNestedCopyOfLocalStructPtrDerefStored(ctx context.Context, l zerolog.Logger) {
 	o := &loggerPtrBox{p: &l}
 	*o.p = l.With().Ctx(ctx).Logger()

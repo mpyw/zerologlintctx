@@ -1064,9 +1064,11 @@ A path that gets to the entry of the function that makes the closure, when it
 is a closure too that captures the variable in turn, goes on out of it in the
 same way, out to the function the variable is declared in. A closure in
 between that stores to the variable, or through it to where the pointer is
-read from, as `*pp = other` does, may change the pointer: such a path carries
-a value that is not known. A store through the pointer itself, as `**pp = l`
-or `*b.p = l` does, leaves the pointer as it is (`storesThrough`).
+read from, as `*pp = other` does, may change the pointer. A path back from
+the call stops at such a store, since before it another pointer may be there,
+and one that gets to the entry of that closure carries a value that is not
+known. A store through the pointer itself, as `**pp = l` or `*b.p = l` does,
+leaves the pointer as it is (`storesThrough`, `storeGoesThrough`).
 
 In the function the variable is declared in, one store of the whole variable
 may reach the call: the copy SSA makes of a parameter the closure captures,
