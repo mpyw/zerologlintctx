@@ -1536,3 +1536,29 @@ func badLoggerPtrInStructParamReplaced(ctx context.Context, b *loggerPtrBox, oth
 	b.p = other
 	b.p.Info().Msg("another pointer stored in between") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
+
+// ===== A POINTER PICKED ON A BRANCH, TO A VARIABLE CHANGED ELSEWHERE =====
+
+var sinkLoggerPtr *zerolog.Logger
+
+func badLoggerPointerPickedToVariableFromCall(ctx context.Context, l zerolog.Logger, cond bool) {
+	a := l.With().Ctx(ctx).Logger()
+	b := newFieldLoggerHolder(l).log
+	p := &a
+	if cond {
+		p = &b
+	}
+	p.Info().Msg("one variable is from a call") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badLoggerFieldPointerPickedEscapedThenReplaced(ctx context.Context, l zerolog.Logger, cond bool) {
+	s := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	t := fieldLoggerHolder{log: l.With().Ctx(ctx).Logger()}
+	p := &s.log
+	if cond {
+		p = &t.log
+	}
+	sinkLoggerPtr = &s.log
+	s = newFieldLoggerHolder(l)
+	p.Info().Msg("the struct is replaced after the field escapes") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
