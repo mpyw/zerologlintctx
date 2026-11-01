@@ -133,13 +133,159 @@ func goodEventCtxBackgroundWithoutCtxInScope(log zerolog.Logger) {
 	log.Info().Ctx(context.Background()).Msg("no ctx in scope") // OK - no ctx to pass
 }
 
-// LIMITATION (false negative): A fresh context given to Ctx in place, with
-// its result unused, does not count, but it does not replace the context the
-// event had either.
-func limitationEventCtxBackgroundInPlaceOverCtx(ctx context.Context, log zerolog.Logger) {
+// ===== FRESH CONTEXTS AFTER Ctx(ctx) =====
+
+// Event.Ctx replaces the context of the event, so the last Ctx call on a
+// path decides. A fresh context given after Ctx(ctx) replaces ctx (#258).
+
+func badEventCtxBackgroundAfterCtxChained(ctx context.Context, log zerolog.Logger) {
+	log.Info().Ctx(ctx).Ctx(context.Background()).Msg("x") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxTODOAfterCtxInVariable(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	e.Ctx(context.TODO()).Msg("x") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceOverCtx(ctx context.Context, log zerolog.Logger) {
 	e := log.Info().Ctx(ctx)
 	e.Ctx(context.Background())
-	e.Msg("Background in place over ctx") // LIMITATION: should report but doesn't
+	e.Msg("Background in place over ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceAfterCtxInPlace(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	e.Ctx(ctx)
+	e.Ctx(context.Background())
+	e.Msg("Background in place after ctx in place") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundInPlaceOverCtxLogger(ctx context.Context, base zerolog.Logger) {
+	l := base.With().Ctx(ctx).Logger()
+	e := l.Info()
+	e.Ctx(context.Background())
+	e.Msg("Background in place over the logger's ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundOnOnePath(ctx context.Context, log zerolog.Logger, detached bool) {
+	e := log.Info().Ctx(ctx)
+	if detached {
+		e.Ctx(context.Background())
+	}
+	e.Msg("Background on one path") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxOrBackgroundOnBranches(ctx context.Context, log zerolog.Logger, detached bool) {
+	e := log.Info()
+	if detached {
+		e.Ctx(context.Background())
+	} else {
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx on one path, Background on the other") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxBackgroundAfterDefer(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	defer e.Msg("deferred, Background before the return") // want `zerolog call chain missing .Ctx\(ctx\)`
+	e.Ctx(context.Background())
+}
+
+func badEventCtxBackgroundAfterCtxAfterDefer(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	defer e.Msg("deferred, Background after ctx") // want `zerolog call chain missing .Ctx\(ctx\)`
+	e.Ctx(ctx)
+	e.Ctx(context.TODO())
+}
+
+func badEventCtxBackgroundAfterCtxInLoop(ctx context.Context, log zerolog.Logger, n int) {
+	for range n {
+		e := log.Info().Ctx(ctx)
+		e.Ctx(context.Background())
+		e.Msg("Background after ctx in a loop") // want `zerolog call chain missing .Ctx\(ctx\)`
+	}
+}
+
+// The documented form on a Context: a fresh context replaces ctx there too.
+func badContextCtxBackgroundAfterCtx(ctx context.Context, base zerolog.Logger) {
+	l := base.With().Ctx(ctx).Ctx(context.Background()).Logger()
+	l.Info().Msg("Background after ctx on the logger") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func goodEventCtxAfterBackgroundChained(ctx context.Context, log zerolog.Logger) {
+	log.Info().Ctx(context.Background()).Ctx(ctx).Msg("x") // OK - ctx is the last
+}
+
+func goodEventCtxInPlaceAfterBackground(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(context.TODO())
+	e.Ctx(ctx)
+	e.Msg("ctx in place after TODO") // OK - ctx is the last
+}
+
+func goodEventCtxAfterBackgroundInPlace(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	e.Ctx(context.Background())
+	e.Ctx(ctx).Msg("ctx after Background in place") // OK - ctx is the last
+}
+
+func goodEventCtxAfterBackgroundOnOnePath(ctx context.Context, log zerolog.Logger, detached bool) {
+	e := log.Info().Ctx(ctx)
+	if detached {
+		e.Ctx(context.Background())
+		e.Ctx(ctx)
+	}
+	e.Msg("ctx after Background on one path") // OK - ctx is the last on each path
+}
+
+func goodEventCtxAfterBackgroundAfterDefer(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	defer e.Msg("deferred, ctx before the return") // OK - ctx is the last
+	e.Ctx(context.Background())
+	e.Ctx(ctx)
+}
+
+func goodEventCtxBackgroundOnAnotherEvent(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	other := log.Warn().Ctx(ctx)
+	other.Ctx(context.Background())
+	e.Msg("Background on another event") // OK - e keeps ctx
+}
+
+// A Ctx call that may run on another event may leave the context as it was,
+// so a fresh one only counts when it runs on the event alone.
+func goodEventCtxBackgroundOnEitherEvent(ctx context.Context, log zerolog.Logger, cond bool) {
+	e := log.Info().Ctx(ctx)
+	other := log.Warn().Ctx(ctx)
+	either := e
+	if cond {
+		either = other
+	}
+	either.Ctx(context.Background())
+	e.Msg("Background on e or another event") // OK - either may be the other
+}
+
+// LIMITATION (false negative): A fresh context given to Ctx counts only for
+// a receiver that holds the same run of an event made in a loop on every
+// path. last holds the run before, whose Ctx call is not looked at.
+func limitationEventCtxBackgroundOnRunBefore(ctx context.Context, log zerolog.Logger, n int) {
+	var last *zerolog.Event
+	for range n {
+		e := log.Info().Ctx(ctx)
+		e.Ctx(context.Background())
+		if last != nil {
+			last.Msg("the run before") // LIMITATION: should report but doesn't
+		}
+		last = e
+	}
+}
+
+// LIMITATION (false negative): A fresh context given to Ctx in a func literal
+// called in place is not seen, so it does not replace the context the event
+// had.
+func limitationEventCtxBackgroundInFuncLiteralOverCtx(ctx context.Context, log zerolog.Logger) {
+	e := log.Info().Ctx(ctx)
+	func() { e.Ctx(context.Background()) }()
+	e.Msg("Background in a func literal over ctx") // LIMITATION: should report but doesn't
 }
 
 // ===== FRESH CONTEXTS IN CLOSURES AND FUNC LITERALS =====

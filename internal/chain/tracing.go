@@ -447,16 +447,14 @@ func (tr *tracer) traceArgumentReturned(result ssa.Value, fn *ssa.Function, args
 
 // receiverHasCtx reports whether the event c runs on, the receiver of the
 // terminator at, has context: its chain has a Ctx call, or one runs on it in
-// place before at (see eventIndex.eventCtxSetInPlace). For a method
-// expression of a promoted method, the event is read from the struct it is
-// embedded in.
+// place before at, and no Ctx call given a fresh context runs on it in place
+// after that (see eventIndex.eventCtxSetInPlace). For a method expression of
+// a promoted method, the event is read from the struct it is embedded in.
 //
 //declscope:shared // checker.go asks this of each terminator
 func (tr *tracer) receiverHasCtx(c callee, at ssa.Instruction) bool {
-	if tr.traceCalleeReceiver(c, at, traceEvent) == yes {
-		return true
-	}
-	return tr.events.eventCtxSetInPlace(c, at, func(v ssa.Value) bool {
+	inChain := tr.traceCalleeReceiver(c, at, traceEvent) == yes
+	return tr.events.eventCtxSetInPlace(c, at, inChain, func(v ssa.Value) bool {
 		return tr.traceValue(v, traceEvent) == yes
 	})
 }

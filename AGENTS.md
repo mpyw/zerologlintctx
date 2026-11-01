@@ -145,7 +145,7 @@ testdata/src/zerolog/      # One package per topic, each its own subtest of Test
 - **Slice and map elements**: An event read back from a slice or map is not traced, so one stored with `.Ctx(ctx)` is still reported
 - **Elements at an index computed in a loop**: A store at the same index, on the same iteration, is not taken to write the element, so a store without `.Ctx(ctx)` on an earlier iteration, or the caller's value in a slice parameter, may still be what the read sees
 - **Writes through another reference**: A write through a pointer passed to a function, another slice of the same array, or another pointer parameter is not seen, so the value stored before it is taken as the one read
-- **Fresh contexts not seen**: A fresh context given to `Ctx` in place, with its result unused, does not replace the context the event had
+- **Fresh contexts not seen**: A fresh context given to `Ctx` in a func literal called in place does not replace the context the event had. Nor does one given to the latest run of an event made in a loop, for a receiver that holds an earlier run
 
 These are documented in test cases with `// LIMITATION` comments, tagged `// LIMITATION(#n)` where an issue tracks the case.
 
