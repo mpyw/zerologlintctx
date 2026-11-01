@@ -340,8 +340,9 @@ func storeCallsOf(fn *ssa.Function) (calls []ssa.Instruction, ok bool) {
 // A path that gets to the entry of that function, when it is a closure that
 // captures the variable in turn, goes on out of it in the same way. When that
 // closure stores to the variable, or through it where the pointer is read
-// from, as *pp = other does, the pointer may be another one there, and the
-// path carries what is not known. A store through the pointer itself, as
+// from, as *pp = other does, the pointer may be another one there. A path
+// back from the call stops at such a store, and one that gets to the entry
+// of that closure carries what is not known. A store through the pointer itself, as
 // **pp = l does, leaves the pointer as it is. In the function the variable is
 // declared in, a walk past a copy of what it holds goes on from the call
 // instead, when one is found (see walkPastCopy).
@@ -394,7 +395,16 @@ func (w *storeWalk) walkPointerOut(fn *ssa.Function, fv *ssa.FreeVar, runs []mat
 				}
 				return true
 			}
-			walkBack([]WalkPoint{WalkPointBefore(call, w.positions)}, out.stepAt, atEntry, nil)
+			visit := out.stepAt
+			if boundFree {
+				visit = func(in ssa.Instruction) WalkStep {
+					if store, isStore := in.(*ssa.Store); isStore && storeGoesThrough(store, bound, loads) {
+						return WalkStop // Before it, another pointer may be there
+					}
+					return out.stepAt(in)
+				}
+			}
+			walkBack([]WalkPoint{WalkPointBefore(call, w.positions)}, visit, atEntry, nil)
 		}
 	}
 }
@@ -561,12 +571,18 @@ func storeOverwritesAcross(store *ssa.Store, from ssa.Value, runs []matchClosure
 // not seen.
 func storesThrough(fv *ssa.FreeVar, loads int) bool {
 	for instr := range InstrsIn(fv.Parent()) {
-		store, isStore := instr.(*ssa.Store)
-		if isStore && storeReadFrom(store.Addr) == fv && storeLoadsIn(store.Addr) <= loads {
+		if store, isStore := instr.(*ssa.Store); isStore && storeGoesThrough(store, fv, loads) {
 			return true
 		}
 	}
 	return false
+}
+
+// storeGoesThrough reports whether store is to fv, a free variable, or to
+// what is read through it with at most loads loads, as storesThrough looks
+// for.
+func storeGoesThrough(store *ssa.Store, fv *ssa.FreeVar, loads int) bool {
+	return storeReadFrom(store.Addr) == fv && storeLoadsIn(store.Addr) <= loads
 }
 
 // storeLoadsIn returns how many loads v, an address or a pointer, takes from
