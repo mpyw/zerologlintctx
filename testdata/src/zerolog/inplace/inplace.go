@@ -550,6 +550,110 @@ func goodEventCtxInIIFEOnPreviousIterationFieldLoggedThere(ctx context.Context, 
 	}
 }
 
+// The receiver is taken out through every func literal in between, and
+// through the values of the func literal that hold what it read (#297).
+
+func goodEventCtxInNestedIIFEOnPreviousIterationLoggedThere(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() {
+				func() { last.Ctx(ctx) }()
+			}()
+			last.Msg("ctx in a nested IIFE on the event of the previous iteration, logged") // OK
+		}
+		last = e
+	}
+}
+
+func badEventCtxInNestedIIFEOnPreviousIteration(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() {
+				func() { last.Ctx(ctx) }()
+			}()
+			e.Msg("ctx in a nested IIFE on the event of the previous iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = e
+	}
+}
+
+func goodEventCtxInIIFEOnPreviousIterationBoxedLoggedThere(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() { (&inPlaceHolder{last}).e.Ctx(ctx) }()
+			last.Msg("ctx in an IIFE on the boxed event of the previous iteration, logged") // OK
+		}
+		last = e
+	}
+}
+
+func badEventCtxInIIFEOnPreviousIterationBoxed(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() { (&inPlaceHolder{last}).e.Ctx(ctx) }()
+			e.Msg("ctx in an IIFE on the boxed event of the previous iteration") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = e
+	}
+}
+
+func goodEventCtxInIIFEOnPreviousIterationCopiedLoggedThere(ctx context.Context, log zerolog.Logger, other *zerolog.Event) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() {
+				x := other
+				x = last
+				x.Ctx(ctx)
+			}()
+			last.Msg("ctx in an IIFE on the copied event of the previous iteration, logged") // OK
+		}
+		last = e
+	}
+}
+
+func badEventCtxInIIFEOnPreviousIterationReplacedFirst(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() {
+				last = log.Warn()
+				last.Ctx(ctx)
+			}()
+			e.Msg("ctx in an IIFE on an event it stored first") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = e
+	}
+}
+
+func badEventCtxInIIFEOnPreviousIterationBoxedInLoop(ctx context.Context, log zerolog.Logger) {
+	var last *zerolog.Event
+	for range 2 {
+		e := log.Info()
+		if last != nil {
+			func() {
+				var b inPlaceHolder
+				for range 2 {
+					b.e = b.e
+				}
+				b.e.Ctx(ctx)
+			}()
+			e.Msg("ctx in an IIFE on an event that leads back to itself") // want `zerolog call chain missing .Ctx\(ctx\)`
+		}
+		last = e
+	}
+}
+
 func badEventCtxOnPreviousIterationField(ctx context.Context, log zerolog.Logger) {
 	var h inPlaceHolder
 	for range 2 {
@@ -1157,6 +1261,90 @@ func badEventCtxInPlaceInIIFEPointerToPointerReplaced(ctx context.Context, pp **
 	func() { (*pp).e.Ctx(ctx) }()
 	*pp = g
 	(*pp).e.Msg("ctx in place through two loads, the pointer replaced after") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+// A func literal in between that only passes the variable on has no read of
+// its own, so the place is taken out one func literal at a time (#296).
+
+func goodEventCtxInPlaceInNestedIIFEPointerParamField(ctx context.Context, h *inPlaceHolder) {
+	func() {
+		func() { h.e.Ctx(ctx) }()
+	}()
+	h.e.Msg("ctx in place in a nested IIFE, through a pointer parameter") // OK
+}
+
+func goodEventCtxInPlaceInIIFEThreeLevelsPointerParamField(ctx context.Context, h *inPlaceHolder) {
+	func() { func() { func() { h.e.Ctx(ctx) }() }() }()
+	h.e.Msg("ctx in place three IIFEs down, through a pointer parameter") // OK
+}
+
+func goodEventCtxInPlaceInNestedIIFEPointerToPointer(ctx context.Context, pp **inPlaceHolder) {
+	func() { func() { (*pp).e.Ctx(ctx) }() }()
+	(*pp).e.Msg("ctx in place in a nested IIFE, through two loads") // OK
+}
+
+func goodEventCtxInPlaceInNestedIIFESliceElement(ctx context.Context, log zerolog.Logger) {
+	s := []*zerolog.Event{log.Info()}
+	func() { func() { s[0].Ctx(ctx) }() }()
+	s[0].Msg("ctx in place in a nested IIFE, on a slice element") // OK
+}
+
+func goodEventCtxInPlaceInNestedIIFEReadInBetween(ctx context.Context, h *inPlaceHolder) {
+	func() {
+		func() { h.e.Ctx(ctx) }()
+		h.e.Msg("ctx in place in a nested IIFE, logged in between") // OK
+	}()
+}
+
+func goodEventCtxInPlaceInNestedIIFEArrayOfPointers(ctx context.Context, hs [1]*inPlaceHolder) {
+	func() { func() { hs[0].e.Ctx(ctx) }() }()
+	hs[0].e.Msg("ctx in place in a nested IIFE, through an array of pointers") // OK
+}
+
+func goodEventCtxInPlaceInNestedIIFEEventOfTheOneInBetween(ctx context.Context, log zerolog.Logger) {
+	func() {
+		e := log.Info()
+		func() { e.Ctx(ctx) }()
+		e.Msg("ctx in place in a nested IIFE, on the event of the one in between") // OK
+	}()
+}
+
+func badEventCtxInPlaceInNestedIIFEEventOfTheOneInBetween(ctx context.Context, log zerolog.Logger) {
+	e := log.Info()
+	func() {
+		e := log.Warn()
+		func() { e.Ctx(ctx) }()
+	}()
+	e.Msg("ctx in place in a nested IIFE, on the event of the one in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInNestedIIFEOtherPointerParam(ctx context.Context, h, g *inPlaceHolder) {
+	func() { func() { g.e.Ctx(ctx) }() }()
+	h.e.Msg("ctx in place in a nested IIFE through another pointer") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInNestedIIFEPointerReplacedInBetween(ctx context.Context, h, g *inPlaceHolder) {
+	func() {
+		func() { h.e.Ctx(ctx) }()
+		h = g
+	}()
+	h.e.Msg("ctx in place in a nested IIFE, the pointer replaced in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInNestedIIFEPointerToPointerStoredThrough(ctx context.Context, pp **inPlaceHolder, g *inPlaceHolder) {
+	func() {
+		func() { (*pp).e.Ctx(ctx) }()
+		*pp = g
+	}()
+	(*pp).e.Msg("ctx in place in a nested IIFE, stored through in between") // want `zerolog call chain missing .Ctx\(ctx\)`
+}
+
+func badEventCtxInPlaceInNestedIIFEOwnPointer(ctx context.Context, h, g *inPlaceHolder) {
+	func() {
+		h := g
+		func() { h.e.Ctx(ctx) }()
+	}()
+	h.e.Msg("ctx in place in a nested IIFE, on the pointer declared there") // want `zerolog call chain missing .Ctx\(ctx\)`
 }
 
 // LIMITATION (false positive): a store by a closure to a variable it captures

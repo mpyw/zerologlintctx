@@ -126,6 +126,9 @@ type eventCtxCall struct {
 	fresh bool
 	// recv is the step back from the receiver.
 	recv eventStep
+	// inner is the Ctx call in a func literal that this one runs, for one
+	// made at a call of the func literal (see eventIndex.addClosureCtxCalls).
+	inner *eventCtxCall
 	// runs is what eventIndex.ctxRunsOf finds runs in, built at the first
 	// source asked about.
 	runs *eventRunGraph
@@ -707,7 +710,7 @@ func (ix *eventIndex) addClosureCtxCalls(calls *eventCtxCalls, mc *ssa.MakeClosu
 			continue
 		}
 		for _, site := range sites {
-			calls.add(site, &eventCtxCall{call: site, sources: ix.sourcesAtRun(cc.sources, mc, site), recv: ix.recvAtRun(cc, mc, site)})
+			calls.add(site, &eventCtxCall{call: site, sources: ix.sourcesAtRun(cc.sources, mc, site), recv: ix.recvAtRun(cc, mc, site), inner: cc})
 		}
 	}
 }
@@ -752,16 +755,16 @@ func (ix *eventIndex) sourcesAtRun(sources *eventSources, mc *ssa.MakeClosure, s
 //	    last = e
 //	}
 //
-// Any other receiver keeps the step back the func literal has.
+// The receiver is looked for in the func literal the Ctx call is written in,
+// which may be nested in that of mc, through the values of it that hold what
+// it reads there, as (&box{last}).v does (see eventIndex.capturedRecv). Any
+// other receiver keeps the step back the func literal has.
 func (ix *eventIndex) recvAtRun(cc *eventCtxCall, mc *ssa.MakeClosure, site ssa.Instruction) eventStep {
-	if len(cc.recv.next) != 1 {
-		return cc.recv
+	written := cc
+	for written.inner != nil {
+		written = written.inner
 	}
-	load, ok := ssaflow.AsLoad(eventOrigin(cc.recv.next[0], ix.closures))
-	if !ok {
-		return cc.recv
-	}
-	at, ok := ssaflow.MatchPlaceAtRun(load, mc)
+	at, ok := ix.capturedRecv(written.recv, mc)
 	var sources iter.Seq[ssaflow.Resolved]
 	if ok {
 		sources, ok = ix.resolver().ResolveAt(at, site)
@@ -770,6 +773,31 @@ func (ix *eventIndex) recvAtRun(cc *eventCtxCall, mc *ssa.MakeClosure, site ssa.
 		return cc.recv
 	}
 	return ix.resolvedStep(sources, at)
+}
+
+// capturedRecv returns the place, in the function that makes mc, of the read
+// from a variable that a func literal captures that recv, the step back from
+// the receiver of a Ctx call in it, is the same event as (see
+// ssaflow.MatchPlaceAtRun): the receiver itself, or what a read of memory in
+// the func literal sees, when that is one value, back to such a read:
+//
+//	func() { (&box{last}).v.Ctx(ctx) }() // *last, stored in the box
+//
+// ok is false when the receiver is not one such value.
+func (ix *eventIndex) capturedRecv(recv eventStep, mc *ssa.MakeClosure) (_ ssaflow.Place, ok bool) {
+	seen := make(map[ssa.Value]bool)
+	for len(recv.next) == 1 && len(recv.sources) == 0 && len(recv.more) == 0 {
+		load, isLoad := ssaflow.AsLoad(eventOrigin(recv.next[0], ix.closures))
+		if !isLoad || seen[load] {
+			return ssaflow.Place{}, false
+		}
+		if at, ok := ssaflow.MatchPlaceAtRun(load, mc); ok {
+			return at, true
+		}
+		seen[load] = true
+		recv = ix.stepOf(load)
+	}
+	return ssaflow.Place{}, false
 }
 
 // eventRunsOnEveryReturn reports whether cc, or another call of set on the
