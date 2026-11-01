@@ -242,3 +242,29 @@ func TestWalkThrough(t *testing.T) {
 		}
 	}
 }
+
+func TestWalkReachable(t *testing.T) {
+	_, blocks := walkFunc(t)
+	positions := make(Positions)
+	body, loop, done := blocks["for.body"], blocks["for.loop"], blocks["for.done"]
+	avoid := body.Instrs[0]
+	ret := WalkPointBefore(done.Instrs[len(done.Instrs)-1], positions)
+	for _, tt := range []struct {
+		name     string
+		from, to WalkPoint
+		avoid    ssa.Instruction
+		want     bool
+	}{
+		{"out of the loop after avoid", WalkPointAfter(avoid, positions), ret, avoid, true},
+		{"back to before avoid, on the next iteration", WalkPointAfter(avoid, positions), WalkPointBefore(avoid, positions), avoid, true},
+		{"down the same block", WalkPointBefore(body.Instrs[1], positions), WalkPointAfter(body.Instrs[1], positions), avoid, true},
+		{"down the same block, past avoid", WalkPointBefore(avoid, positions), WalkPointAfter(avoid, positions), avoid, false},
+		{"into the body past avoid", WalkPointBefore(loop.Instrs[0], positions), WalkPointAfter(avoid, positions), avoid, false},
+		{"from the loop out", WalkPointBefore(loop.Instrs[0], positions), ret, avoid, true},
+		{"through a block that runs avoid", WalkPointBefore(blocks["if.then"].Instrs[0], positions), ret, blocks["if.done"].Instrs[0], false},
+	} {
+		if got := WalkReachable(tt.from, tt.avoid, positions, nil)(tt.to); got != tt.want {
+			t.Errorf("%s: WalkReachable = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

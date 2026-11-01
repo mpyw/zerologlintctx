@@ -115,6 +115,9 @@ func TestPlaceOf(t *testing.T) {
 	if arrI1.Key() != arrI2.Key() {
 		t.Error("two elements at the same variable index have different keys")
 	}
+	if !arrI1.Variable() || arr1.Variable() || inB2.Variable() {
+		t.Error("Variable does not tell o.arr[i].a from o.arr[1].a and o.in.b")
+	}
 	if !placePrefix(arrI1, 1).prefixOf(arrI2) || arrI1.prefixOf(arrI2) {
 		t.Error("o.arr is not a prefix of o.arr[i].a, or o.arr[i].a is")
 	}

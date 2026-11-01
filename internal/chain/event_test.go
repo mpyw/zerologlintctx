@@ -108,6 +108,13 @@ func f(ctx context.Context, l zerolog.Logger) {
 		for range n {
 			b.WriteString("\tif sink {\n\t\th.e = l.Warn()\n\t}\n\th.e.Ctx(ctx)\n\th.e.Msg(\"x\")\n")
 		}
+	case "fieldphiloop":
+		// fieldphi in a loop, so that each event is made on each iteration
+		b.WriteString("\tfor sink {\n\th := &holder{e: l.Info()}\n")
+		for range n {
+			b.WriteString("\tif sink {\n\t\th.e = l.Warn()\n\t}\n\th.e.Ctx(ctx)\n\th.e.Msg(\"x\")\n")
+		}
+		b.WriteString("\t}\n")
 	case "onevmany":
 		// One Ctx call on another event, so that the function has one
 		b.WriteString("\tl.Debug().Ctx(ctx).Msg(\"y\")\n\te := l.Info()\n")
@@ -129,6 +136,7 @@ func TestEventQueryWorkIsQuadratic(t *testing.T) {
 		accepts func(n int) int
 	}{
 		{"fieldphi", 0, func(n int) int { return n }},
+		{"fieldphiloop", 0, func(n int) int { return n }},
 		{"onevmany", 1, func(int) int { return 1 }}, // The one with Ctx in its chain
 	} {
 		t.Run(tt.shape, func(t *testing.T) {

@@ -100,6 +100,12 @@ func (p Place) Key() PlaceKey {
 	return PlaceKey{root: p.root, path: b.String()}
 }
 
+// Variable reports whether p selects an element whose index is not a
+// constant, which may be any element.
+func (p Place) Variable() bool {
+	return slices.ContainsFunc(p.path, sel.variable)
+}
+
 // with returns p with rest selected further, in a path of its own.
 func (p Place) with(rest ...sel) Place {
 	return Place{root: p.root, path: append(slices.Clone(p.path), rest...)}

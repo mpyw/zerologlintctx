@@ -11,6 +11,10 @@
 // path from the origin to the terminator. ssaflow.Resolver finds what a read
 // from memory sees, so an event in a variable or a field is the same event at
 // each read, until another one is stored there.
+//
+// An origin in a loop makes an event on each run. A value that holds the
+// event of an earlier run, as one kept from the last iteration does, is not
+// the same event as one that holds the latest (see eventRuns).
 
 package chain
 
@@ -81,6 +85,9 @@ type eventStep struct {
 	sources []eventSource
 	// read is the place the value is read from, for a read from memory.
 	read *ssaflow.PlaceKey
+	// readVariable reports that read is an element at an index that is not
+	// a constant.
+	readVariable bool
 }
 
 // eventCtxCall is a call of Event.Ctx given a context that is not fresh, and
@@ -88,6 +95,11 @@ type eventStep struct {
 type eventCtxCall struct {
 	call    *ssa.Call
 	sources *eventSources
+	// recv is the step back from the receiver.
+	recv eventStep
+	// runs is what eventIndex.ctxRunsOf finds runs in, built at the first
+	// source asked about.
+	runs *eventRunGraph
 }
 
 // eventCtxCalls are the calls of Event.Ctx of a function given a context that
@@ -128,6 +140,21 @@ type eventIndex struct {
 	//
 	//declscope:private
 	active map[*ssa.Parameter]bool
+	// loops holds, for each origin asked about, whether it can run again
+	// after it runs, in a loop.
+	//
+	//declscope:private
+	loops map[ssa.Instruction]bool
+	// reachable holds the test of eventIndex.reaches for each point and
+	// origin asked about.
+	//
+	//declscope:private
+	reachable map[eventReach]func(ssaflow.WalkPoint) bool
+	// ctxRuns holds the runs each Ctx call can run on, for each origin in a
+	// loop asked about.
+	//
+	//declscope:private
+	ctxRuns map[eventCtxRun]*eventRuns
 	// work counts the values expanded, the instructions and edges walked,
 	// and the events compared, which the tests bound.
 	//
@@ -146,6 +173,9 @@ func newEventIndex(positions ssaflow.Positions, closures *ssaflow.Closures) *eve
 		sources:   make(map[ssa.Value]*eventSources),
 		ctxCalls:  make(map[*ssa.Function]*eventCtxCalls),
 		active:    make(map[*ssa.Parameter]bool),
+		loops:     make(map[ssa.Instruction]bool),
+		reachable: make(map[eventReach]func(ssaflow.WalkPoint) bool),
+		ctxRuns:   make(map[eventCtxRun]*eventRuns),
 	}
 }
 
@@ -188,6 +218,13 @@ type eventQuery struct {
 	ix     *eventIndex
 	fn     *ssa.Function
 	hasCtx func(ssa.Value) bool
+	// at is the terminator, and recv the step back from its receiver.
+	at   ssa.Instruction
+	recv eventStep
+	// runs holds the runs the receiver can hold of each source asked about.
+	runs map[eventSource]*eventRuns
+	// graph is what runs is found in, built at the first source asked about.
+	graph *eventRunGraph
 	// calls are the Ctx calls of the function.
 	calls *eventCtxCalls
 	// within holds, for each Ctx call looked at, whether it runs on no event
@@ -209,20 +246,41 @@ func (ix *eventIndex) queryOf(c callee, at ssa.Instruction, hasCtx func(ssa.Valu
 		ix:     ix,
 		fn:     at.Parent(),
 		hasCtx: hasCtx,
+		at:     at,
+		recv:   ix.calleeStep(c, at),
+		runs:   make(map[eventSource]*eventRuns),
 		calls:  calls,
 		within: make(map[*eventCtxCall]bool),
 		values: make(map[ssa.Value]bool),
 		reads:  make(map[ssaflow.PlaceKey]bool),
 	}
-	q.sources = ix.expand(ix.calleeStep(c, at), q.values, q.reads)
+	q.sources = ix.expand(q.recv, q.values, q.reads)
 	return q
 }
 
 // ctxCallOn reports whether instr is a Ctx call that runs on src: on a value
-// that can be src, and on no event the receiver cannot be.
-func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource) bool {
+// that can be src, and on no event the receiver cannot be. Unless anyRun is
+// set, the call must also run on a value that can hold the same run of src
+// as the receiver.
+func (q *eventQuery) ctxCallOn(instr ssa.Instruction, src eventSource, anyRun bool) bool {
 	cc, ok := q.calls.at[instr]
-	return ok && q.counts(cc, src)
+	return ok && q.counts(cc, src) && (anyRun || q.runsOf(src).sameRun(q.ix.ctxRunsOf(cc, src)))
+}
+
+// runsOf returns the runs of src the receiver can hold, or nil when src is
+// not made in a loop.
+func (q *eventQuery) runsOf(src eventSource) *eventRuns {
+	runs, ok := q.runs[src]
+	if !ok {
+		if origin := q.ix.loopOrigin(src, q.fn); origin != nil {
+			if q.graph == nil {
+				q.graph = q.ix.runGraphOf(q.recv, q.at)
+			}
+			runs = q.graph.runsOf(src, origin)
+		}
+		q.runs[src] = runs
+	}
+	return runs
 }
 
 // hasCtxCallOn reports whether some Ctx call of the function runs on src.
@@ -257,19 +315,40 @@ func (q *eventQuery) counts(cc *eventCtxCall, src eventSource) bool {
 }
 
 // ctxRunsBefore reports whether every path that leads to before, and carries
-// src, passes one of calls after src is made. A path that leads back to the
-// entry of the function carries src only when the function does not make it,
-// as for a parameter. A path carries another event when it takes an edge of a
-// Phi, or stores a value, that is not src or has context of its own.
+// src, passes a Ctx call on src after src is made. A path that leads back to
+// the entry of the function carries src only when the function does not make
+// it, as for a parameter. A path carries another event when it takes an edge
+// of a Phi, or stores a value, that is not src or has context of its own.
+//
+// A receiver that holds only an earlier run of src, made in a loop, holds an
+// event made before the latest run. A path that reaches the latest run goes
+// on before it, where a Ctx call on any run of src counts, until the run
+// before:
+//
+//	var last *zerolog.Event
+//	for range n {
+//	    e := logger.Info()  // the latest run
+//	    e.Ctx(ctx)          // on the run before, for the next iteration
+//	    if last != nil {
+//	        last.Msg("x")   // OK: last holds the run before
+//	    }
+//	    last = e
+//	}
 func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bool {
 	def := q.defOf(src)
+	runs := q.runsOf(src)
+	// earlier tells that the walk is before the latest run of src
+	earlier, reachesLatest := false, false
 	visit := func(instr ssa.Instruction) ssaflow.WalkStep {
 		q.ix.work++
 		switch {
-		case q.ctxCallOn(instr, src):
+		case q.ctxCallOn(instr, src, earlier):
 			return ssaflow.WalkStop // Ctx runs on this path
-		case instr == def:
+		case instr == def && (earlier || !runs.onlyEarlier()):
 			return ssaflow.WalkAbort // src is made on this path, and Ctx does not run after
+		case instr == def:
+			reachesLatest = true
+			return ssaflow.WalkStop // The latest run, after the one the receiver holds
 		case q.storesOther(instr, src):
 			return ssaflow.WalkStop // Another event is stored on this path
 		}
@@ -279,7 +358,15 @@ func (q *eventQuery) ctxRunsBefore(src eventSource, before ssaflow.WalkPoint) bo
 	edge := func(b *ssa.BasicBlock, i int, s struct{}) (struct{}, bool) {
 		return s, q.edgeCarries(b, i, src)
 	}
-	return ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, atEntry, edge)
+	if !ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: before}}, visit, atEntry, edge) {
+		return false
+	}
+	if !reachesLatest {
+		return true
+	}
+	earlier = true
+	from := ssaflow.WalkPointBefore(def, q.ix.positions)
+	return ssaflow.WalkBackWith([]ssaflow.WalkFrom[struct{}]{{Point: from}}, visit, atEntry, edge)
 }
 
 // ctxRunsAfterDefer reports whether, on every path from d, a deferred
@@ -296,7 +383,7 @@ func (q *eventQuery) ctxRunsAfterDefer(src eventSource, d *ssa.Defer) bool {
 		switch {
 		case instr == def:
 			return ssaflow.WalkAbort // The event is made again, so a Ctx call after is on another one
-		case q.ctxCallOn(instr, src):
+		case q.ctxCallOn(instr, src, false):
 			return ssaflow.WalkStop // Ctx runs on this path
 		}
 		if _, ok := instr.(*ssa.Return); ok {
@@ -388,7 +475,8 @@ func (ix *eventIndex) ctxCallsIn(fn *ssa.Function) *eventCtxCalls {
 		if args := call.Call.Args; len(args) > 0 && isFreshContext(args[len(args)-1], ix.positions, ix.closures) {
 			continue
 		}
-		cc := &eventCtxCall{call: call, sources: ix.expand(ix.calleeStep(c, call), make(map[ssa.Value]bool), nil)}
+		recv := ix.calleeStep(c, call)
+		cc := &eventCtxCall{call: call, sources: ix.expand(recv, make(map[ssa.Value]bool), nil), recv: recv}
 		calls.at[call] = cc
 		for _, src := range cc.sources.list {
 			calls.on[src] = append(calls.on[src], cc)
@@ -513,7 +601,7 @@ func (ix *eventIndex) findStep(v ssa.Value) eventStep {
 // see. A source that resolve cannot tell is the event at that place.
 func (ix *eventIndex) resolvedStep(sources iter.Seq[ssaflow.Resolved], at ssaflow.Place) eventStep {
 	read := at.Key()
-	step := eventStep{read: &read}
+	step := eventStep{read: &read, readVariable: at.Variable()}
 	for src := range sources {
 		switch {
 		case src.V == nil:
@@ -543,4 +631,370 @@ func (ix *eventIndex) resolver() ssaflow.Resolver {
 			delete(ix.active, param)
 		},
 	}
+}
+
+// eventRuns are the runs of an origin in a loop that a value can hold, each
+// event it makes. The latest run is the one that ran last. An earlier run
+// ran before it, as for a value kept from the last iteration. An element
+// stored at an index computed in a loop, and read at another index, can hold
+// any run.
+type eventRuns struct {
+	latest, earlier bool
+	// anyAt are the places of the reads that can hold any run.
+	anyAt map[ssaflow.PlaceKey]bool
+	// anyVariable reports that one of anyAt is an element at an index that is
+	// not a constant.
+	anyVariable bool
+}
+
+// add adds what a path that ends in run holds.
+func (r *eventRuns) add(run eventRunState) {
+	switch run.run {
+	case eventRunLatest:
+		r.latest = true
+	case eventRunEarlier:
+		r.earlier = true
+	case eventRunAny:
+		r.anyAt[run.at] = true
+		r.anyVariable = r.anyVariable || run.variable
+	}
+}
+
+// onlyEarlier reports whether a value with r holds only earlier runs, or
+// any run, but never the latest. A nil r is for an origin not in a loop, which
+// has only one run.
+func (r *eventRuns) onlyEarlier() bool {
+	return r != nil && !r.latest
+}
+
+// sameRun reports whether a value with r and a value with o can hold the
+// event of the same run. Any run can be the same as any other, but at two
+// elements at constant indices, which are two events:
+//
+//	for i := range 2 {
+//	    evs[i] = logger.Info()
+//	}
+//	evs[0].Ctx(ctx)
+//	evs[1].Msg("x")         // another run
+func (r *eventRuns) sameRun(o *eventRuns) bool {
+	if r == nil || o == nil {
+		return true
+	}
+	known := func(r *eventRuns) bool { return r.latest || r.earlier }
+	switch {
+	case r.latest && o.latest, r.earlier && o.earlier:
+		return true
+	case len(r.anyAt) > 0 && known(o), len(o.anyAt) > 0 && known(r):
+		return true
+	case len(r.anyAt) == 0 || len(o.anyAt) == 0:
+		return false
+	case r.anyVariable || o.anyVariable:
+		return true
+	}
+	for at := range r.anyAt {
+		if o.anyAt[at] {
+			return true
+		}
+	}
+	return false
+}
+
+// eventRun is which run of an origin in a loop a value holds, on one path back
+// to the origin.
+type eventRun int
+
+const (
+	// eventRunLatest is the event of the latest run.
+	eventRunLatest eventRun = iota
+	// eventRunEarlier is the event of an earlier run.
+	eventRunEarlier
+	// eventRunAny is the event of any run.
+	eventRunAny
+)
+
+// eventRunState is the run a path back to an origin holds so far, and, for
+// any run, the read where it became any.
+type eventRunState struct {
+	run eventRun
+	// at is the place read, for any run.
+	at ssaflow.PlaceKey
+	// variable reports that at is an element at an index that is not a
+	// constant.
+	variable bool
+}
+
+// eventCtxRun is a Ctx call, and an origin it can run on.
+type eventCtxRun struct {
+	cc  *eventCtxCall
+	src eventSource
+}
+
+// eventReach is a point, and an origin a path from it must not run.
+type eventReach struct {
+	from  ssaflow.WalkPoint
+	avoid ssa.Instruction
+}
+
+// ctxRunsOf returns the runs of src that cc can run on, as eventQuery.runsOf
+// does for the receiver.
+func (ix *eventIndex) ctxRunsOf(cc *eventCtxCall, src eventSource) *eventRuns {
+	key := eventCtxRun{cc, src}
+	runs, ok := ix.ctxRuns[key]
+	if !ok {
+		if origin := ix.loopOrigin(src, cc.call.Parent()); origin != nil {
+			if cc.runs == nil {
+				cc.runs = ix.runGraphOf(cc.recv, cc.call)
+			}
+			runs = cc.runs.runsOf(src, origin)
+		}
+		ix.ctxRuns[key] = runs
+	}
+	return runs
+}
+
+// loopOrigin returns the instruction that makes src when it is in fn, and can
+// run again after it runs, in a loop, or nil.
+func (ix *eventIndex) loopOrigin(src eventSource, fn *ssa.Function) ssa.Instruction {
+	origin, ok := src.v.(ssa.Instruction)
+	if !ok || origin.Parent() != fn {
+		return nil
+	}
+	loop, ok := ix.loops[origin]
+	if !ok {
+		after := ssaflow.WalkPointAfter(origin, ix.positions)
+		loop = ix.reaches(after, origin)(ssaflow.WalkPointBefore(origin, ix.positions))
+		ix.loops[origin] = loop
+	}
+	if !loop {
+		return nil
+	}
+	return origin
+}
+
+// reaches returns a test of whether a path from the point from reaches a
+// point without running origin, as ssaflow.WalkReachable does.
+func (ix *eventIndex) reaches(from ssaflow.WalkPoint, origin ssa.Instruction) func(ssaflow.WalkPoint) bool {
+	key := eventReach{from, origin}
+	reaches, ok := ix.reachable[key]
+	if !ok {
+		reaches = ssaflow.WalkReachable(from, origin, ix.positions, &ix.work)
+		ix.reachable[key] = reaches
+	}
+	return reaches
+}
+
+// eventRunGraph holds the values a receiver is the same event as, back to the
+// events it can be, as eventIndex.expand finds them, with the point where
+// each value is used. runsOf follows it from an event to the receiver, to
+// find the runs of the event the receiver can hold.
+type eventRunGraph struct {
+	ix *eventIndex
+	fn *ssa.Function
+	// root stands for the receiver.
+	root *eventRunVertex
+	// vertices holds each value at each point it is used.
+	vertices map[eventRunNode]*eventRunVertex
+	// made holds the vertices that are each event, or the root.
+	made map[eventSource][]*eventRunVertex
+}
+
+// eventRunNode is a value, and the point where it is used. The point is none
+// out of the function of the receiver.
+type eventRunNode struct {
+	v   ssa.Value
+	use ssaflow.WalkPoint
+}
+
+// eventRunVertex is a value at a point it is used, and its users: the values
+// it is the same event as one step closer to the receiver.
+type eventRunVertex struct {
+	eventRunNode
+	users []eventRunUse
+}
+
+// eventRunUse is a user of a value. stored is set when the user reads the
+// value from memory.
+type eventRunUse struct {
+	by     *eventRunVertex
+	stored *eventRunStore
+}
+
+// eventRunStore is a store that a read sees.
+type eventRunStore struct {
+	// after is the point after the store, and read the point of the read.
+	after, read ssaflow.WalkPoint
+	// at is the place read, and variable reports that it is an element at an
+	// index that is not a constant.
+	at       ssaflow.PlaceKey
+	variable bool
+	// other reports that the store is at an element whose index is not a
+	// constant, and the read is at another place.
+	other bool
+}
+
+// runGraphOf builds the graph of start, the step back from a receiver of the
+// call at.
+func (ix *eventIndex) runGraphOf(start eventStep, at ssa.Instruction) *eventRunGraph {
+	g := &eventRunGraph{
+		ix:       ix,
+		fn:       at.Parent(),
+		root:     &eventRunVertex{},
+		vertices: make(map[eventRunNode]*eventRunVertex),
+		made:     make(map[eventSource][]*eventRunVertex),
+	}
+	g.step(g.root, start, at)
+	return g
+}
+
+// runsOf returns the runs of src, which origin makes in a loop, that the
+// receiver can hold. A value holds an earlier run when,
+// on its way from the origin, it is kept somewhere, such as at a Phi or in
+// memory, and every path from there to where it is used runs the origin
+// again:
+//
+//	var last *zerolog.Event // last = Phi(nil, e) at the top of the loop
+//	for range n {
+//	    e := logger.Info()
+//	    if last != nil {
+//	        last.Ctx(ctx)   // an earlier run
+//	        e.Msg("x")      // the latest run
+//	    }
+//	    last = e
+//	}
+func (g *eventRunGraph) runsOf(src eventSource, origin ssa.Instruction) *eventRuns {
+	runs := &eventRuns{anyAt: make(map[ssaflow.PlaceKey]bool)}
+	type visit struct {
+		x     *eventRunVertex
+		state eventRunState
+	}
+	seen := make(map[visit]bool)
+	var up func(x *eventRunVertex, state eventRunState)
+	up = func(x *eventRunVertex, state eventRunState) {
+		if x == g.root {
+			runs.add(state)
+			return
+		}
+		if def := g.pointAfter(x.v); state.run == eventRunLatest && def != nil && !g.reachesFrom(*def, x.use, origin) {
+			state.run = eventRunEarlier // The origin runs again before the use
+		}
+		if seen[visit{x, state}] {
+			return
+		}
+		seen[visit{x, state}] = true
+		g.ix.work++
+		for _, u := range x.users {
+			next := state
+			switch st := u.stored; {
+			case st == nil:
+			case st.other:
+				// The closest read to the receiver tells which element it is
+				next = eventRunState{run: eventRunAny, at: st.at, variable: st.variable}
+			case next.run == eventRunLatest && !g.reachesFrom(st.after, st.read, origin):
+				next.run = eventRunEarlier
+			}
+			up(u.by, next)
+		}
+	}
+	for _, x := range g.made[src] {
+		up(x, eventRunState{})
+	}
+	return runs
+}
+
+// reachesFrom reports whether a path from the point from reaches to without
+// running origin. A point that is none, out of the function, is reached.
+func (g *eventRunGraph) reachesFrom(from, to ssaflow.WalkPoint, origin ssa.Instruction) bool {
+	if from == (ssaflow.WalkPoint{}) || to == (ssaflow.WalkPoint{}) {
+		return true
+	}
+	return g.ix.reaches(from, origin)(to)
+}
+
+// step adds what step, the step back from the value of x used by at, leads
+// to.
+func (g *eventRunGraph) step(x *eventRunVertex, step eventStep, at ssa.Instruction) {
+	for _, src := range step.sources {
+		g.made[src] = append(g.made[src], x)
+	}
+	use := g.pointBefore(at)
+	for _, next := range step.next {
+		if step.read == nil {
+			g.value(next, use, eventRunUse{by: x})
+		} else {
+			g.stored(next, use, *step.read, step.readVariable, x)
+		}
+	}
+}
+
+// value adds v, used at the point use by u.
+func (g *eventRunGraph) value(v ssa.Value, use ssaflow.WalkPoint, u eventRunUse) {
+	node := eventRunNode{v, use}
+	if x, ok := g.vertices[node]; ok {
+		x.users = append(x.users, u)
+		return
+	}
+	x := &eventRunVertex{eventRunNode: node, users: []eventRunUse{u}}
+	g.vertices[node] = x
+	g.ix.work++
+	phi, ok := v.(*ssa.Phi)
+	if !ok {
+		instr, _ := v.(ssa.Instruction)
+		g.step(x, g.ix.stepOf(v), instr)
+		return
+	}
+	for i, edge := range phi.Edges {
+		if ssaflow.IsNilConst(edge) {
+			continue
+		}
+		pred := phi.Block().Preds[i]
+		end := ssaflow.WalkPoint{}
+		if p := g.pointAfter(pred.Instrs[len(pred.Instrs)-1]); p != nil {
+			end = *p
+		}
+		g.value(edge, end, eventRunUse{by: x})
+	}
+}
+
+// stored adds v, a value stored that a read of the place at sees at the point
+// read, as used by x. The value is used where it is stored.
+func (g *eventRunGraph) stored(v ssa.Value, read ssaflow.WalkPoint, at ssaflow.PlaceKey, variable bool, x *eventRunVertex) {
+	var stores []*ssa.Store
+	for _, ref := range *v.Referrers() {
+		store, ok := ref.(*ssa.Store)
+		if !ok || store.Val != v || store.Parent() != g.fn {
+			continue
+		}
+		if place, _ := ssaflow.PlaceOf(store.Addr); place.Key() == at || place.Variable() {
+			stores = append(stores, store)
+		}
+	}
+	if len(stores) == 0 {
+		g.value(v, read, eventRunUse{by: x}) // Stored where it cannot be told
+		return
+	}
+	for _, store := range stores {
+		place, _ := ssaflow.PlaceOf(store.Addr)
+		st := &eventRunStore{after: *g.pointAfter(store), read: read, at: at, variable: variable, other: place.Key() != at}
+		g.value(v, g.pointBefore(store), eventRunUse{by: x, stored: st})
+	}
+}
+
+// pointBefore returns the point before instr, or none when instr is nil or
+// not in the function.
+func (g *eventRunGraph) pointBefore(instr ssa.Instruction) ssaflow.WalkPoint {
+	if instr == nil || instr.Parent() != g.fn {
+		return ssaflow.WalkPoint{}
+	}
+	return ssaflow.WalkPointBefore(instr, g.ix.positions)
+}
+
+// pointAfter returns the point after v, an instruction of the function, or nil
+// for any other value.
+func (g *eventRunGraph) pointAfter(v any) *ssaflow.WalkPoint {
+	instr, ok := v.(ssa.Instruction)
+	if !ok || instr.Parent() != g.fn {
+		return nil
+	}
+	p := ssaflow.WalkPointAfter(instr, g.ix.positions)
+	return &p
 }
